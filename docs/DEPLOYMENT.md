@@ -1,40 +1,29 @@
 # Deployment & Operations Guide: SmartTrading-V2
 
-## 🚀 Live Access & URLs
-- **Live Public Access URL:** [/preview/prod-smarttrading-v2-9a6089/](/preview/prod-smarttrading-v2-9a6089/)
-- **Internal Port:** `0`
-- **Runtime Engine:** `python_preview`
-- **Deployment Status:** `DEPLOYED / ACTIVE`
-- **Timestamp:** `2026-09-19T22:58:42.275357+00:00`
+## 🚀 Live Access URLs
+- **Public Preview URL:** [https://river-alternatives-isolated-parker.trycloudflare.com/preview/prod-smarttrading-v2-9a6089/](https://river-alternatives-isolated-parker.trycloudflare.com/preview/prod-smarttrading-v2-9a6089/)
+- **Local Gateway Path:** [/preview/prod-smarttrading-v2-9a6089/](/preview/prod-smarttrading-v2-9a6089/)
+- **Internal Port:** `8100`
+- **Process PID:** `664464`
+- **Runtime Engine:** `nodejs_server`
+- **Health Status:** `HEALTHY (HTTP 200)`
+- **Deployed Timestamp:** `2026-09-19T22:58:53.164852+00:00`
 
-## 🛠️ Management & Service Control
-### Launch Command
+## 📋 Execution Command
 ```bash
-python3 app.py --port 0
+node server/index.js 8100
 ```
 
-### Health Check Probe
+## 🩺 Health Check Verification
 ```bash
-curl -I http://127.0.0.1:0/
+curl -I http://127.0.0.1:8100/
 ```
 
-### Systemd Service Template
-```ini
-[Unit]
-Description=SmartTrading-V2 Service
-After=network.target
+## 🔍 Headless Browser Verification
+- **DOM Title:** `SmartTrading-V2`
+- **Has Canvas:** `False`
+- **Interactive Elements:** `False`
+- **Console Errors:** `0`
 
-[Service]
-Type=simple
-WorkingDirectory=/root/nexus-agent-graph/workspaces/prod-smarttrading-v2-9a6089
-ExecStart=/usr/bin/python3 /root/nexus-agent-graph/workspaces/prod-smarttrading-v2-9a6089/app.py
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-
-## 🔒 Production Security Protocols
-- HTTP-only reverse proxy via Nexus Gateway.
-- Dedicated port allocation with zero port conflict.
+## 📜 Live Deployment Logs
+Logs are stored at `/root/nexus-agent-graph/workspaces/prod-smarttrading-v2-9a6089/logs/deploy.log`.

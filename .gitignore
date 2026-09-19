@@ -4,3 +4,7 @@ dist/
 *.log
 *.pid
 .env
+
+*.db
+*.db-wal
+*.db-shm
