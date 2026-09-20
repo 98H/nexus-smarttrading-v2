@@ -436,19 +436,14 @@ export {
 
 export default mountApp;
 
-// CRITICAL ENTRYPOINT AUTO-MOUNT INVARIANT
+
 
 // Browser Auto-Mount Bootstrap Guard
 if (typeof document !== 'undefined') {
   const mountTarget = document.getElementById('app') || document.body;
-  if (mountTarget && !mountTarget.__nexus_mounted) {
+  if (mountTarget && !mountTarget.__nexus_mounted && mountTarget.children.length === 0) {
     mountTarget.__nexus_mounted = true;
-    if (typeof mountApp === 'function') {
-      mountApp(mountTarget);
-    } else if (typeof mount === 'function') {
-      mount(mountTarget);
-    } else if (typeof init === 'function') {
-      init(mountTarget);
-    }
+    if (typeof mountApp === 'function') mountApp(mountTarget);
+    else if (typeof mount === 'function') mount(mountTarget);
   }
 }
