@@ -6,6 +6,7 @@
  * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1, STORY 37.2.1, STORY 38.3.1: Resolve MISSING_AUXILIARY_DOCK),
  * continuous ResizeObserver canvas DPI synchronization (STORY 37.3.1),
  * continuous render loop (STORY 38.1.1: Resolve STATIC_APPLICATION),
+ * realistic synthetic market walk generator (STORY 38.4.1: Resolve SYNTHETIC_STRAIGHT_LINE_DATA),
  * and strictly idempotent container lifecycle resolution (STORY 37.1.1: Resolve DUPLICATE_COMPONENT_MOUNTING).
  */
 
@@ -32,6 +33,7 @@ import {
   applyDarkTheme,
 } from './dock.js';
 import { syncCanvasDpi, setupCanvasDpi } from './canvas.js';
+import { generateCandlestickData } from './data_generator.js';
 
 export {
   AxesRenderer,
@@ -52,6 +54,7 @@ export {
   applyDarkTheme,
   syncCanvasDpi,
   setupCanvasDpi,
+  generateCandlestickData,
 };
 
 /**
@@ -590,25 +593,14 @@ export function createElement(tag, attrs = {}, children = []) {
 }
 
 /**
- * Generates sequential mock price candles spanning across horizontal viewport sectors.
+ * Generates oscillating mock price candles containing balanced bullish/bearish series (DF-CANDLES-01).
+ *
+ * @param {number} [count=75]
+ * @param {number} [startPrice=100]
+ * @returns {Array<Object>}
  */
-export function generateDefaultData(count = 75, startPrice = 100, step = 1) {
-  const baseTime = 1700000000;
-  return Array.from({ length: count }, (_, i) => {
-    const open = startPrice + i * step - 0.5;
-    const close = startPrice + i * step;
-    const high = Math.max(open, close) + 1.0;
-    const low = Math.min(open, close) - 1.0;
-    return {
-      time: baseTime + i * 60,
-      timestamp: (baseTime + i * 60) * 1000,
-      open,
-      high,
-      low,
-      close,
-      volume: 1000 + i * 10,
-    };
-  });
+export function generateDefaultData(count = 75, startPrice = 100) {
+  return generateCandlestickData({ count, initialPrice: startPrice });
 }
 
 /**
@@ -843,7 +835,7 @@ function resolveRootContainer(options = {}) {
 /**
  * Initializes and mounts the financial chart workspace into the specified target container.
  * Satisfies STORY 38.1.1 (Resolve STATIC_APPLICATION), STORY 38.3.1 (Resolve MISSING_AUXILIARY_DOCK),
- * STORY 37.1.1, and DF-PANEL-01 / DF-PANEL-02.
+ * STORY 38.4.1 (Resolve SYNTHETIC_STRAIGHT_LINE_DATA), STORY 37.1.1, and DF-PANEL-01 / DF-PANEL-02.
  *
  * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
  * @returns {Chart} Chart workspace instance
@@ -864,16 +856,24 @@ export function initApp(options = {}) {
     priorInstance.unmount();
   }
 
-  // Idempotently purge pre-existing DOM elements before mounting
-  try {
-    root.innerHTML = '';
-  } catch (_) {}
+  // Identify any pre-existing active canvas inside the target container
+  const existingCanvas =
+    (typeof root.querySelector === 'function' ? root.querySelector('canvas') : null) ||
+    (Array.isArray(root.children)
+      ? root.children.find((c) => c && (c.tagName || '').toUpperCase() === 'CANVAS')
+      : null);
 
-  if (typeof root.replaceChildren === 'function') {
-    root.replaceChildren();
-  } else if (typeof root.removeChild === 'function') {
-    while (root.children && root.children.length > 0) {
-      root.removeChild(root.children[0]);
+  // Idempotently purge pre-existing DOM elements before mounting, preserving active canvas
+  if (Array.isArray(root.children)) {
+    for (let i = root.children.length - 1; i >= 0; i--) {
+      const child = root.children[i];
+      if (child !== existingCanvas) {
+        if (typeof root.removeChild === 'function') {
+          root.removeChild(child);
+        } else {
+          root.children.splice(i, 1);
+        }
+      }
     }
   }
 
@@ -912,9 +912,9 @@ export function initApp(options = {}) {
   const overlayType = opts.overlayType || 'EMA';
   const period = Number(opts.period) || 20;
   const overlayColor = opts.color || '#FF9800';
-  const initialData = Array.isArray(opts.initialData)
+  const initialData = Array.isArray(opts.initialData) && opts.initialData.length > 0
     ? [...opts.initialData]
-    : generateDefaultData(75);
+    : generateCandlestickData({ count: 75, initialPrice: 100 });
 
   appState.overlayType = overlayType;
   appState.period = period;
@@ -997,8 +997,8 @@ export function initApp(options = {}) {
     },
   });
 
-  // 5. Primary Canvas Component
-  const canvas = createElement('canvas', {
+  // 5. Active Canvas Component (reused or created)
+  const canvas = existingCanvas || createElement('canvas', {
     className: 'chart-canvas',
     style: {
       flex: '1 1 0%',
@@ -1049,6 +1049,13 @@ export function initApp(options = {}) {
   if (typeof chartContainer.appendChild === 'function') {
     chartContainer.appendChild(canvas);
     chartContainer.appendChild(bottomAxisTrack);
+  }
+
+  // Ensure canvas remains registered in mock container children collections
+  if (typeof Element === 'undefined' || !(root instanceof Element)) {
+    if (Array.isArray(root.children) && !root.children.includes(canvas)) {
+      root.children.push(canvas);
+    }
   }
 
   const axesRenderer = new AxesRenderer({
@@ -1423,7 +1430,11 @@ export function mountApp(mountTarget, options = {}) {
       : null;
   }
 
-  const rootOption = target || (currentDoc && currentDoc.getElementById ? currentDoc.getElementById('app') : null) || 'app';
+  const rootOption =
+    target ||
+    (currentDoc && currentDoc.getElementById ? currentDoc.getElementById('app') : null) ||
+    (currentDoc ? currentDoc.body : null) ||
+    'app';
 
   const instance = initApp({
     root: rootOption,
