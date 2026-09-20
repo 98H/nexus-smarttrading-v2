@@ -785,3 +785,9 @@ export class Chart {
 }
 
 export class ChartCanvas extends Chart {}
+
+export function initChart(canvas, options = {}) {
+  return new Chart(canvas, options);
+}
+
+export default Chart;
