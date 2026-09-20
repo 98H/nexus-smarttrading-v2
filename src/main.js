@@ -7,7 +7,7 @@
  * continuous ResizeObserver canvas DPI synchronization (STORY 37.3.1),
  * continuous render loop (STORY 38.1.1, STORY 39.1.1: Resolve STATIC_APPLICATION),
  * realistic synthetic market walk generator (STORY 38.4.1: Resolve SYNTHETIC_STRAIGHT_LINE_DATA),
- * strictly idempotent container lifecycle resolution (STORY 37.1.1: Resolve DUPLICATE_COMPONENT_MOUNTING),
+ * strictly idempotent container lifecycle resolution (STORY 37.1.1, STORY 39.2.1: Resolve DUPLICATE_COMPONENT_MOUNTING),
  * and interactive controls responding to user events with reactive state and view re-rendering (STORY 38.2.1: Resolve INACTIVE_UI_CONTROLS).
  */
 
@@ -429,6 +429,41 @@ function queryElement(node, selector) {
   return null;
 }
 
+/**
+ * Safely clears all child nodes of a DOM element across native and mock environments
+ * without assigning directly to native read-only properties like children.
+ *
+ * @param {HTMLElement|Object} container
+ */
+function clearContainer(container) {
+  if (!container) return;
+  if (typeof container.replaceChildren === 'function') {
+    container.replaceChildren();
+    return;
+  }
+  while (container.firstChild && typeof container.removeChild === 'function') {
+    container.removeChild(container.firstChild);
+  }
+  while (container.children && container.children.length > 0 && typeof container.removeChild === 'function') {
+    container.removeChild(container.children[0]);
+  }
+}
+
+/**
+ * Determines whether a target root container already hosts a complete, non-duplicate workspace layout.
+ *
+ * @param {HTMLElement|Object} container
+ * @returns {boolean}
+ */
+function isContainerMounted(container) {
+  if (!container || typeof container.querySelectorAll !== 'function') return false;
+  const headers = container.querySelectorAll('header');
+  const canvases = container.querySelectorAll('canvas');
+  const toolbars = container.querySelectorAll('.tool-palette');
+  const docks = container.querySelectorAll('#auxiliary-dock');
+  return headers.length === 1 && canvases.length === 1 && toolbars.length === 1 && docks.length === 1;
+}
+
 export function createElement(tag, attrs = {}, children = []) {
   let el;
   const isBrowser = typeof document !== 'undefined' && typeof document.createElement === 'function';
@@ -847,6 +882,7 @@ function resolveRootContainer(options = {}) {
 
 /**
  * Initializes and mounts the financial chart workspace into the specified target container.
+ * Idempotently clears existing child elements to resolve DUPLICATE_COMPONENT_MOUNTING (STORY 39.2.1).
  *
  * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
  * @returns {Chart} Chart workspace instance
@@ -862,37 +898,16 @@ export function initApp(options = {}) {
   }
 
   const priorInstance = root.__nexusInstance || (typeof root === 'object' && mountedInstances.get(root));
+  if (priorInstance && isContainerMounted(root) && !opts.forceRemount && Object.keys(opts).length === 0) {
+    return priorInstance;
+  }
+
   if (priorInstance && typeof priorInstance.unmount === 'function') {
     priorInstance.unmount();
   }
 
-  const findExistingCanvas = (node) => {
-    if (!node) return null;
-    if ((node.tagName || '').toUpperCase() === 'CANVAS') return node;
-    const kids = Array.isArray(node.children) ? node.children : [];
-    for (const k of kids) {
-      const found = findExistingCanvas(k);
-      if (found) return found;
-    }
-    return null;
-  };
-
-  const existingCanvas =
-    (typeof root.querySelector === 'function' ? root.querySelector('canvas') : null) ||
-    findExistingCanvas(root);
-
-  if (Array.isArray(root.children)) {
-    for (let i = root.children.length - 1; i >= 0; i--) {
-      const child = root.children[i];
-      if (child !== existingCanvas) {
-        if (typeof root.removeChild === 'function') {
-          root.removeChild(child);
-        } else {
-          root.children.splice(i, 1);
-        }
-      }
-    }
-  }
+  // Idempotently clear root container so headers, toolbar, dock, and canvas never duplicate
+  clearContainer(root);
 
   const outerStyle =
     'height: 100vh; overflow: hidden; display: flex; flex-direction: column; width: 100vw; max-height: 100vh; box-sizing: border-box; background: #131722; color: #d1d4dc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;';
@@ -1093,7 +1108,7 @@ export function initApp(options = {}) {
   });
 
   // 6. Active Canvas Component
-  const canvas = existingCanvas || createElement('canvas', {
+  const canvas = createElement('canvas', {
     className: 'chart-canvas',
     style: {
       flex: '1 1 0%',
@@ -1144,12 +1159,6 @@ export function initApp(options = {}) {
   if (typeof chartContainer.appendChild === 'function') {
     chartContainer.appendChild(canvas);
     chartContainer.appendChild(bottomAxisTrack);
-  }
-
-  if (typeof Element === 'undefined' || !(root instanceof Element)) {
-    if (Array.isArray(root.children) && !root.children.includes(canvas)) {
-      root.children.push(canvas);
-    }
   }
 
   const axesRenderer = new AxesRenderer({
@@ -1378,6 +1387,7 @@ export function initApp(options = {}) {
     }
     if (root && root.__nexusInstance === this) {
       delete root.__nexusInstance;
+      delete root.__nexus_mounted;
     }
     if (typeof root === 'object') {
       mountedInstances.delete(root);
@@ -1390,6 +1400,7 @@ export function initApp(options = {}) {
   };
 
   root.__nexusInstance = chartInstance;
+  root.__nexus_mounted = true;
   if (typeof root === 'object') {
     mountedInstances.set(root, chartInstance);
   }
@@ -1446,11 +1457,22 @@ export function unmount(target) {
     const inst = root && (root.__nexusInstance || (typeof root === 'object' && mountedInstances.get(root)));
     if (inst && typeof inst.unmount === 'function') {
       inst.unmount();
+      clearContainer(root);
+      if (root) {
+        delete root.__nexus_mounted;
+        delete root.__nexusInstance;
+      }
       return;
     }
   }
   if (activeAppInstance && typeof activeAppInstance.unmount === 'function') {
+    const root = activeAppInstance.root;
     activeAppInstance.unmount();
+    if (root) {
+      clearContainer(root);
+      delete root.__nexus_mounted;
+      delete root.__nexusInstance;
+    }
   } else {
     teardown();
   }
@@ -1512,7 +1534,7 @@ export function startRealtimeUpdates(chartInstance, intervalMs = 1000) {
 
 /**
  * Lifecycle mount function for application integration.
- * Resolves DUPLICATE_COMPONENT_MOUNTING idempotently.
+ * Resolves DUPLICATE_COMPONENT_MOUNTING idempotently (STORY 39.2.1).
  *
  * @param {HTMLElement|string|null} [mountTarget]
  * @param {Object} [options={}]
@@ -1548,6 +1570,12 @@ export function mountApp(mountTarget, options = {}) {
     throw new Error('Target container (#app) was not found in the DOM: container is missing or null');
   }
 
+  // Guard against duplicate mounting when target container is already mounted with active layout
+  const priorInstance = target.__nexusInstance || (typeof target === 'object' && mountedInstances.get(target));
+  if (priorInstance && isContainerMounted(target) && !options.forceRemount) {
+    return priorInstance;
+  }
+
   const instance = initApp({
     root: target,
     initialData: options.initialData || generateDefaultData(75),
@@ -1560,7 +1588,7 @@ export function mountApp(mountTarget, options = {}) {
 }
 
 export const mount = mountApp;
-export const mountChart = initApp;
+export const mountChart = mountApp;
 
 export function init(mountTarget, options = {}) {
   patchDOMEnvironment();
