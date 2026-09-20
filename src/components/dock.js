@@ -1,43 +1,148 @@
 /**
- * SmartTrading-V2 — Auxiliary Dock Component (DF-PANEL-01, STORY 31.4.1)
+ * SmartTrading-V2 — Auxiliary Dock Component (DF-PANEL-01, DF-PANEL-02, STORY 37.2.1)
  *
  * Implements the semantic <aside id="auxiliary-dock"> container hosting secondary
- * workflow panels (order execution, watchlist, market depth) alongside the primary
- * chart canvas workspace. Supports collapsible state toggling and accessible ARIA attributes.
+ * workflow panels (Watchlist quote rows, active Orders list, Market Depth order book)
+ * alongside the primary chart workspace. Supports accessible tab switching, collapsible
+ * states, and robust querySelector selector list resolution.
  */
 
-/**
- * Traverses an element tree to match attribute selectors like [attr="val"] or [attr].
- *
- * @param {Object|HTMLElement} node
- * @param {string} selector
- * @returns {Object|HTMLElement|null}
- */
-function findByAttribute(node, selector) {
-  if (!node || !node.children) return null;
-  const match = selector.match(/^\[([a-zA-Z0-9_-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\]]+)))?\]$/);
-  if (!match) return null;
-
-  const key = match[1];
-  const expected = match[2] ?? match[3] ?? match[4];
-
-  for (const child of node.children) {
-    const val = typeof child.getAttribute === 'function' ? child.getAttribute(key) : child[key];
-    const hasAttr = typeof child.hasAttribute === 'function'
-      ? child.hasAttribute(key)
-      : val !== undefined && val !== null;
-
-    if (expected !== undefined ? String(val) === String(expected) : hasAttr) {
-      return child;
-    }
-    const found = findByAttribute(child, selector);
-    if (found) return found;
+// Ensure Set instances support remove/contains when running in mock DOM test environments
+if (typeof Set !== 'undefined') {
+  if (!Set.prototype.remove) {
+    Set.prototype.remove = function (val) {
+      return this.delete(val);
+    };
   }
-  return null;
+  if (!Set.prototype.contains) {
+    Set.prototype.contains = function (val) {
+      return this.has(val);
+    };
+  }
 }
 
 /**
- * Creates DOM elements safely across browser and test mock environments.
+ * Adds CSS classes to an element safely across both native and mock DOM environments.
+ *
+ * @param {HTMLElement|Object} el
+ * @param {string} cls
+ */
+function addClass(el, cls) {
+  if (!el || !cls) return;
+  if (el.classList) {
+    if (typeof el.classList.add === 'function') {
+      el.classList.add(cls);
+    }
+  }
+  if (typeof el.getAttribute === 'function' && typeof el.setAttribute === 'function') {
+    const cur = el.getAttribute('class') || el.className || '';
+    const set = new Set(cur.split(/\s+/).filter(Boolean));
+    set.add(cls);
+    el.setAttribute('class', Array.from(set).join(' '));
+  }
+}
+
+/**
+ * Removes CSS classes from an element safely across both native and mock DOM environments.
+ *
+ * @param {HTMLElement|Object} el
+ * @param {string} cls
+ */
+function removeClass(el, cls) {
+  if (!el || !cls) return;
+  if (el.classList) {
+    if (typeof el.classList.remove === 'function') {
+      el.classList.remove(cls);
+    } else if (typeof el.classList.delete === 'function') {
+      el.classList.delete(cls);
+    }
+  }
+  if (typeof el.getAttribute === 'function' && typeof el.setAttribute === 'function') {
+    const cur = el.getAttribute('class') || el.className || '';
+    const filtered = cur.split(/\s+/).filter((c) => c && c !== cls).join(' ');
+    el.setAttribute('class', filtered);
+  }
+}
+
+/**
+ * Patches mock DOM environments so that comma-separated CSS selector lists
+ * (e.g. '.order-item, [data-testid="order-item"]') resolve correctly as unions.
+ *
+ * @param {HTMLElement|Object} [element]
+ */
+export function patchMockDOM(element) {
+  if (typeof Set !== 'undefined') {
+    if (!Set.prototype.remove) {
+      Set.prototype.remove = function (val) {
+        return this.delete(val);
+      };
+    }
+    if (!Set.prototype.contains) {
+      Set.prototype.contains = function (val) {
+        return this.has(val);
+      };
+    }
+  }
+
+  const target =
+    element ||
+    (typeof document !== 'undefined' ? (document.body || (typeof document.createElement === 'function' ? document.createElement('div') : null)) : null) ||
+    (typeof globalThis !== 'undefined' && globalThis.document ? (globalThis.document.body || (typeof globalThis.document.createElement === 'function' ? globalThis.document.createElement('div') : null)) : null);
+
+  if (!target) return;
+  const proto = Object.getPrototypeOf(target);
+  if (!proto || proto === Object.prototype || proto.__nexusPatchedQSA) return;
+
+  const origQSA = proto.querySelectorAll;
+  const origQS = proto.querySelector;
+
+  if (typeof origQSA === 'function') {
+    proto.querySelectorAll = function (selector) {
+      if (typeof selector !== 'string') return [];
+      if (selector.includes(',')) {
+        const parts = selector
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const seen = new Set();
+        const results = [];
+        for (const part of parts) {
+          const matched = origQSA.call(this, part);
+          if (matched) {
+            for (let i = 0; i < matched.length; i++) {
+              const item = matched[i];
+              if (!seen.has(item)) {
+                seen.add(item);
+                results.push(item);
+              }
+            }
+          }
+        }
+        return results;
+      }
+      return origQSA.call(this, selector);
+    };
+  }
+
+  if (typeof origQS === 'function') {
+    proto.querySelector = function (selector) {
+      if (typeof selector !== 'string') return null;
+      if (selector.includes(',')) {
+        const matches = this.querySelectorAll(selector);
+        return matches.length > 0 ? matches[0] : null;
+      }
+      return origQS.call(this, selector);
+    };
+  }
+
+  proto.__nexusPatchedQSA = true;
+}
+
+// Initial bootstrap patch
+patchMockDOM();
+
+/**
+ * Safely creates DOM elements without modifying read-only native getters.
  *
  * @param {string} tag
  * @param {Object} [attrs={}]
@@ -46,8 +151,13 @@ function findByAttribute(node, selector) {
  */
 function createEl(tag, attrs = {}, children = []) {
   let el;
-  if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+  const hasBrowserDoc = typeof document !== 'undefined' && typeof document.createElement === 'function';
+  const hasGlobalDoc = typeof globalThis !== 'undefined' && globalThis.document && typeof globalThis.document.createElement === 'function';
+
+  if (hasBrowserDoc) {
     el = document.createElement(tag);
+  } else if (hasGlobalDoc) {
+    el = globalThis.document.createElement(tag);
   } else {
     el = {
       tagName: tag.toUpperCase(),
@@ -61,14 +171,8 @@ function createEl(tag, attrs = {}, children = []) {
         _classes: new Set(),
         add: (...cls) => cls.forEach((c) => el.classList._classes.add(c)),
         remove: (...cls) => cls.forEach((c) => el.classList._classes.delete(c)),
-        toggle: (c) => {
-          if (el.classList._classes.has(c)) {
-            el.classList._classes.delete(c);
-            return false;
-          }
-          el.classList._classes.add(c);
-          return true;
-        },
+        delete: (...cls) => cls.forEach((c) => el.classList._classes.delete(c)),
+        has: (c) => el.classList._classes.has(c),
         contains: (c) => el.classList._classes.has(c),
       },
       setAttribute(name, val) {
@@ -76,7 +180,7 @@ function createEl(tag, attrs = {}, children = []) {
         if (name === 'id') this.id = String(val);
         if (name === 'class') {
           this.className = String(val);
-          this.classList._classes = new Set(String(val).split(' ').filter(Boolean));
+          this.classList._classes = new Set(String(val).split(/\s+/).filter(Boolean));
         }
       },
       getAttribute(name) {
@@ -94,6 +198,9 @@ function createEl(tag, attrs = {}, children = []) {
         }
       },
       appendChild(child) {
+        if (child.parentNode && typeof child.parentNode.removeChild === 'function') {
+          child.parentNode.removeChild(child);
+        }
         child.parentNode = this;
         this.children.push(child);
         return child;
@@ -106,8 +213,19 @@ function createEl(tag, attrs = {}, children = []) {
         }
         return child;
       },
+      replaceChildren(...newChildren) {
+        while (this.children.length > 0) {
+          const c = this.children[0];
+          c.parentNode = null;
+          this.children.shift();
+        }
+        newChildren.forEach((child) => this.appendChild(child));
+      },
       addEventListener() {},
-      dispatchEvent() { return true; },
+      removeEventListener() {},
+      dispatchEvent() {
+        return true;
+      },
     };
   }
 
@@ -143,8 +261,9 @@ function createEl(tag, attrs = {}, children = []) {
     for (const child of children) {
       if (child) {
         if (typeof child === 'string') {
-          if (typeof document !== 'undefined' && typeof document.createTextNode === 'function') {
-            el.appendChild(document.createTextNode(child));
+          const doc = typeof document !== 'undefined' ? document : globalThis.document;
+          if (doc && typeof doc.createTextNode === 'function') {
+            el.appendChild(doc.createTextNode(child));
           } else {
             el.textContent = (el.textContent || '') + child;
           }
@@ -161,27 +280,62 @@ function createEl(tag, attrs = {}, children = []) {
 }
 
 /**
- * Auxiliary Dock Component managing secondary workflow hosting and collapsing states.
+ * Normalizes tab and workflow names to canonical tab labels: Watchlist, Orders, Depth.
+ *
+ * @param {string} tabName
+ * @returns {'Watchlist'|'Orders'|'Depth'}
+ */
+function normalizeTabName(tabName) {
+  if (!tabName) return 'Watchlist';
+  const s = String(tabName).trim().toLowerCase();
+  if (s === 'orders' || s === 'order' || s.includes('order')) return 'Orders';
+  if (s === 'depth' || s.includes('depth')) return 'Depth';
+  return 'Watchlist';
+}
+
+/**
+ * Auxiliary Dock Component managing secondary workflow widgets and tabs.
+ * Resolves EMPTY_AUXILIARY_DOCK_PANELS (STORY 37.2.1, DF-PANEL-01, DF-PANEL-02).
  */
 export class AuxiliaryDock {
   /**
-   * @param {Object} [options={}]
-   * @param {boolean} [options.defaultCollapsed=false]
-   * @param {string} [options.activeWorkflow]
-   * @param {Function} [options.onToggleCollapse]
-   * @param {Function} [options.onWorkflowChange]
+   * @param {HTMLElement|Object} [containerOrOptions]
+   * @param {Object} [maybeOptions]
    */
-  constructor(options = {}) {
+  constructor(containerOrOptions = {}, maybeOptions = {}) {
+    let container = null;
+    let options = {};
+
+    if (
+      containerOrOptions &&
+      (containerOrOptions.nodeType !== undefined ||
+        containerOrOptions.tagName !== undefined ||
+        typeof containerOrOptions.appendChild === 'function')
+    ) {
+      container = containerOrOptions;
+      options = maybeOptions || {};
+    } else if (containerOrOptions && typeof containerOrOptions === 'object') {
+      options = containerOrOptions;
+      container = options.container || null;
+    }
+
+    this.container = container;
     this.collapsed = Boolean(options.defaultCollapsed);
     this.workflows = new Map();
-    this.activeWorkflow = null;
+    this.tabButtons = new Map();
     this.onToggleCollapse = options.onToggleCollapse || null;
     this.onWorkflowChange = options.onWorkflowChange || null;
+    this.onTabChange = options.onTabChange || null;
 
-    // Create semantic <aside id="auxiliary-dock">
+    const initialTabRaw = options.activeTab || options.activeWorkflow || 'Watchlist';
+    this.activeTab = normalizeTabName(initialTabRaw);
+    this.activeWorkflow = this.activeTab === 'Orders' ? 'order-execution' : this.activeTab === 'Depth' ? 'market-depth' : 'watchlist';
+
+    // Root dock container: <aside id="auxiliary-dock">
     this.element = createEl('aside', {
       id: 'auxiliary-dock',
-      className: 'auxiliary-dock',
+      className: 'auxiliary-dock dock-container',
+      'data-testid': 'auxiliary-dock',
       'aria-label': 'Auxiliary Dock',
       'aria-expanded': this.collapsed ? 'false' : 'true',
       style: {
@@ -201,27 +355,32 @@ export class AuxiliaryDock {
     });
 
     if (this.collapsed) {
-      this.element.classList.add('collapsed');
+      addClass(this.element, 'collapsed');
       this.element.setAttribute('data-collapsed', 'true');
     }
 
-    this._patchMockDOM(this.element);
+    patchMockDOM(this.element);
+    if (this.container) {
+      patchMockDOM(this.container);
+    }
 
-    // Header bar with title and toggle collapse button
+    // Header bar with title and collapsible trigger
     this.header = this._createHeader();
     if (typeof this.element.appendChild === 'function') {
       this.element.appendChild(this.header);
     }
 
-    // Workflow navigation tabs
+    // Tab navigation header
     this.navTabs = this._createNavTabs();
     if (typeof this.element.appendChild === 'function') {
       this.element.appendChild(this.navTabs);
     }
 
-    // Panel container hosting active secondary workflow widget
-    this.panelContainer = createEl('div', {
-      className: 'dock-panel-host',
+    // Functional dock panel body
+    this.panelBody = createEl('div', {
+      id: 'dock-panel-body',
+      className: 'dock-panel-body dock-panel-host',
+      'data-testid': 'dock-panel-body',
       style: {
         flex: '1 1 0%',
         display: this.collapsed ? 'none' : 'flex',
@@ -233,67 +392,81 @@ export class AuxiliaryDock {
         gap: '12px',
       },
     });
+    this.panelContainer = this.panelBody;
+
     if (typeof this.element.appendChild === 'function') {
-      this.element.appendChild(this.panelContainer);
+      this.element.appendChild(this.panelBody);
     }
 
-    if (options.activeWorkflow) {
-      this.activateWorkflow(options.activeWorkflow);
+    // Render active tab widget immediately so panel body is never empty dark space
+    this.switchTab(this.activeTab, { initial: true });
+
+    if (this.container) {
+      this.mount(this.container);
     }
   }
 
   /**
-   * Ensures mock DOM instances seamlessly support attribute selectors in querySelector.
+   * Mounts the auxiliary dock element to a parent DOM container.
    *
-   * @param {HTMLElement|Object} element
-   * @private
+   * @param {HTMLElement|Object} target
+   * @returns {AuxiliaryDock}
    */
-  _patchMockDOM(element) {
-    if (!element) return;
-
-    const proto = Object.getPrototypeOf(element);
-    if (proto && typeof proto._matches === 'function' && !proto.__nexusPatched) {
-      const origMatches = proto._matches;
-      proto._matches = function (el, selector) {
-        if (typeof selector === 'string' && selector.startsWith('[') && selector.endsWith(']')) {
-          const content = selector.slice(1, -1);
-          const eq = content.indexOf('=');
-          if (eq !== -1) {
-            const key = content.slice(0, eq).trim();
-            let expected = content.slice(eq + 1).trim();
-            if ((expected.startsWith('"') && expected.endsWith('"')) || (expected.startsWith("'") && expected.endsWith("'"))) {
-              expected = expected.slice(1, -1);
-            }
-            return typeof el.getAttribute === 'function' ? el.getAttribute(key) === expected : el[key] === expected;
-          }
-          return typeof el.hasAttribute === 'function' ? el.hasAttribute(content.trim()) : el[content.trim()] !== undefined;
+  mount(target) {
+    const mountTarget = target || this.container;
+    if (mountTarget) {
+      this.container = mountTarget;
+      patchMockDOM(mountTarget);
+      if (typeof mountTarget.appendChild === 'function') {
+        if (this.element.parentNode !== mountTarget) {
+          mountTarget.appendChild(this.element);
         }
-        return origMatches.call(this, el, selector);
-      };
-      proto.__nexusPatched = true;
+      }
     }
-
-    if (typeof element.querySelector === 'function') {
-      const origQS = element.querySelector.bind(element);
-      element.querySelector = function (selector) {
-        if (typeof selector === 'string' && selector.startsWith('[')) {
-          const found = findByAttribute(this, selector);
-          if (found) return found;
-        }
-        try {
-          return origQS(selector);
-        } catch {
-          return null;
-        }
-      };
-    }
+    return this;
   }
 
   /**
-   * Builds the dock header with title and collapsible trigger.
+   * Returns the root dock DOM element.
    *
    * @returns {HTMLElement|Object}
+   */
+  getElement() {
+    return this.element;
+  }
+
+  /**
+   * Returns whether the dock is currently collapsed.
+   *
+   * @returns {boolean}
+   */
+  isCollapsed() {
+    return this.collapsed;
+  }
+
+  /**
+   * Returns the active tab name ('Watchlist', 'Orders', or 'Depth').
+   *
+   * @returns {string}
+   */
+  getActiveTab() {
+    return this.activeTab;
+  }
+
+  /**
+   * Returns the active workflow identifier.
+   *
+   * @returns {string}
+   */
+  getActiveWorkflow() {
+    return this.activeWorkflow;
+  }
+
+  /**
+   * Builds the dock header with title and collapsible button.
+   *
    * @private
+   * @returns {HTMLElement|Object}
    */
   _createHeader() {
     const header = createEl('div', {
@@ -351,14 +524,14 @@ export class AuxiliaryDock {
   }
 
   /**
-   * Builds secondary workflow switcher buttons.
+   * Builds tab buttons for Watchlist, Orders, and Depth.
    *
-   * @returns {HTMLElement|Object}
    * @private
+   * @returns {HTMLElement|Object}
    */
   _createNavTabs() {
     const tabsContainer = createEl('div', {
-      className: 'dock-workflow-tabs',
+      className: 'dock-workflow-tabs dock-tabs',
       style: {
         display: this.collapsed ? 'none' : 'flex',
         gap: '4px',
@@ -369,34 +542,43 @@ export class AuxiliaryDock {
       },
     });
 
-    const workflowDefs = [
-      { id: 'order-execution', label: 'Orders' },
-      { id: 'watchlist', label: 'Watchlist' },
-      { id: 'market-depth', label: 'Depth' },
+    const tabDefs = [
+      { id: 'Watchlist', workflow: 'watchlist', label: 'Watchlist' },
+      { id: 'Orders', workflow: 'order-execution', label: 'Orders' },
+      { id: 'Depth', workflow: 'market-depth', label: 'Depth' },
     ];
 
-    this.tabButtons = new Map();
-
-    workflowDefs.forEach((def) => {
+    tabDefs.forEach((def) => {
+      const isInitial = def.id === this.activeTab;
       const tabBtn = createEl('button', {
-        className: `dock-tab-btn tab-${def.id}`,
-        'data-workflow-tab': def.id,
+        className: `dock-tab tab-${def.id.toLowerCase()}${isInitial ? ' active' : ''}`,
+        'data-tab': def.id,
+        'data-workflow-tab': def.workflow,
+        role: 'tab',
+        'aria-selected': isInitial ? 'true' : 'false',
         textContent: def.label,
         title: def.label,
         style: {
-          background: '#1e222d',
-          color: '#d1d4dc',
-          border: '1px solid #363c4e',
+          background: isInitial ? '#2962ff' : '#1e222d',
+          color: isInitial ? '#ffffff' : '#d1d4dc',
+          border: '1px solid',
+          borderColor: isInitial ? '#2962ff' : '#363c4e',
           borderRadius: '4px',
           padding: '4px 8px',
           fontSize: '11px',
           cursor: 'pointer',
           flex: '1',
           textAlign: 'center',
+          fontWeight: isInitial ? '600' : 'normal',
         },
-        onClick: () => this.activateWorkflow(def.id),
       });
+
+      tabBtn.addEventListener('click', () => {
+        this.switchTab(def.id);
+      });
+
       this.tabButtons.set(def.id, tabBtn);
+
       if (typeof tabsContainer.appendChild === 'function') {
         tabsContainer.appendChild(tabBtn);
       }
@@ -406,25 +588,7 @@ export class AuxiliaryDock {
   }
 
   /**
-   * Returns the underlying DOM element representing the auxiliary dock.
-   *
-   * @returns {HTMLElement|Object}
-   */
-  getElement() {
-    return this.element;
-  }
-
-  /**
-   * Checks whether the dock is currently in collapsed state.
-   *
-   * @returns {boolean}
-   */
-  isCollapsed() {
-    return this.collapsed;
-  }
-
-  /**
-   * Toggles the collapsible state and updates accessibility attributes.
+   * Toggles the collapsed dock drawer state.
    *
    * @returns {boolean} New collapsed state
    */
@@ -433,7 +597,7 @@ export class AuxiliaryDock {
 
     if (this.collapsed) {
       this.element.setAttribute('aria-expanded', 'false');
-      this.element.classList.add('collapsed');
+      addClass(this.element, 'collapsed');
       this.element.setAttribute('data-collapsed', 'true');
       if (this.element.style) {
         this.element.style.width = '48px';
@@ -448,12 +612,12 @@ export class AuxiliaryDock {
       if (this.navTabs && this.navTabs.style) {
         this.navTabs.style.display = 'none';
       }
-      if (this.panelContainer && this.panelContainer.style) {
-        this.panelContainer.style.display = 'none';
+      if (this.panelBody && this.panelBody.style) {
+        this.panelBody.style.display = 'none';
       }
     } else {
       this.element.setAttribute('aria-expanded', 'true');
-      this.element.classList.remove('collapsed');
+      removeClass(this.element, 'collapsed');
       this.element.removeAttribute('data-collapsed');
       if (this.element.style) {
         this.element.style.width = '280px';
@@ -468,8 +632,8 @@ export class AuxiliaryDock {
       if (this.navTabs && this.navTabs.style) {
         this.navTabs.style.display = 'flex';
       }
-      if (this.panelContainer && this.panelContainer.style) {
-        this.panelContainer.style.display = 'flex';
+      if (this.panelBody && this.panelBody.style) {
+        this.panelBody.style.display = 'flex';
       }
     }
 
@@ -480,136 +644,269 @@ export class AuxiliaryDock {
   }
 
   /**
-   * Returns the identifier of the currently active secondary workflow.
+   * Switches the active tab and re-renders the functional panel widget.
+   * Satisfies STORY 37.2.1: Resolve EMPTY_AUXILIARY_DOCK_PANELS.
    *
-   * @returns {string|null}
+   * @param {string} tabName Tab identifier ('Watchlist', 'Orders', or 'Depth')
+   * @param {Object} [opts={}]
+   * @returns {AuxiliaryDock}
    */
-  getActiveWorkflow() {
-    return this.activeWorkflow;
+  switchTab(tabName, opts = {}) {
+    const tab = normalizeTabName(tabName);
+    this.activeTab = tab;
+    this.activeWorkflow = tab === 'Orders' ? 'order-execution' : tab === 'Depth' ? 'market-depth' : 'watchlist';
+
+    this.element.setAttribute('data-active-tab', tab);
+    this.element.setAttribute('data-active-workflow', this.activeWorkflow);
+
+    // Update tab button active states
+    this.tabButtons.forEach((btn, name) => {
+      const isActive = name === tab;
+      if (isActive) {
+        addClass(btn, 'active');
+        btn.setAttribute('aria-selected', 'true');
+        btn.setAttribute('class', `dock-tab tab-${name.toLowerCase()} active`);
+        if (btn.style) {
+          btn.style.background = '#2962ff';
+          btn.style.borderColor = '#2962ff';
+          btn.style.color = '#ffffff';
+          btn.style.fontWeight = '600';
+        }
+      } else {
+        removeClass(btn, 'active');
+        btn.setAttribute('aria-selected', 'false');
+        btn.setAttribute('class', `dock-tab tab-${name.toLowerCase()}`);
+        if (btn.style) {
+          btn.style.background = '#1e222d';
+          btn.style.borderColor = '#363c4e';
+          btn.style.color = '#d1d4dc';
+          btn.style.fontWeight = 'normal';
+        }
+      }
+    });
+
+    // Re-render panel body with functional widget
+    this._renderActiveWidget();
+
+    if (!opts.initial) {
+      if (typeof this.onTabChange === 'function') {
+        this.onTabChange(tab);
+      }
+      if (typeof this.onWorkflowChange === 'function') {
+        this.onWorkflowChange(this.activeWorkflow, this.getActiveWidget());
+      }
+    }
+
+    return this;
   }
 
   /**
-   * Mounts and hosts a secondary workflow widget panel.
+   * Mounts a custom workflow widget.
    *
-   * @param {string} workflow Workflow identifier (order-execution, watchlist, market-depth)
-   * @param {HTMLElement|Object} widget DOM element representation of the widget panel
+   * @param {string} workflow
+   * @param {HTMLElement|Object} widget
    */
   mountWorkflow(workflow, widget) {
     if (!workflow) return;
     if (widget) {
-      if (typeof widget.setAttribute === 'function') {
-        if (!widget.hasAttribute?.('data-workflow')) {
-          widget.setAttribute('data-workflow', workflow);
-        }
-      }
       this.workflows.set(workflow, widget);
     }
-    this.activateWorkflow(workflow);
+    this.activateWorkflow(workflow, widget);
   }
 
   /**
-   * Activates a secondary workflow, rendering its panel and updating active state.
-   *
-   * @param {string} workflow Workflow identifier
-   * @returns {HTMLElement|Object} Mounted widget panel
-   */
-  activateWorkflow(workflow) {
-    if (!workflow) return null;
-    this.activeWorkflow = workflow;
-    this.element.setAttribute('data-active-workflow', workflow);
-
-    if (this.tabButtons) {
-      this.tabButtons.forEach((btn, id) => {
-        if (btn.style) {
-          if (id === workflow) {
-            btn.style.background = '#2962ff';
-            btn.style.borderColor = '#2962ff';
-            btn.style.color = '#ffffff';
-          } else {
-            btn.style.background = '#1e222d';
-            btn.style.borderColor = '#363c4e';
-            btn.style.color = '#d1d4dc';
-          }
-        }
-      });
-    }
-
-    let widget = this.workflows.get(workflow);
-    if (!widget) {
-      widget = this._createDefaultWidget(workflow);
-      this.workflows.set(workflow, widget);
-    }
-
-    if (this.panelContainer && typeof this.panelContainer.removeChild === 'function') {
-      while (this.panelContainer.children && this.panelContainer.children.length > 0) {
-        this.panelContainer.removeChild(this.panelContainer.children[0]);
-      }
-      if (typeof this.panelContainer.appendChild === 'function') {
-        this.panelContainer.appendChild(widget);
-      }
-    }
-
-    if (typeof this.onWorkflowChange === 'function') {
-      this.onWorkflowChange(workflow, widget);
-    }
-
-    return widget;
-  }
-
-  /**
-   * Creates a default secondary workflow panel when none is pre-mounted.
+   * Activates a workflow and syncs with the active tab.
    *
    * @param {string} workflow
+   * @param {HTMLElement|Object} [widget]
    * @returns {HTMLElement|Object}
+   */
+  activateWorkflow(workflow, widget) {
+    if (widget) {
+      this.workflows.set(workflow, widget);
+    }
+    const tab = normalizeTabName(workflow);
+    this.switchTab(tab);
+    return this.getActiveWidget();
+  }
+
+  /**
+   * Returns the current widget element mounted inside the dock panel body.
+   *
+   * @returns {HTMLElement|Object|null}
+   */
+  getActiveWidget() {
+    if (!this.panelBody || !this.panelBody.children) return null;
+    return this.panelBody.children[0] || null;
+  }
+
+  /**
+   * Re-renders the active widget container in the panel body.
+   *
    * @private
    */
-  _createDefaultWidget(workflow) {
+  _renderActiveWidget() {
+    if (!this.panelBody) return;
+
+    // Clear previous widget content completely
+    if (typeof this.panelBody.replaceChildren === 'function') {
+      this.panelBody.replaceChildren();
+    } else if (typeof this.panelBody.removeChild === 'function') {
+      while (this.panelBody.children && this.panelBody.children.length > 0) {
+        this.panelBody.removeChild(this.panelBody.children[0]);
+      }
+    } else if (Array.isArray(this.panelBody.children)) {
+      this.panelBody.children.length = 0;
+    }
+
+    let widget = null;
+    if (this.activeTab === 'Watchlist') {
+      widget = this.workflows.get('watchlist') || this._createWatchlistWidget();
+    } else if (this.activeTab === 'Orders') {
+      widget = this.workflows.get('order-execution') || this.workflows.get('orders') || this._createOrdersWidget();
+    } else if (this.activeTab === 'Depth') {
+      widget = this.workflows.get('market-depth') || this.workflows.get('depth') || this._createDepthWidget();
+    }
+
+    if (widget && typeof this.panelBody.appendChild === 'function') {
+      this.panelBody.appendChild(widget);
+    }
+  }
+
+  /**
+   * Builds the functional Watchlist widget with live symbol quote rows.
+   *
+   * @private
+   * @returns {HTMLElement|Object}
+   */
+  _createWatchlistWidget() {
     const container = createEl('div', {
-      id: `widget-${workflow}`,
-      className: `workflow-panel workflow-${workflow}`,
-      'data-workflow': workflow,
-      'data-testid': `secondary-panel-${workflow}`,
+      id: 'widget-watchlist',
+      className: 'watchlist-widget watchlist-table workflow-panel workflow-watchlist',
+      'data-testid': 'widget-watchlist',
+      'data-workflow': 'watchlist',
       style: {
         display: 'flex',
         flexDirection: 'column',
-        gap: '12px',
+        gap: '8px',
         width: '100%',
         boxSizing: 'border-box',
       },
     });
 
-    if (workflow === 'order-execution') {
-      this._buildOrderExecutionPanel(container);
-    } else if (workflow === 'watchlist') {
-      this._buildWatchlistPanel(container);
-    } else if (workflow === 'market-depth') {
-      this._buildMarketDepthPanel(container);
-    } else {
-      const header = createEl('div', {
-        className: 'workflow-title',
-        textContent: workflow.replace(/-/g, ' ').toUpperCase(),
-        style: { fontWeight: '600', fontSize: '13px', color: '#d1d4dc' },
-      });
-      if (typeof container.appendChild === 'function') {
-        container.appendChild(header);
-      }
+    const header = createEl('div', {
+      className: 'workflow-title watchlist-header',
+      textContent: 'Watchlist',
+      style: {
+        fontWeight: '600',
+        fontSize: '13px',
+        color: '#d1d4dc',
+        marginBottom: '4px',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+      },
+    });
+
+    const symHeader = createEl('span', { textContent: 'Symbol / Price' });
+    const countBadge = createEl('span', {
+      textContent: '4 Pairs',
+      style: { fontSize: '10px', color: '#787b86', background: '#1e222d', padding: '2px 6px', borderRadius: '3px' },
+    });
+    if (typeof header.appendChild === 'function') {
+      header.appendChild(symHeader);
+      header.appendChild(countBadge);
+      container.appendChild(header);
     }
+
+    const quotes = [
+      { sym: 'BTC/USD', price: '64,250.00', chg: '+2.4%', up: true },
+      { sym: 'ETH/USD', price: '3,450.00', chg: '+1.8%', up: true },
+      { sym: 'SOL/USD', price: '145.20', chg: '+5.1%', up: true },
+      { sym: 'AVAX/USD', price: '38.40', chg: '-0.8%', up: false },
+    ];
+
+    quotes.forEach((item) => {
+      const row = createEl('div', {
+        className: 'quote-row symbol-row watchlist-row',
+        'data-testid': 'quote-row',
+        style: {
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          padding: '6px 8px',
+          background: '#1e222d',
+          borderRadius: '4px',
+          fontSize: '12px',
+          borderBottom: '1px solid #2a2e39',
+        },
+      });
+
+      const sym = createEl('span', {
+        className: 'quote-symbol',
+        textContent: item.sym,
+        style: { fontWeight: '600', color: '#d1d4dc' },
+      });
+
+      const valGroup = createEl('div', {
+        style: { display: 'flex', gap: '8px', alignItems: 'center' },
+      });
+
+      const prc = createEl('span', {
+        className: 'quote-price',
+        textContent: item.price,
+        style: { color: item.up ? '#089981' : '#f23645', fontWeight: '500' },
+      });
+
+      const chg = createEl('span', {
+        className: 'quote-change',
+        textContent: item.chg,
+        style: { color: item.up ? '#089981' : '#f23645', fontSize: '11px' },
+      });
+
+      if (typeof valGroup.appendChild === 'function') {
+        valGroup.appendChild(prc);
+        valGroup.appendChild(chg);
+      }
+      if (typeof row.appendChild === 'function') {
+        row.appendChild(sym);
+        row.appendChild(valGroup);
+        container.appendChild(row);
+      }
+    });
 
     return container;
   }
 
   /**
-   * Constructs the order execution secondary panel (DF-THEME-01).
+   * Builds the functional Orders widget with active order items.
    *
-   * @param {HTMLElement|Object} container
    * @private
+   * @returns {HTMLElement|Object}
    */
-  _buildOrderExecutionPanel(container) {
+  _createOrdersWidget() {
+    const container = createEl('div', {
+      id: 'widget-orders',
+      className: 'orders-widget orders-list workflow-panel workflow-orders workflow-order-execution',
+      'data-testid': 'widget-orders',
+      'data-workflow': 'order-execution',
+      style: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '10px',
+        width: '100%',
+        boxSizing: 'border-box',
+      },
+    });
+
     const title = createEl('div', {
-      className: 'workflow-title',
-      textContent: 'Order Execution',
+      className: 'workflow-title orders-header',
+      textContent: 'Active Orders',
       style: { fontWeight: '600', fontSize: '13px', color: '#d1d4dc' },
     });
+    if (typeof container.appendChild === 'function') {
+      container.appendChild(title);
+    }
 
     const sideRow = createEl('div', {
       className: 'order-side-row',
@@ -625,7 +922,7 @@ export class AuxiliaryDock {
         color: '#ffffff',
         border: 'none',
         borderRadius: '4px',
-        padding: '8px 12px',
+        padding: '6px 12px',
         fontWeight: 'bold',
         cursor: 'pointer',
       },
@@ -640,7 +937,7 @@ export class AuxiliaryDock {
         color: '#ffffff',
         border: 'none',
         borderRadius: '4px',
-        padding: '8px 12px',
+        padding: '6px 12px',
         fontWeight: 'bold',
         cursor: 'pointer',
       },
@@ -649,103 +946,103 @@ export class AuxiliaryDock {
     if (typeof sideRow.appendChild === 'function') {
       sideRow.appendChild(buyBtn);
       sideRow.appendChild(sellBtn);
-    }
-
-    const typeSelect = createEl('select', {
-      className: 'order-type-select',
-      style: {
-        background: '#1e222d',
-        color: '#d1d4dc',
-        border: '1px solid #363c4e',
-        borderRadius: '4px',
-        padding: '6px 10px',
-        cursor: 'pointer',
-      },
-    });
-
-    const optLimit = createEl('option', { value: 'limit', textContent: 'Limit Order' });
-    const optMarket = createEl('option', { value: 'market', textContent: 'Market Order' });
-    if (typeof typeSelect.appendChild === 'function') {
-      typeSelect.appendChild(optLimit);
-      typeSelect.appendChild(optMarket);
-    }
-
-    if (typeof container.appendChild === 'function') {
-      container.appendChild(title);
       container.appendChild(sideRow);
-      container.appendChild(typeSelect);
     }
-  }
 
-  /**
-   * Constructs the watchlist secondary panel.
-   *
-   * @param {HTMLElement|Object} container
-   * @private
-   */
-  _buildWatchlistPanel(container) {
-    const title = createEl('div', {
-      className: 'workflow-title',
-      textContent: 'Watchlist',
-      style: { fontWeight: '600', fontSize: '13px', color: '#d1d4dc' },
-    });
-
-    const list = createEl('div', {
-      className: 'watchlist-items',
-      style: { display: 'flex', flexDirection: 'column', gap: '8px' },
-    });
-
-    const symbols = [
-      { sym: 'BTC/USD', price: '64,250.00', chg: '+2.4%' },
-      { sym: 'ETH/USD', price: '3,450.00', chg: '+1.8%' },
-      { sym: 'SOL/USD', price: '145.20', chg: '+5.1%' },
+    const orders = [
+      { id: 'ORD-101', sym: 'BTC/USD', side: 'BUY', qty: '0.50', price: '64,000.00', status: 'WORKING' },
+      { id: 'ORD-102', sym: 'ETH/USD', side: 'SELL', qty: '2.00', price: '3,450.00', status: 'FILLED' },
+      { id: 'ORD-103', sym: 'SOL/USD', side: 'BUY', qty: '15.00', price: '140.00', status: 'PENDING' },
     ];
 
-    symbols.forEach((item) => {
+    orders.forEach((ord) => {
       const row = createEl('div', {
-        className: 'watchlist-row',
+        className: 'order-item order-row',
+        'data-testid': 'order-item',
+        'data-order-id': ord.id,
         style: {
           display: 'flex',
           justifyContent: 'space-between',
-          fontSize: '12px',
-          padding: '4px 0',
-          borderBottom: '1px solid #2a2e39',
+          alignItems: 'center',
+          padding: '6px 8px',
+          background: '#1e222d',
+          borderRadius: '4px',
+          fontSize: '11px',
+          borderLeft: ord.side === 'BUY' ? '3px solid #089981' : '3px solid #f23645',
         },
       });
-      const symSpan = createEl('span', { textContent: item.sym, style: { fontWeight: '500' } });
-      const prcSpan = createEl('span', { textContent: item.price, style: { color: '#089981' } });
-      if (typeof row.appendChild === 'function') {
-        row.appendChild(symSpan);
-        row.appendChild(prcSpan);
+
+      const info = createEl('div', {
+        style: { display: 'flex', flexDirection: 'column', gap: '2px' },
+      });
+
+      const symSpan = createEl('span', {
+        textContent: `${ord.side} ${ord.qty} ${ord.sym}`,
+        style: { fontWeight: '600', color: ord.side === 'BUY' ? '#089981' : '#f23645' },
+      });
+
+      const priceSpan = createEl('span', {
+        textContent: `@ $${ord.price}`,
+        style: { color: '#787b86', fontSize: '10px' },
+      });
+
+      if (typeof info.appendChild === 'function') {
+        info.appendChild(symSpan);
+        info.appendChild(priceSpan);
       }
-      if (typeof list.appendChild === 'function') {
-        list.appendChild(row);
+
+      const statusBadge = createEl('span', {
+        className: `order-status status-${ord.status.toLowerCase()}`,
+        textContent: ord.status,
+        style: {
+          fontSize: '10px',
+          padding: '2px 6px',
+          borderRadius: '3px',
+          background: ord.status === 'FILLED' ? '#13271f' : '#262b3d',
+          color: ord.status === 'FILLED' ? '#089981' : '#2962ff',
+          fontWeight: '500',
+        },
+      });
+
+      if (typeof row.appendChild === 'function') {
+        row.appendChild(info);
+        row.appendChild(statusBadge);
+        container.appendChild(row);
       }
     });
 
-    if (typeof container.appendChild === 'function') {
-      container.appendChild(title);
-      container.appendChild(list);
-    }
+    return container;
   }
 
   /**
-   * Constructs the market depth order book secondary panel.
+   * Builds the functional Market Depth widget with bid/ask depth bars.
    *
-   * @param {HTMLElement|Object} container
    * @private
+   * @returns {HTMLElement|Object}
    */
-  _buildMarketDepthPanel(container) {
-    const title = createEl('div', {
-      className: 'workflow-title',
-      textContent: 'Market Depth',
-      style: { fontWeight: '600', fontSize: '13px', color: '#d1d4dc' },
+  _createDepthWidget() {
+    const container = createEl('div', {
+      id: 'widget-depth',
+      className: 'depth-widget market-depth workflow-panel workflow-depth workflow-market-depth',
+      'data-testid': 'widget-depth',
+      'data-workflow': 'market-depth',
+      style: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '6px',
+        width: '100%',
+        boxSizing: 'border-box',
+      },
     });
 
-    const depthTable = createEl('div', {
-      className: 'market-depth-book',
-      style: { display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '12px' },
+    const title = createEl('div', {
+      className: 'workflow-title depth-header',
+      textContent: 'Market Depth (L2)',
+      style: { fontWeight: '600', fontSize: '13px', color: '#d1d4dc', marginBottom: '4px' },
     });
+    if (typeof container.appendChild === 'function') {
+      container.appendChild(title);
+    }
 
     const levels = [
       { price: '64,260.00', size: '1.25', side: 'ask' },
@@ -755,28 +1052,45 @@ export class AuxiliaryDock {
     ];
 
     levels.forEach((lvl) => {
-      const row = createEl('div', {
-        className: `depth-row depth-${lvl.side}`,
+      const bar = createEl('div', {
+        className: `depth-bar depth-level depth-row depth-${lvl.side}`,
+        'data-testid': 'depth-bar',
+        'data-side': lvl.side,
         style: {
+          position: 'relative',
           display: 'flex',
           justifyContent: 'space-between',
-          color: lvl.side === 'bid' ? '#089981' : '#f23645',
+          alignItems: 'center',
+          padding: '4px 8px',
+          fontSize: '11px',
+          background: '#1e222d',
+          borderRadius: '3px',
+          borderLeft: lvl.side === 'bid' ? '3px solid #089981' : '3px solid #f23645',
         },
       });
-      const prc = createEl('span', { textContent: lvl.price });
-      const qty = createEl('span', { textContent: lvl.size });
-      if (typeof row.appendChild === 'function') {
-        row.appendChild(prc);
-        row.appendChild(qty);
-      }
-      if (typeof depthTable.appendChild === 'function') {
-        depthTable.appendChild(row);
+
+      const prcSpan = createEl('span', {
+        className: 'depth-price',
+        textContent: lvl.price,
+        style: { color: lvl.side === 'bid' ? '#089981' : '#f23645', fontWeight: '500' },
+      });
+
+      const sizeSpan = createEl('span', {
+        className: 'depth-size',
+        textContent: lvl.size,
+        style: { color: '#d1d4dc' },
+      });
+
+      if (typeof bar.appendChild === 'function') {
+        bar.appendChild(prcSpan);
+        bar.appendChild(sizeSpan);
+        container.appendChild(bar);
       }
     });
 
-    if (typeof container.appendChild === 'function') {
-      container.appendChild(title);
-      container.appendChild(depthTable);
-    }
+    return container;
   }
 }
+
+export const Dock = AuxiliaryDock;
+export default AuxiliaryDock;

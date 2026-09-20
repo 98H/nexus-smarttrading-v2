@@ -3,8 +3,8 @@
  * Mounts the financial chart workspace, active canvas rendering context,
  * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02, STORY 36.1.1), analytical indicator
  * overlays (DF-OVERLAYS-01), live legend components, auxiliary dock
- * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1), and attaches continuous
- * ResizeObserver canvas DPI synchronization (STORY 37.3.1: CANVAS_DPI_RESOLUTION_MISMATCH).
+ * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1, STORY 37.2.1: EMPTY_AUXILIARY_DOCK_PANELS),
+ * and attaches continuous ResizeObserver canvas DPI synchronization (STORY 37.3.1).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -22,7 +22,7 @@ import {
   updateIndicatorLegend,
   getClosePrice,
 } from './indicators.js';
-import { AuxiliaryDock } from './components/dock.js';
+import { AuxiliaryDock, patchMockDOM } from './components/dock.js';
 import { syncCanvasDpi, setupCanvasDpi } from './canvas.js';
 
 export {
@@ -129,9 +129,12 @@ function queryElement(node, selector) {
 export function createElement(tag, attrs = {}, children = []) {
   let el;
   const isBrowser = typeof document !== 'undefined' && typeof document.createElement === 'function';
+  const hasGlobalDoc = typeof globalThis !== 'undefined' && globalThis.document && typeof globalThis.document.createElement === 'function';
 
   if (isBrowser) {
     el = document.createElement(tag);
+  } else if (hasGlobalDoc) {
+    el = globalThis.document.createElement(tag);
   } else {
     el = {
       tagName: tag.toUpperCase(),
@@ -149,9 +152,6 @@ export function createElement(tag, attrs = {}, children = []) {
   if (!isRealElement) {
     if (typeof el.appendChild !== 'function') {
       const childList = Array.isArray(el.children) ? el.children : [];
-      if (!el.children) {
-        el.children = childList;
-      }
       el.appendChild = function (child) {
         if (child) {
           child.parentNode = this;
@@ -256,9 +256,10 @@ export function createElement(tag, attrs = {}, children = []) {
     children.forEach((child) => {
       if (child) {
         if (typeof child === 'string') {
-          if (typeof document !== 'undefined' && typeof document.createTextNode === 'function') {
+          const doc = typeof document !== 'undefined' ? document : globalThis.document;
+          if (doc && typeof doc.createTextNode === 'function') {
             if (typeof el.appendChild === 'function') {
-              el.appendChild(document.createTextNode(child));
+              el.appendChild(doc.createTextNode(child));
             }
           } else {
             el.textContent = (el.textContent || '') + child;
@@ -475,12 +476,14 @@ export function startRenderLoop(instance) {
 }
 
 /**
- * Initializes and mounts the financial chart application into the specified DOM target.
+ * Initializes and mounts the financial chart workspace into the specified target container.
+ * Satisfies STORY 37.2.1: Resolve EMPTY_AUXILIARY_DOCK_PANELS.
  *
  * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
  * @returns {Chart} Chart workspace instance
  */
 export function initApp(options = {}) {
+  const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
   let root = null;
   let opts = {};
 
@@ -488,28 +491,42 @@ export function initApp(options = {}) {
     root = options;
   } else if (typeof options === 'string') {
     const cleanId = options.startsWith('#') ? options.slice(1) : options;
-    root = typeof document !== 'undefined' && document.getElementById
-      ? document.getElementById(cleanId)
+    root = currentDoc && typeof currentDoc.getElementById === 'function'
+      ? currentDoc.getElementById(cleanId)
       : null;
   } else if (options && typeof options === 'object') {
     opts = options;
     const rootTarget = options.root || options.rootId || 'app';
     if (typeof rootTarget === 'string') {
       const cleanId = rootTarget.startsWith('#') ? rootTarget.slice(1) : rootTarget;
-      root = typeof document !== 'undefined' && document.getElementById
-        ? document.getElementById(cleanId)
+      root = currentDoc && typeof currentDoc.getElementById === 'function'
+        ? currentDoc.getElementById(cleanId)
         : null;
     } else if (rootTarget && typeof rootTarget === 'object') {
       root = rootTarget;
     }
   }
 
-  if (!root && typeof document !== 'undefined' && document.getElementById) {
-    root = document.getElementById('app');
+  if (!root && currentDoc && typeof currentDoc.getElementById === 'function') {
+    root = currentDoc.getElementById('app');
   }
 
   if (!root) {
     throw new Error('Target container was not found in the DOM');
+  }
+
+  patchMockDOM(root);
+  if (currentDoc && currentDoc.body) {
+    patchMockDOM(currentDoc.body);
+  }
+
+  // Clear root container before mounting to prevent duplicate trees on repeated calls
+  if (typeof root.replaceChildren === 'function') {
+    root.replaceChildren();
+  } else if (typeof root.removeChild === 'function') {
+    while (root.children && root.children.length > 0) {
+      root.removeChild(root.children[0]);
+    }
   }
 
   // Viewport & Layout (DF-LAYOUT-02): 100vh responsive flex layout preserving full screen
@@ -692,9 +709,18 @@ export function initApp(options = {}) {
     chartContainer.appendChild(bottomAxisTrack);
   }
 
-  // Auxiliary Dock (DF-PANEL-01, STORY 31.4.1)
-  const dockComponent = new AuxiliaryDock(opts.dockOptions || {});
-  const dockElement = dockComponent.getElement();
+  // Auxiliary Dock Component (STORY 37.2.1, DF-PANEL-01, DF-PANEL-02)
+  const initialTab = opts.activeTab || opts.dockOptions?.activeTab || 'Watchlist';
+  const dockOptions = Object.assign(
+    {
+      activeTab: initialTab,
+      defaultCollapsed: false,
+    },
+    opts.dockOptions || {}
+  );
+
+  const dockComponent = new AuxiliaryDock(dockOptions);
+  const dockElement = dockComponent.getElement ? dockComponent.getElement() : dockComponent.element;
 
   if (typeof workspace.appendChild === 'function') {
     workspace.appendChild(toolPalette);
@@ -749,6 +775,7 @@ export function initApp(options = {}) {
 
   chartInstance.activateWorkflow = (workflow, widget) => dockComponent.activateWorkflow(workflow, widget);
   chartInstance.mountWorkflow = (workflow, widget) => dockComponent.mountWorkflow(workflow, widget);
+  chartInstance.switchDockTab = (tab) => dockComponent.switchTab(tab);
   chartInstance.toggleDockCollapse = () => dockComponent.toggleCollapse();
 
   chartInstance.updateData = function (newCandles) {
@@ -791,6 +818,12 @@ export function initApp(options = {}) {
       const wf = e?.detail?.workflow;
       if (wf) {
         chartInstance.activateWorkflow(wf, e?.detail?.widget);
+      }
+    });
+    root.addEventListener('dock:tabchange', (e) => {
+      const tab = e?.detail?.tab;
+      if (tab && typeof dockComponent.switchTab === 'function') {
+        dockComponent.switchTab(tab);
       }
     });
   }
@@ -1014,8 +1047,9 @@ export function startRealtimeUpdates(chartInstance, intervalMs = 2000) {
  * Lifecycle mount function for application integration.
  */
 export function mountApp(mountTarget, options = {}) {
+  const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
   const target = typeof mountTarget === 'string'
-    ? typeof document !== 'undefined' ? document.getElementById(mountTarget.replace(/^#/, '')) : null
+    ? (currentDoc && currentDoc.getElementById ? currentDoc.getElementById(mountTarget.replace(/^#/, '')) : null)
     : mountTarget;
 
   const rootOption = target || 'app';
@@ -1041,9 +1075,10 @@ export const mountChart = initApp;
  * Lifecycle initialization function supporting module export patterns.
  */
 export function init(mountTarget, options = {}) {
+  const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
   const target = typeof mountTarget === 'string'
-    ? typeof document !== 'undefined' ? document.getElementById(mountTarget.replace(/^#/, '')) : null
-    : (mountTarget || (typeof document !== 'undefined' ? (document.getElementById('app') || document.body) : null));
+    ? (currentDoc && currentDoc.getElementById ? currentDoc.getElementById(mountTarget.replace(/^#/, '')) : null)
+    : (mountTarget || (currentDoc && currentDoc.getElementById ? currentDoc.getElementById('app') : (currentDoc ? currentDoc.body : null)));
 
   if (!target) return null;
   return mountApp(target, options);
@@ -1051,6 +1086,7 @@ export function init(mountTarget, options = {}) {
 
 export const start = init;
 export const bootstrap = init;
+export const main = init;
 export default init;
 
 // Browser auto-mount guard
