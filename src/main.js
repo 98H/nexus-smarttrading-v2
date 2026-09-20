@@ -5,7 +5,7 @@
  * overlays (DF-OVERLAYS-01), live legend components, auxiliary dock
  * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1, STORY 37.2.1, STORY 38.3.1: Resolve MISSING_AUXILIARY_DOCK),
  * continuous ResizeObserver canvas DPI synchronization (STORY 37.3.1),
- * continuous render loop (STORY 38.1.1: Resolve STATIC_APPLICATION),
+ * continuous render loop (STORY 38.1.1, STORY 39.1.1: Resolve STATIC_APPLICATION),
  * realistic synthetic market walk generator (STORY 38.4.1: Resolve SYNTHETIC_STRAIGHT_LINE_DATA),
  * strictly idempotent container lifecycle resolution (STORY 37.1.1: Resolve DUPLICATE_COMPONENT_MOUNTING),
  * and interactive controls responding to user events with reactive state and view re-rendering (STORY 38.2.1: Resolve INACTIVE_UI_CONTROLS).
@@ -34,7 +34,13 @@ import {
   applyDarkTheme,
 } from './dock.js';
 import { syncCanvasDpi, setupCanvasDpi } from './canvas.js';
-import { generateCandlestickData } from './data_generator.js';
+import {
+  generateCandlestickData,
+  generateDefaultData,
+  generateNextCandle,
+  generateTick,
+  createCandleStream,
+} from './data_generator.js';
 
 export {
   AxesRenderer,
@@ -56,6 +62,10 @@ export {
   syncCanvasDpi,
   setupCanvasDpi,
   generateCandlestickData,
+  generateDefaultData,
+  generateNextCandle,
+  generateTick,
+  createCandleStream,
 };
 
 /**
@@ -100,12 +110,8 @@ function ensureDOMNodeMethods(proto, sample = null) {
       if (!this.attributes) this.attributes = new Map();
       this.attributes.set(name, strVal);
       if (name === 'id') this.id = strVal;
-      if (name === 'class') {
+      if (name === 'class' || name === 'className') {
         this.className = strVal;
-        if (this.classList && typeof this.classList.add === 'function') {
-          const tokens = strVal.split(/\s+/).filter(Boolean);
-          tokens.forEach((t) => this.classList.add(t));
-        }
       }
     };
   }
@@ -113,7 +119,7 @@ function ensureDOMNodeMethods(proto, sample = null) {
   if (!proto.getAttribute) {
     proto.getAttribute = function (name) {
       if (name === 'id') return this.id || null;
-      if (name === 'class') return this.className || null;
+      if (name === 'class' || name === 'className') return this.className || null;
       return (this.attributes && this.attributes.get(name)) ?? null;
     };
   }
@@ -121,7 +127,7 @@ function ensureDOMNodeMethods(proto, sample = null) {
   if (!proto.hasAttribute) {
     proto.hasAttribute = function (name) {
       if (name === 'id') return Boolean(this.id);
-      if (name === 'class') return Boolean(this.className);
+      if (name === 'class' || name === 'className') return Boolean(this.className);
       return Boolean(this.attributes && this.attributes.has(name));
     };
   }
@@ -130,7 +136,7 @@ function ensureDOMNodeMethods(proto, sample = null) {
     proto.removeAttribute = function (name) {
       if (this.attributes) this.attributes.delete(name);
       if (name === 'id') this.id = '';
-      if (name === 'class') this.className = '';
+      if (name === 'class' || name === 'className') this.className = '';
     };
   }
 
@@ -158,6 +164,27 @@ function ensureDOMNodeMethods(proto, sample = null) {
       for (const c of newChildren) {
         if (c) this.appendChild(c);
       }
+    };
+  }
+
+  if (!proto.querySelector) {
+    proto.querySelector = function (selector) {
+      return queryElement(this, selector);
+    };
+  }
+
+  if (!proto.querySelectorAll) {
+    proto.querySelectorAll = function (selector) {
+      const results = [];
+      const traverse = (n) => {
+        const kids = Array.isArray(n.children) ? n.children : (n.children ? Array.from(n.children) : []);
+        for (const c of kids) {
+          if (matchSelector(c, selector)) results.push(c);
+          traverse(c);
+        }
+      };
+      traverse(this);
+      return results;
     };
   }
 
@@ -199,7 +226,6 @@ function ensureDOMNodeMethods(proto, sample = null) {
     });
   }
 
-  // Provide classList fallback with both getter and setter so instance assignments never throw
   const classListDesc = Object.getOwnPropertyDescriptor(proto, 'classList');
   if (!classListDesc && (!sample || !('classList' in sample))) {
     Object.defineProperty(proto, 'classList', {
@@ -209,17 +235,25 @@ function ensureDOMNodeMethods(proto, sample = null) {
           this._classList = {
             add(...tokens) {
               const current = (self.className || '').split(/\s+/).filter(Boolean);
+              let changed = false;
               for (const t of tokens) {
-                if (t && !current.includes(t)) current.push(t);
+                if (t && !current.includes(t)) {
+                  current.push(t);
+                  changed = true;
+                }
               }
-              self.className = current.join(' ');
-              if (self.setAttribute) self.setAttribute('class', self.className);
+              if (changed) {
+                self.className = current.join(' ');
+                if (self.attributes) self.attributes.set('class', self.className);
+              }
             },
             remove(...tokens) {
               const current = (self.className || '').split(/\s+/).filter(Boolean);
               const filtered = current.filter((c) => !tokens.includes(c));
-              self.className = filtered.join(' ');
-              if (self.setAttribute) self.setAttribute('class', self.className);
+              if (filtered.length !== current.length) {
+                self.className = filtered.join(' ');
+                if (self.attributes) self.attributes.set('class', self.className);
+              }
             },
             delete(...tokens) {
               this.remove(...tokens);
@@ -251,14 +285,6 @@ function ensureDOMNodeMethods(proto, sample = null) {
         }
         return this._classList;
       },
-      set(val) {
-        this._classList = val;
-      },
-      configurable: true,
-    });
-  } else if (classListDesc && !classListDesc.set && classListDesc.configurable) {
-    Object.defineProperty(proto, 'classList', {
-      get: classListDesc.get,
       set(val) {
         this._classList = val;
       },
@@ -330,7 +356,6 @@ export function patchDOMEnvironment() {
   patchMockDOM(sample || (doc.body || null));
 }
 
-// Ensure prototype methods are safely initialized on import
 patchDOMEnvironment();
 
 /**
@@ -356,18 +381,10 @@ let windowResizeHandler = null;
 export let activeChart = null;
 export let chart = null;
 
-/**
- * Returns a snapshot of current application state (STORY 38.2.1).
- *
- * @returns {Object} State snapshot
- */
 export function getState() {
   return { ...appState };
 }
 
-/**
- * Simple CSS selector matching utility.
- */
 function matchSelector(node, selector) {
   if (!node || typeof selector !== 'string') return false;
   const sel = selector.trim();
@@ -401,9 +418,6 @@ function matchSelector(node, selector) {
   return tag === sel.toLowerCase();
 }
 
-/**
- * Traverses element tree to locate first matching descendant.
- */
 function queryElement(node, selector) {
   if (!node) return null;
   const children = Array.isArray(node.children) ? node.children : (node.children ? Array.from(node.children) : []);
@@ -415,15 +429,6 @@ function queryElement(node, selector) {
   return null;
 }
 
-/**
- * DOM Element creation utility helper that safely supports mock and native DOM environments
- * without mutating native read-only DOM getters.
- *
- * @param {string} tag
- * @param {Object} [attrs={}]
- * @param {Array<HTMLElement|Object>|string} [children=[]]
- * @returns {HTMLElement|Object}
- */
 export function createElement(tag, attrs = {}, children = []) {
   let el;
   const isBrowser = typeof document !== 'undefined' && typeof document.createElement === 'function';
@@ -527,10 +532,6 @@ export function createElement(tag, attrs = {}, children = []) {
       if (key === 'className' || key === 'class') {
         el.className = attrs[key];
         if (typeof el.setAttribute === 'function') el.setAttribute('class', attrs[key]);
-        if (el.classList && typeof el.classList.add === 'function') {
-          const tokens = String(attrs[key]).split(/\s+/).filter(Boolean);
-          tokens.forEach((t) => el.classList.add(t));
-        }
       } else if (key === 'id') {
         el.id = attrs[key];
         if (typeof el.setAttribute === 'function') el.setAttribute('id', attrs[key]);
@@ -592,23 +593,6 @@ export function createElement(tag, attrs = {}, children = []) {
   return el;
 }
 
-/**
- * Generates oscillating mock price candles containing balanced bullish/bearish series (DF-CANDLES-01).
- *
- * @param {number} [count=75]
- * @param {number} [startPrice=100]
- * @returns {Array<Object>}
- */
-export function generateDefaultData(count = 75, startPrice = 100) {
-  return generateCandlestickData({ count, initialPrice: startPrice });
-}
-
-/**
- * Drawing Tool Palette Component with toolbar semantic markers.
- *
- * @param {Object} [options={}]
- * @returns {HTMLElement|Object}
- */
 export function ToolPalette(options = {}) {
   const container = createElement('div', {
     className: 'tool-palette toolbar',
@@ -677,13 +661,6 @@ export function ToolPalette(options = {}) {
   return container;
 }
 
-/**
- * Initializes and styles header controls (DF-THEME-01).
- *
- * @param {HTMLElement|Object} header
- * @param {Object} [options={}]
- * @returns {HTMLElement|Object}
- */
 export function initControls(header, options = {}) {
   const controls = createElement('div', {
     className: 'chart-controls controls',
@@ -741,7 +718,8 @@ export function initControls(header, options = {}) {
 }
 
 /**
- * Starts an active render loop via requestAnimationFrame.
+ * Starts an active render loop via requestAnimationFrame or high-frequency timer fallback.
+ * Satisfies STORY 38.1.1, STORY 39.1.1 (Resolve STATIC_APPLICATION).
  *
  * @param {Object} instance Application/chart instance
  * @returns {Function} Stop/cleanup function
@@ -750,24 +728,24 @@ export function startRenderLoop(instance) {
   let isRunning = true;
 
   const getRaf = () => {
-    if (typeof requestAnimationFrame === 'function') return requestAnimationFrame;
-    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-      return window.requestAnimationFrame.bind(window);
-    }
     if (typeof globalThis !== 'undefined' && typeof globalThis.requestAnimationFrame === 'function') {
       return globalThis.requestAnimationFrame.bind(globalThis);
     }
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      return window.requestAnimationFrame.bind(window);
+    }
+    if (typeof requestAnimationFrame === 'function') return requestAnimationFrame;
     return null;
   };
 
   const getCaf = () => {
-    if (typeof cancelAnimationFrame === 'function') return cancelAnimationFrame;
-    if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
-      return window.cancelAnimationFrame.bind(window);
-    }
     if (typeof globalThis !== 'undefined' && typeof globalThis.cancelAnimationFrame === 'function') {
       return globalThis.cancelAnimationFrame.bind(globalThis);
     }
+    if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+      return window.cancelAnimationFrame.bind(window);
+    }
+    if (typeof cancelAnimationFrame === 'function') return cancelAnimationFrame;
     return null;
   };
 
@@ -775,6 +753,23 @@ export function startRenderLoop(instance) {
   const caf = getCaf();
 
   if (!raf) {
+    if (typeof setInterval === 'function') {
+      const timerId = setInterval(() => {
+        if (!isRunning) return;
+        const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+        if (typeof instance.renderFrame === 'function') {
+          instance.renderFrame(now);
+        } else if (typeof instance.render === 'function') {
+          instance.render(now);
+        }
+      }, 16);
+      return () => {
+        isRunning = false;
+        if (typeof clearInterval === 'function') {
+          clearInterval(timerId);
+        }
+      };
+    }
     return () => {
       isRunning = false;
     };
@@ -801,12 +796,6 @@ export function startRenderLoop(instance) {
   };
 }
 
-/**
- * Resolves target container element from arguments or DOM environment.
- *
- * @param {Object|HTMLElement|string} [options={}]
- * @returns {{ root: HTMLElement|Object, opts: Object }}
- */
 function resolveRootContainer(options = {}) {
   const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
   let root = null;
@@ -858,7 +847,6 @@ function resolveRootContainer(options = {}) {
 
 /**
  * Initializes and mounts the financial chart workspace into the specified target container.
- * Satisfies STORY 38.1.1, STORY 38.2.1, STORY 38.3.1, STORY 38.4.1, STORY 37.1.1, and DF-CONTROL-01.
  *
  * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
  * @returns {Chart} Chart workspace instance
@@ -873,20 +861,26 @@ export function initApp(options = {}) {
     patchMockDOM(currentDoc.body);
   }
 
-  // Teardown prior instance registered on this root container
   const priorInstance = root.__nexusInstance || (typeof root === 'object' && mountedInstances.get(root));
   if (priorInstance && typeof priorInstance.unmount === 'function') {
     priorInstance.unmount();
   }
 
-  // Identify any pre-existing active canvas inside the target container
+  const findExistingCanvas = (node) => {
+    if (!node) return null;
+    if ((node.tagName || '').toUpperCase() === 'CANVAS') return node;
+    const kids = Array.isArray(node.children) ? node.children : [];
+    for (const k of kids) {
+      const found = findExistingCanvas(k);
+      if (found) return found;
+    }
+    return null;
+  };
+
   const existingCanvas =
     (typeof root.querySelector === 'function' ? root.querySelector('canvas') : null) ||
-    (Array.isArray(root.children)
-      ? Array.from(root.children).find((c) => c && (c.tagName || '').toUpperCase() === 'CANVAS')
-      : null);
+    findExistingCanvas(root);
 
-  // Idempotently purge pre-existing DOM elements before mounting, preserving active canvas
   if (Array.isArray(root.children)) {
     for (let i = root.children.length - 1; i >= 0; i--) {
       const child = root.children[i];
@@ -966,7 +960,7 @@ export function initApp(options = {}) {
     },
   });
 
-  // 2. Interactive Navigation Controls (STORY 38.2.1: Resolve INACTIVE_UI_CONTROLS, DF-CONTROL-01)
+  // 2. Interactive Navigation Controls
   const navControls = createElement('nav', {
     className: 'controls ui-controls view-controls',
     'data-testid': 'controls',
@@ -1044,7 +1038,6 @@ export function initApp(options = {}) {
   });
 
   if (typeof header.appendChild === 'function') {
-    // Mount interactive control navigation as primary child in header for instant discovery
     if (header.firstChild) {
       if (typeof header.insertBefore === 'function') {
         header.insertBefore(navControls, header.firstChild);
@@ -1079,7 +1072,7 @@ export function initApp(options = {}) {
     },
   });
 
-  // 5. Primary Chart Container (semantic view container)
+  // 5. Primary Chart Container
   const chartContainer = createElement('div', {
     className: 'chart-container primary-chart-container view-container canvas-view',
     id: 'chart-container',
@@ -1099,7 +1092,7 @@ export function initApp(options = {}) {
     },
   });
 
-  // 6. Active Canvas Component (reused or created)
+  // 6. Active Canvas Component
   const canvas = existingCanvas || createElement('canvas', {
     className: 'chart-canvas',
     style: {
@@ -1153,7 +1146,6 @@ export function initApp(options = {}) {
     chartContainer.appendChild(bottomAxisTrack);
   }
 
-  // Ensure canvas remains registered in mock container children collections
   if (typeof Element === 'undefined' || !(root instanceof Element)) {
     if (Array.isArray(root.children) && !root.children.includes(canvas)) {
       root.children.push(canvas);
@@ -1228,7 +1220,6 @@ export function initApp(options = {}) {
   chartInstance.axesRenderer = axesRenderer;
   chartInstance.getAxesRenderer = () => axesRenderer;
 
-  // Reactive control state mutation and DOM re-render handler (DF-CONTROL-01)
   function activateControl(target) {
     appState.activeView = target;
     appState.activeTab = target;
@@ -1282,34 +1273,14 @@ export function initApp(options = {}) {
 
   chartInstance.updateData = function (newCandles) {
     if (!newCandles) return Promise.resolve(this);
-    const batch = Array.isArray(newCandles) ? [...newCandles] : [newCandles];
-    if (batch.length === 0) return Promise.resolve(this);
-
-    let updated;
-    if (Array.isArray(this.data) && this.data.length > 0) {
-      const map = new Map();
-      this.data.forEach((c) => {
-        if (!c) return;
-        const k = c.time ?? c.timestamp ?? c.t ?? c.date;
-        if (k !== undefined) map.set(k, c);
-      });
-      batch.forEach((c) => {
-        if (!c) return;
-        const k = c.time ?? c.timestamp ?? c.t ?? c.date;
-        if (k !== undefined) map.set(k, c);
-      });
-      updated = Array.from(map.values()).sort((a, b) => {
-        const tA = a.time ?? a.timestamp ?? a.t ?? a.date ?? 0;
-        const tB = b.time ?? b.timestamp ?? b.t ?? b.date ?? 0;
-        return tA - tB;
-      });
-    } else {
-      updated = batch;
-    }
-
-    this.data = updated;
+    const updated = Chart.prototype.updateData.call(this, newCandles);
     appState.data = updated;
-    this.setData(updated);
+    return Promise.resolve(this);
+  };
+
+  chartInstance.updateTick = function (tick) {
+    const updated = Chart.prototype.updateTick.call(this, tick);
+    appState.data = updated;
     return Promise.resolve(this);
   };
 
@@ -1430,12 +1401,13 @@ export function initApp(options = {}) {
   chartInstance.render();
   chartInstance.stopRenderLoop = startRenderLoop(chartInstance);
 
+  if (opts.realtime !== false && !chartInstance.realtimeTimer) {
+    chartInstance.realtimeTimer = startRealtimeUpdates(chartInstance, opts.interval || 1000);
+  }
+
   return chartInstance;
 }
 
-/**
- * Teardown and cleanup function for test suites and application unmounting.
- */
 export function teardown() {
   if (activeResizeObserver) {
     activeResizeObserver.disconnect();
@@ -1465,11 +1437,6 @@ export function teardown() {
   chart = null;
 }
 
-/**
- * Unmount helper function supporting test suites and lifecycle management.
- *
- * @param {HTMLElement|Object} [target]
- */
 export function unmount(target) {
   if (target) {
     const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
@@ -1489,13 +1456,6 @@ export function unmount(target) {
   }
 }
 
-/**
- * Updates real-time candle data and redraws coordinate axes and overlays.
- *
- * @param {Object|Array<Object>} targetOrData
- * @param {Array<Object>} [maybeCandles]
- * @returns {Promise<Object>}
- */
 export function updateCandleData(targetOrData, maybeCandles) {
   let inst = activeAppInstance || activeChart || chart;
   let data = targetOrData;
@@ -1512,12 +1472,6 @@ export function updateCandleData(targetOrData, maybeCandles) {
   return Promise.resolve();
 }
 
-/**
- * Updates chart price series data and recalculates visual overlays and legend.
- *
- * @param {Object} chartInstance Instantiated chart returned by initApp
- * @param {Array<Object>} updatedData Updated price candle series
- */
 export function updatePriceSeries(chartInstance, updatedData) {
   if (!chartInstance) return;
   const newData = Array.isArray(updatedData) ? [...updatedData] : [];
@@ -1531,29 +1485,24 @@ export function updatePriceSeries(chartInstance, updatedData) {
 }
 
 /**
- * Starts a real-time price tick update loop for browser execution.
+ * Starts a real-time price tick update loop for active chart instances.
  *
  * @param {Object} chartInstance
- * @param {number} [intervalMs=2000]
+ * @param {number} [intervalMs=1000]
  * @returns {number|null} Timer id
  */
-export function startRealtimeUpdates(chartInstance, intervalMs = 2000) {
+export function startRealtimeUpdates(chartInstance, intervalMs = 1000) {
   if (!chartInstance || typeof setInterval !== 'function') return null;
   const timer = setInterval(() => {
     const data = chartInstance.data;
     if (!data || data.length === 0) return;
     const lastBar = data[data.length - 1];
-    const shift = (Math.random() - 0.48) * 2;
-    const newClose = Math.max(1, lastBar.close + shift);
-    const newBar = {
-      timestamp: (lastBar.timestamp || Date.now()) + 60000,
-      open: lastBar.close,
-      high: Math.max(lastBar.close, newClose) + Math.random(),
-      low: Math.min(lastBar.close, newClose) - Math.random(),
-      close: newClose,
-      volume: 1000 + Math.floor(Math.random() * 500),
-    };
-    updatePriceSeries(chartInstance, [...data.slice(-99), newBar]);
+    const newBar = generateNextCandle(lastBar);
+    if (typeof chartInstance.updateData === 'function') {
+      chartInstance.updateData(newBar);
+    } else {
+      updatePriceSeries(chartInstance, [...data.slice(-99), newBar]);
+    }
   }, intervalMs);
   if (timer && typeof timer.unref === 'function') {
     timer.unref();
@@ -1607,19 +1556,12 @@ export function mountApp(mountTarget, options = {}) {
     ...options,
   });
 
-  if (typeof window !== 'undefined' && options.realtime === true) {
-    instance.realtimeTimer = startRealtimeUpdates(instance, options.interval || 1000);
-  }
-
   return instance;
 }
 
 export const mount = mountApp;
 export const mountChart = initApp;
 
-/**
- * Lifecycle initialization function supporting module export patterns.
- */
 export function init(mountTarget, options = {}) {
   patchDOMEnvironment();
   const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
