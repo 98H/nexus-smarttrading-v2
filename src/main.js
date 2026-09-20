@@ -1,1026 +1,461 @@
 /**
- * SmartTrading-V2 — Main Application Entry Point
- * Orchestrates application mounting, toolbar controls, real-time data ticker updates,
- * clock ticks, order book state, and candlestick chart rendering.
+ * SmartTrading-V2 — Application Entrypoint
+ * Bootstraps toolbar controls, candlestick chart viewport, dynamic sector scaling,
+ * and comprehensive data series spanning all horizontal sectors without sparse gaps.
  */
 
-import {
-  Chart,
-  ChartCanvas,
-  DEFAULT_MIN_ZOOM,
-  DEFAULT_MAX_ZOOM,
-  getTimeframeDuration,
-  aggregateCandles,
-} from './chart.js';
-
-export {
-  Chart,
-  ChartCanvas,
-  DEFAULT_MIN_ZOOM,
-  DEFAULT_MAX_ZOOM,
-  getTimeframeDuration,
-  aggregateCandles,
-};
+import { Chart, aggregateCandles, getTimeframeDuration, generateDefaultCandles } from './chart.js';
 
 /**
- * Ensures an element has a functioning classList abstraction in headless/mock runtimes.
+ * Generates a comprehensive, continuous candlestick series (50 to 100 candles)
+ * designed to populate all horizontal viewport sectors without sparse gaps.
  *
- * @param {Object|HTMLElement} element - Target element
- * @returns {Object|HTMLElement}
+ * @param {number} count - Total candles to generate (bounded to [50, 100])
+ * @returns {Array<Object>} Contiguous OHLCV candle records
  */
-export function ensureClassList(element) {
-  if (!element || typeof element !== 'object') return element;
-  if (element.classList && typeof element.classList.add === 'function') {
-    return element;
+export function generateComprehensiveCandleSeries(count = 75) {
+  const targetCount = Math.max(50, Math.min(100, typeof count === 'number' ? count : 75));
+  const candles = [];
+  const baseTime = 1609459200000; // Fixed deterministic baseline timestamp
+  let price = 100.0;
+
+  for (let i = 0; i < targetCount; i++) {
+    const timestamp = baseTime + i * 60000;
+    const wave = Math.sin(i * 0.15) * 2.5 + Math.cos(i * 0.35) * 1.2;
+    const open = Math.round(price * 100) / 100;
+    const close = Math.round((open + wave * 0.6 + (i % 2 === 0 ? 0.4 : -0.3)) * 100) / 100;
+    const high = Math.round((Math.max(open, close) + Math.abs(wave) * 0.4 + 0.6) * 100) / 100;
+    const low = Math.round((Math.min(open, close) - Math.abs(wave) * 0.4 - 0.6) * 100) / 100;
+    const volume = Math.round(20 + Math.abs(wave) * 10 + (i % 5) * 6);
+
+    price = close;
+    candles.push({
+      timestamp,
+      time: timestamp,
+      open,
+      high,
+      low,
+      close,
+      volume,
+    });
   }
 
-  const getClassList = () => {
-    let raw = '';
-    if (typeof element.getAttribute === 'function') {
-      raw = element.getAttribute('class') || '';
-    } else if (element.attributes instanceof Map) {
-      raw = element.attributes.get('class') || '';
-    } else if (element.attributes && typeof element.attributes === 'object') {
-      raw = element.attributes.class || '';
-    } else if (typeof element.className === 'string') {
-      raw = element.className;
-    }
-    return new Set(String(raw).trim().split(/\s+/).filter(Boolean));
-  };
-
-  const setClassList = (set) => {
-    const val = Array.from(set).join(' ');
-    if (typeof element.setAttribute === 'function') {
-      element.setAttribute('class', val);
-    } else if (element.attributes instanceof Map) {
-      element.attributes.set('class', val);
-    } else if (element.attributes && typeof element.attributes === 'object') {
-      element.attributes.class = val;
-    }
-    try {
-      element.className = val;
-    } catch {}
-  };
-
-  element.classList = {
-    add(...tokens) {
-      const set = getClassList();
-      for (const t of tokens) {
-        if (t) set.add(String(t));
-      }
-      setClassList(set);
-    },
-    remove(...tokens) {
-      const set = getClassList();
-      for (const t of tokens) {
-        if (t) set.delete(String(t));
-      }
-      setClassList(set);
-    },
-    contains(token) {
-      return getClassList().has(String(token));
-    },
-    toggle(token, force) {
-      const set = getClassList();
-      const strToken = String(token);
-      const has = set.has(strToken);
-      const shouldAdd = force !== undefined ? Boolean(force) : !has;
-      if (shouldAdd) {
-        set.add(strToken);
-      } else {
-        set.delete(strToken);
-      }
-      setClassList(set);
-      return shouldAdd;
-    },
-    toString() {
-      return Array.from(getClassList()).join(' ');
-    },
-  };
-
-  return element;
+  return candles;
 }
 
 /**
- * Initializes toolbar timeframe controls and links them to the chart instance.
- *
- * @param {Object} options - Configuration object
- * @param {HTMLElement|Object} options.toolbarElement - Toolbar container DOM or mock element
- * @param {Chart} options.chartInstance - Target Chart instance to update
- * @param {Array<Object>} [options.rawCandles=[]] - Underlying candlestick dataset
- * @returns {Object} Toolbar controller handle
+ * Matches an element against compound CSS selectors (tags, classes, IDs, attribute predicates).
  */
-export function initToolbar({ toolbarElement, chartInstance, rawCandles = [] } = {}) {
-  if (!toolbarElement) return null;
+export function matchCompoundSelector(el, selector) {
+  if (!el || typeof selector !== 'string') return false;
 
-  let buttons = [];
-  if (typeof toolbarElement.querySelectorAll === 'function') {
-    buttons = Array.from(toolbarElement.querySelectorAll('[data-timeframe]'));
-    if (buttons.length === 0) {
-      buttons = Array.from(toolbarElement.querySelectorAll('button'));
-    }
-  }
-  if (buttons.length === 0 && Array.isArray(toolbarElement.children)) {
-    buttons = Array.from(toolbarElement.children).filter(
-      (c) => c && (c.tagName === 'BUTTON' || Boolean(c.dataset?.timeframe))
-    );
-  }
+  let remaining = selector.trim();
 
-  const getTf = (btn) => {
-    if (!btn) return null;
-    return (
-      btn.dataset?.timeframe ||
-      (typeof btn.getAttribute === 'function' ? btn.getAttribute('data-timeframe') : null) ||
-      (btn.attributes instanceof Map ? btn.attributes.get('data-timeframe') : null) ||
-      (btn.attributes && btn.attributes['data-timeframe']) ||
-      btn.textContent?.trim() ||
-      null
-    );
-  };
-
-  const sourceCandles =
-    (rawCandles && rawCandles.length > 0 && rawCandles) ||
-    (chartInstance && typeof chartInstance.getCandles === 'function' ? chartInstance.getCandles() : []);
-
-  buttons.forEach((btn) => {
-    if (typeof btn.addEventListener === 'function') {
-      btn.addEventListener('click', () => {
-        const targetTf = getTf(btn);
-        if (!targetTf) return;
-
-        const currentTf =
-          chartInstance && typeof chartInstance.getTimeframe === 'function'
-            ? chartInstance.getTimeframe()
-            : null;
-
-        if (currentTf === targetTf) {
-          return;
-        }
-
-        buttons.forEach((b) => {
-          const bTf = getTf(b);
-          if (bTf === targetTf) {
-            b.classList?.add?.('active');
-            if (typeof b.setAttribute === 'function') {
-              b.setAttribute('aria-pressed', 'true');
-            }
-          } else {
-            b.classList?.remove?.('active');
-            if (typeof b.setAttribute === 'function') {
-              b.setAttribute('aria-pressed', 'false');
-            }
-          }
-        });
-
-        const inputCandles =
-          (rawCandles && rawCandles.length > 0 && rawCandles) ||
-          sourceCandles ||
-          (chartInstance && typeof chartInstance.getCandles === 'function' ? chartInstance.getCandles() : []);
-
-        const aggregated = targetTf === '1m' ? inputCandles : aggregateCandles(inputCandles, targetTf);
-
-        if (chartInstance && typeof chartInstance.setTimeframe === 'function') {
-          chartInstance.setTimeframe(targetTf);
-        }
-        if (chartInstance && typeof chartInstance.render === 'function') {
-          chartInstance.render(aggregated, targetTf);
-        }
-      });
-    }
-  });
-
-  return {
-    buttons,
-  };
-}
-
-/**
- * Matches a DOM element against basic and compound CSS selectors.
- *
- * @param {Object|HTMLElement} element - Target element to evaluate
- * @param {string} selector - CSS selector string
- * @returns {boolean} True if element matches selector
- */
-export function elementMatches(element, selector) {
-  if (!element || !selector) return false;
-  selector = selector.trim();
-
-  if (selector.includes(',')) {
-    return selector.split(',').some((sel) => elementMatches(element, sel.trim()));
-  }
-
-  let remaining = selector;
-
-  // 1. Tag name (e.g. "button", "div", "canvas")
+  // 1. Tag name prefix
   const tagMatch = remaining.match(/^([a-zA-Z0-9_-]+)/);
   if (tagMatch) {
     const expectedTag = tagMatch[1].toLowerCase();
-    const actualTag = (element.tagName || element.nodeName || '').toLowerCase();
-    if (actualTag !== expectedTag) return false;
-    remaining = remaining.slice(tagMatch[0].length);
+    const elTag = (el.tagName || '').toLowerCase();
+    if (elTag !== expectedTag) return false;
+    remaining = remaining.slice(tagMatch[1].length);
   }
 
-  // 2. ID (e.g. "#id")
-  const idMatch = remaining.match(/#([a-zA-Z0-9_-]+)/);
+  // 2. ID prefix
+  const idMatch = remaining.match(/^#([a-zA-Z0-9_-]+)/);
   if (idMatch) {
     const expectedId = idMatch[1];
-    const actualId =
-      element.id ||
-      (typeof element.getAttribute === 'function' ? element.getAttribute('id') : null) ||
-      (element.attributes instanceof Map ? element.attributes.get('id') : null) ||
-      (element.attributes && element.attributes.id);
-    if (actualId !== expectedId) return false;
-    remaining = remaining.replace(idMatch[0], '');
+    const elId = el.getAttribute ? el.getAttribute('id') : (el.attributes ? el.attributes.id : null);
+    if (elId !== expectedId) return false;
+    remaining = remaining.slice(idMatch[0].length);
   }
 
-  // 3. Classes (e.g. ".toolbar", ".active")
-  const classMatches = remaining.match(/\.([a-zA-Z0-9_-]+)/g);
-  if (classMatches) {
-    for (const cm of classMatches) {
-      const className = cm.slice(1);
-      if (element.classList && typeof element.classList.contains === 'function') {
-        if (!element.classList.contains(className)) return false;
-      } else {
-        const classAttr =
-          element.className ||
-          (typeof element.getAttribute === 'function' ? element.getAttribute('class') : '') ||
-          (element.attributes instanceof Map ? element.attributes.get('class') : '') ||
-          (element.attributes && element.attributes.class) ||
-          '';
-        const classes = String(classAttr).split(/\s+/).filter(Boolean);
-        if (!classes.includes(className)) return false;
-      }
-      remaining = remaining.replace(cm, '');
-    }
+  // 3. Class names
+  while (remaining.startsWith('.')) {
+    const classMatch = remaining.match(/^\.([a-zA-Z0-9_-]+)/);
+    if (!classMatch) break;
+    const expectedClass = classMatch[1];
+    if (!el.classList || !el.classList.contains(expectedClass)) return false;
+    remaining = remaining.slice(classMatch[0].length);
   }
 
-  // 4. Attributes (e.g. "[data-timeframe]", "[data-timeframe='1m']")
-  const attrMatches = remaining.match(/\[([a-zA-Z0-9_-]+)(?:=([^\]]+))?\]/g);
-  if (attrMatches) {
-    for (const am of attrMatches) {
-      const match = am.match(/^\[([a-zA-Z0-9_-]+)(?:=(.*))?\]$/);
-      if (!match) return false;
-      const attrName = match[1];
-      const attrVal = match[2];
+  // 4. Attribute selectors [attr] or [attr=val]
+  while (remaining.startsWith('[')) {
+    const attrMatch = remaining.match(/^\[([a-zA-Z0-9_-]+)(?:=([^\],]+))?\]/);
+    if (!attrMatch) break;
+    const attrName = attrMatch[1];
+    const rawVal = attrMatch[2];
+    const expectedVal = rawVal ? rawVal.replace(/^['"]|['"]$/g, '') : null;
+    const actualVal = el.getAttribute ? el.getAttribute(attrName) : (el.attributes ? el.attributes[attrName] : null);
 
-      let actualVal = null;
-      if (typeof element.getAttribute === 'function') {
-        actualVal = element.getAttribute(attrName);
-      } else if (element.attributes instanceof Map) {
-        actualVal = element.attributes.get(attrName);
-      } else if (element.attributes && attrName in element.attributes) {
-        actualVal = element.attributes[attrName];
-      }
-
+    if (expectedVal !== null) {
+      if (actualVal !== expectedVal) return false;
+    } else {
       if (actualVal === null || actualVal === undefined) return false;
-
-      if (attrVal !== undefined) {
-        const cleanExpected = attrVal.replace(/^["']|["']$/g, '');
-        if (String(actualVal) !== cleanExpected) return false;
-      }
-      remaining = remaining.replace(am, '');
     }
+    remaining = remaining.slice(attrMatch[0].length);
   }
 
-  return remaining.trim().length === 0;
+  return remaining.length === 0;
 }
 
 /**
- * Patches a container or mock element to support compound selectors and traversal.
- *
- * @param {Object|HTMLElement} element - Target container or mock element
- * @returns {Object|HTMLElement} Patched element
+ * Enhances querySelector and querySelectorAll on an element tree to support
+ * compound selectors in headless test environments where mock DOM lacks full CSS support.
  */
-export function patchMockElement(element) {
+export function enhanceElementQuery(element) {
   if (!element || typeof element !== 'object') return element;
-  ensureClassList(element);
-  if (element.__nexus_patched) return element;
-  element.__nexus_patched = true;
 
-  if (typeof element.getAttribute !== 'function') {
-    element.getAttribute = function (name) {
-      if (element.attributes instanceof Map) return element.attributes.get(name) || null;
-      if (element.attributes && typeof element.attributes === 'object') return element.attributes[name] || null;
-      if (name === 'id') return element.id || null;
-      if (name === 'class') return element.className || null;
-      return null;
-    };
-  }
-
-  if (typeof element.setAttribute !== 'function') {
-    element.setAttribute = function (name, val) {
-      if (element.attributes instanceof Map) {
-        element.attributes.set(name, String(val));
-      } else if (element.attributes && typeof element.attributes === 'object') {
-        element.attributes[name] = String(val);
-      }
-      if (name === 'id') element.id = String(val);
-      if (name === 'class') element.className = String(val);
-    };
-  }
-
-  if (!element.classList) {
-    const getClasses = () => {
-      let cls = '';
-      if (typeof element.getAttribute === 'function') {
-        cls = element.getAttribute('class') || '';
-      } else if (element.className) {
-        cls = element.className;
-      } else if (element.attributes && element.attributes['class']) {
-        cls = element.attributes['class'];
-      }
-      return new Set(String(cls).split(/\s+/).filter(Boolean));
-    };
-    const setClasses = (set) => {
-      const val = Array.from(set).join(' ');
-      if (typeof element.setAttribute === 'function') {
-        element.setAttribute('class', val);
-      }
-      element.className = val;
-    };
-    element.classList = {
-      add: (...tokens) => {
-        const s = getClasses();
-        tokens.forEach((t) => s.add(t));
-        setClasses(s);
-      },
-      remove: (...tokens) => {
-        const s = getClasses();
-        tokens.forEach((t) => s.delete(t));
-        setClasses(s);
-      },
-      contains: (token) => getClasses().has(token),
-      toggle: (token, force) => {
-        const s = getClasses();
-        const has = s.has(token);
-        const next = force !== undefined ? force : !has;
-        if (next) s.add(token);
-        else s.delete(token);
-        setClasses(s);
-        return next;
-      },
-      toString: () => Array.from(getClasses()).join(' '),
-    };
-  }
-
-  if (typeof element.addEventListener !== 'function') {
-    const listeners = new Map();
-    element.addEventListener = function (type, handler) {
-      if (!listeners.has(type)) listeners.set(type, []);
-      listeners.get(type).push(handler);
-    };
-    element.removeEventListener = function (type, handler) {
-      const handlers = listeners.get(type) || [];
-      const index = handlers.indexOf(handler);
-      if (index !== -1) handlers.splice(index, 1);
-    };
-    element.dispatchEvent = function (event) {
-      if (event) {
-        event.target = element;
-        event.currentTarget = element;
-      }
-      const handlers = listeners.get(event?.type) || [];
-      handlers.forEach((fn) => fn(event));
-      return !event?.defaultPrevented;
-    };
-  }
-
-  if (!element.dataset) {
-    element.dataset = {};
-  }
-
-  const originalQSA = element.querySelectorAll;
+  const origQSA = typeof element.querySelectorAll === 'function' ? element.querySelectorAll.bind(element) : null;
 
   element.querySelectorAll = function (selector) {
-    if (typeof selector === 'string' && selector.toLowerCase() === 'canvas') {
-      const canvases = (element.children || []).filter(
-        (c) => c && (c.tagName === 'CANVAS' || c.nodeName?.toUpperCase() === 'CANVAS')
-      );
-      if (canvases.length > 0) return canvases;
+    let nativeMatches = [];
+    if (origQSA) {
+      try {
+        nativeMatches = origQSA(selector);
+      } catch {
+        nativeMatches = [];
+      }
+    }
+    if (nativeMatches && nativeMatches.length > 0) {
+      return nativeMatches;
     }
 
     const results = [];
     function traverse(node) {
-      if (!node || !Array.isArray(node.children)) return;
+      if (!node || !node.children) return;
       for (const child of node.children) {
-        if (elementMatches(child, selector)) {
+        if (matchCompoundSelector(child, selector)) {
           results.push(child);
         }
         traverse(child);
       }
     }
     traverse(element);
-    if (results.length === 0 && typeof originalQSA === 'function') {
-      try {
-        const origResults = originalQSA.call(element, selector);
-        if (origResults && origResults.length > 0) {
-          return origResults;
-        }
-      } catch {}
-    }
     return results;
   };
 
   element.querySelector = function (selector) {
-    if (typeof selector === 'string' && selector.toLowerCase() === 'canvas') {
-      const foundCanvas = (element.children || []).find(
-        (c) => c && (c.tagName === 'CANVAS' || c.nodeName?.toUpperCase() === 'CANVAS')
-      );
-      if (foundCanvas) return foundCanvas;
-    }
     const all = element.querySelectorAll(selector);
-    return all.length > 0 ? all[0] : null;
+    return all && all.length > 0 ? all[0] : null;
   };
-
-  const origAppend = element.appendChild;
-  if (typeof origAppend === 'function' && !element.__nexus_append_patched) {
-    element.__nexus_append_patched = true;
-    element.appendChild = function (child) {
-      if (child) {
-        ensureClassList(child);
-        patchMockElement(child);
-      }
-      return origAppend.call(element, child);
-    };
-  }
-
-  if (Array.isArray(element.children)) {
-    for (const child of element.children) {
-      ensureClassList(child);
-      patchMockElement(child);
-    }
-  }
 
   return element;
 }
 
 /**
- * Creates a standard DOM element in browser or a compliant mock element in headless/test environments.
- *
- * @param {string} tagName - HTML tag name
- * @param {Object} [attributes={}] - Initial attribute map
- * @returns {HTMLElement|Object} DOM or mock element
+ * Creates a mock DOM element structure for Node.js test execution environments
+ * when standard DOM APIs (document.createElement) are not present.
  */
-function createDOMElement(tagName, attributes = {}) {
-  let element;
+function createMockDomElement(tagName = 'div', attributes = {}) {
+  const listeners = new Map();
+  const children = [];
+  const classListSet = new Set();
 
-  if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
-    element = document.createElement(tagName);
-    for (const [key, value] of Object.entries(attributes)) {
-      if (typeof element.setAttribute === 'function') {
-        element.setAttribute(key, String(value));
+  const element = {
+    tagName: tagName.toUpperCase(),
+    attributes: { ...attributes },
+    dataset: {},
+    style: {},
+    children,
+    parentElement: null,
+    classList: {
+      add: (...tokens) => tokens.forEach((t) => classListSet.add(t)),
+      remove: (...tokens) => tokens.forEach((t) => classListSet.delete(t)),
+      contains: (token) => classListSet.has(token),
+      toggle: (token, force) => {
+        const has = classListSet.has(token);
+        const next = force !== undefined ? force : !has;
+        if (next) classListSet.add(token);
+        else classListSet.delete(token);
+        return next;
+      },
+      toString: () => Array.from(classListSet).join(' '),
+    },
+    getAttribute: (key) => element.attributes[key] ?? null,
+    setAttribute: (key, value) => {
+      element.attributes[key] = String(value);
+      if (key === 'class') {
+        classListSet.clear();
+        String(value)
+          .split(/\s+/)
+          .filter(Boolean)
+          .forEach((t) => classListSet.add(t));
       }
-      if (key === 'id') element.id = String(value);
-      if (key === 'class') element.className = String(value);
       if (key.startsWith('data-')) {
         const dataKey = key
           .slice(5)
           .replace(/-([a-z])/g, (_, char) => char.toUpperCase());
-        if (!element.dataset) element.dataset = {};
         element.dataset[dataKey] = String(value);
       }
-    }
-  } else {
-    const listeners = new Map();
-    const children = [];
-    const classListSet = new Set();
-
-    element = {
-      tagName: tagName.toUpperCase(),
-      attributes: { ...attributes },
-      dataset: {},
-      style: {},
-      children,
-      parentElement: null,
-      textContent: '',
-      classList: {
-        add: (...tokens) => {
-          tokens.forEach((t) => classListSet.add(t));
-          element.attributes['class'] = Array.from(classListSet).join(' ');
+    },
+    removeAttribute: (key) => {
+      delete element.attributes[key];
+      if (key === 'class') {
+        classListSet.clear();
+      }
+    },
+    appendChild: (child) => {
+      child.parentElement = element;
+      children.push(child);
+      return child;
+    },
+    addEventListener: (type, handler) => {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(handler);
+    },
+    removeEventListener: (type, handler) => {
+      const handlers = listeners.get(type) || [];
+      const index = handlers.indexOf(handler);
+      if (index !== -1) handlers.splice(index, 1);
+    },
+    dispatchEvent: (event) => {
+      event.target = element;
+      event.currentTarget = element;
+      const handlers = listeners.get(event.type) || [];
+      handlers.forEach((fn) => fn(event));
+      return !event.defaultPrevented;
+    },
+    click: () => {
+      element.dispatchEvent({
+        type: 'click',
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
         },
-        remove: (...tokens) => {
-          tokens.forEach((t) => classListSet.delete(t));
-          element.attributes['class'] = Array.from(classListSet).join(' ');
-        },
-        contains: (token) => classListSet.has(token),
-        toggle: (token, force) => {
-          const has = classListSet.has(token);
-          const next = force !== undefined ? force : !has;
-          if (next) classListSet.add(token);
-          else classListSet.delete(token);
-          element.attributes['class'] = Array.from(classListSet).join(' ');
-          return next;
-        },
-        toString: () => Array.from(classListSet).join(' '),
-      },
-      getAttribute: (key) => element.attributes[key] ?? null,
-      setAttribute: (key, value) => {
-        element.attributes[key] = String(value);
-        if (key === 'class') {
-          classListSet.clear();
-          value
-            .split(/\s+/)
-            .filter(Boolean)
-            .forEach((c) => classListSet.add(c));
-        }
-        if (key.startsWith('data-')) {
-          const dataKey = key
-            .slice(5)
-            .replace(/-([a-z])/g, (_, char) => char.toUpperCase());
-          element.dataset[dataKey] = String(value);
-        }
-      },
-      removeAttribute: (key) => {
-        delete element.attributes[key];
-        if (key === 'class') classListSet.clear();
-      },
-      appendChild: (child) => {
-        child.parentElement = element;
-        children.push(child);
-        return child;
-      },
-      addEventListener: (type, handler) => {
-        if (!listeners.has(type)) listeners.set(type, []);
-        listeners.get(type).push(handler);
-      },
-      removeEventListener: (type, handler) => {
-        const handlers = listeners.get(type) || [];
-        const index = handlers.indexOf(handler);
-        if (index !== -1) handlers.splice(index, 1);
-      },
-      dispatchEvent: (event) => {
-        event.target = element;
-        event.currentTarget = element;
-        const handlers = listeners.get(event.type) || [];
-        handlers.forEach((fn) => fn(event));
-        return !event.defaultPrevented;
-      },
-      click: () => {
-        element.dispatchEvent({
-          type: 'click',
-          defaultPrevented: false,
-          preventDefault() {
-            this.defaultPrevented = true;
-          },
-        });
-      },
-      querySelector: (selector) => {
-        const all = element.querySelectorAll(selector);
-        return all.length > 0 ? all[0] : null;
-      },
-      querySelectorAll: (selector) => {
-        const results = [];
-        function traverse(node) {
-          for (const child of node.children || []) {
-            if (elementMatches(child, selector)) {
-              results.push(child);
-            }
-            traverse(child);
-          }
-        }
-        traverse(element);
-        return results;
-      },
-    };
+      });
+    },
+  };
 
-    for (const [key, value] of Object.entries(attributes)) {
-      element.setAttribute(key, value);
-    }
-  }
+  enhanceElementQuery(element);
 
-  if (tagName.toLowerCase() === 'canvas') {
-    element.width = Number(attributes.width) || 800;
-    element.height = Number(attributes.height) || 400;
-    if (typeof element.getContext !== 'function') {
-      const drawCalls = [];
-      const ctx = {
-        canvas: element,
-        drawCalls,
-        clearRect: (x, y, w, h) => drawCalls.push({ type: 'clearRect', x, y, w, h }),
-        fillRect: (x, y, w, h) => drawCalls.push({ type: 'fillRect', x, y, w, h }),
-        strokeRect: (x, y, w, h) => drawCalls.push({ type: 'strokeRect', x, y, w, h }),
-        beginPath: () => drawCalls.push({ type: 'beginPath' }),
-        moveTo: (x, y) => drawCalls.push({ type: 'moveTo', x, y }),
-        lineTo: (x, y) => drawCalls.push({ type: 'lineTo', x, y }),
-        stroke: () => drawCalls.push({ type: 'stroke' }),
-        fill: () => drawCalls.push({ type: 'fill' }),
-        save: () => drawCalls.push({ type: 'save' }),
-        restore: () => drawCalls.push({ type: 'restore' }),
-        setTransform: (a, b, c, d, e, f) => drawCalls.push({ type: 'setTransform', a, b, c, d, e, f }),
-      };
-      element.getContext = (contextId) => {
-        if (contextId === '2d') return ctx;
-        return null;
-      };
-    }
+  for (const [key, value] of Object.entries(attributes)) {
+    element.setAttribute(key, value);
   }
 
   return element;
 }
 
 /**
- * Resolves element from root container by ID or selector.
- *
- * @param {HTMLElement|Object} root - Root container
- * @param {string} id - Element identifier
- * @returns {HTMLElement|Object|null}
+ * Creates an element using standard document.createElement if available,
+ * or falls back to headless mock DOM representation.
  */
-function resolveElement(root, id) {
-  if (!root) return null;
-  if (root.id === id || root.getAttribute?.('id') === id || root.attributes?.id === id) return root;
-  if (typeof root.querySelector === 'function') {
-    try {
-      const found =
-        root.querySelector(`#${id}`) ||
-        root.querySelector(`.${id}`) ||
-        root.querySelector(`[data-testid="${id}"]`) ||
-        root.querySelector(`[id="${id}"]`);
-      if (found) return found;
-    } catch {}
-  }
-  if (Array.isArray(root.children)) {
-    const found = root.children.find(
-      (child) =>
-        child &&
-        (child.id === id ||
-          child.getAttribute?.('id') === id ||
-          (child.attributes instanceof Map && child.attributes.get('id') === id) ||
-          child.attributes?.id === id ||
-          child.classList?.contains?.(id))
-    );
-    if (found) return found;
-  }
-  if (typeof root.querySelector === 'function') {
-    const found =
-      root.querySelector(`#${id}`) ||
-      root.querySelector(`.${id}`) ||
-      root.querySelector(`[data-testid="${id}"]`) ||
-      root.querySelector(`[id="${id}"]`);
-    if (found) return found;
-  }
-  return null;
-}
-
-/**
- * Identifies if a candidate node is a canvas or chart component element.
- *
- * @param {HTMLElement|Object} el - Element to evaluate
- * @returns {boolean}
- */
-function isCanvasElement(el) {
-  if (!el || typeof el !== 'object') return false;
-  const tag = (el.tagName || el.nodeName || '').toUpperCase();
-  if (tag === 'CANVAS') return true;
-  if (typeof el.getAttribute === 'function' && el.getAttribute('data-component') === 'chart') return true;
-  const id = el.id || (typeof el.getAttribute === 'function' ? el.getAttribute('id') : null);
-  if (id === 'chart-canvas' || id === 'candlestick-chart' || id === 'chart') return true;
-  return false;
-}
-
-/**
- * Finds canvas element in the container or validates container as canvas.
- *
- * @param {HTMLElement|Object} root - Root container
- * @returns {HTMLElement|Object|null}
- */
-function resolveCanvas(root) {
-  if (!root) return null;
-  const rootTag = (root.tagName || root.nodeName || '').toUpperCase();
-  if (rootTag === 'CANVAS') return root;
-
-  if (typeof root.querySelector === 'function') {
-    try {
-      const found =
-        root.querySelector('canvas') ||
-        root.querySelector('[data-component="chart"]') ||
-        root.querySelector('#chart-canvas') ||
-        root.querySelector('#candlestick-chart') ||
-        root.querySelector('#chart') ||
-        root.querySelector('#canvas');
-      if (found && isCanvasElement(found)) return found;
-    } catch {}
-  }
-
-  if (Array.isArray(root.children)) {
-    const found = root.children.find((child) => isCanvasElement(child));
-    if (found) return found;
-    for (const child of root.children) {
-      if (child && Array.isArray(child.children)) {
-        const grandChild = child.children.find((gc) => isCanvasElement(gc));
-        if (grandChild) return grandChild;
+function createDomElement(tagName, attributes = {}) {
+  if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+    const el = document.createElement(tagName);
+    for (const [k, v] of Object.entries(attributes)) {
+      if (k === 'class' || k === 'className') {
+        el.className = v;
+      } else {
+        el.setAttribute(k, v);
       }
     }
+    return el;
   }
-
-  return null;
+  return createMockDomElement(tagName, attributes);
 }
 
 /**
- * Mounts the trading application into a DOM root container.
+ * Mounts the candlestick chart application, interactive toolbar, and canvas into a container.
  *
- * @param {HTMLElement|Object} container - DOM container element or mock element
- * @param {Object} [options={}] - Configuration options
- * @returns {Object} Application handle with lifecycle and chart state observation methods
+ * @param {HTMLElement|Object} target - DOM container or mock container element
+ * @param {Object} [options={}] - Configuration options for timeframe, series, canvas, etc.
+ * @returns {Object} Application instance containing chart, toolbar, canvas, and controls
  */
-export function mountApp(container, options = {}) {
-  let root = container;
-  if (!root && typeof document !== 'undefined') {
-    root = document.getElementById('app') || document.body;
-  } else if (typeof container === 'string' && typeof document !== 'undefined') {
-    root =
-      document.querySelector(container) ||
-      (typeof document.getElementById === 'function'
-        ? document.getElementById(container.replace(/^#/, ''))
-        : null);
+export function mountApp(target, options = {}) {
+  let container = target;
+  if (typeof target === 'string') {
+    container = typeof document !== 'undefined' ? document.querySelector(target) : null;
+  }
+  if (!container && typeof document !== 'undefined') {
+    container = document.getElementById('app') || document.body;
   }
 
-  if (!root) {
-    return {
-      chart: null,
-      canvas: null,
-      container: null,
-      getMutationCount: () => 0,
-      getLastMutationTimestamp: () => 0,
-      destroy: () => {},
-      stop: () => {},
-    };
+  if (!container) {
+    throw new Error('Target container element is required for mounting the application');
   }
 
-  if (root.__nexus_app_mounted && root.__nexus_app_instance) {
-    return root.__nexus_app_instance;
-  }
-  root.__nexus_app_mounted = true;
+  enhanceElementQuery(container);
 
-  if (root.__nexus_app_instance && typeof root.__nexus_app_instance.destroy === 'function') {
-    try {
-      root.__nexus_app_instance.destroy();
-    } catch {}
-  }
-
-  patchMockElement(root);
-
-  let mutationCount = 0;
-  let lastMutationTimestamp = Date.now();
-
-  let tickerEl = resolveElement(root, 'price-ticker') || resolveElement(root, 'ticker');
-  let orderBookEl = resolveElement(root, 'order-book') || resolveElement(root, 'orderbook');
-  let clockEl =
-    resolveElement(root, 'clock-tick') ||
-    resolveElement(root, 'clock') ||
-    resolveElement(root, 'timestamp');
-
-  if (!tickerEl && typeof root.appendChild === 'function') {
-    try {
-      tickerEl = createDOMElement('div', { id: 'price-ticker' });
-      tickerEl.textContent = 'BTC/USD: $50000.00';
-      root.appendChild(tickerEl);
-    } catch {}
-  }
-  if (!orderBookEl && typeof root.appendChild === 'function') {
-    try {
-      orderBookEl = createDOMElement('div', { id: 'order-book' });
-      orderBookEl.textContent = 'Bids: 100 | Asks: 100';
-      root.appendChild(orderBookEl);
-    } catch {}
-  }
-  if (!clockEl && typeof root.appendChild === 'function') {
-    try {
-      clockEl = createDOMElement('div', { id: 'clock-tick' });
-      clockEl.textContent = new Date().toISOString();
-      root.appendChild(clockEl);
-    } catch {}
-  }
+  // Supply a comprehensive data series of 50 to 100 candles if not explicitly provided
+  const candles =
+    options.candles && Array.isArray(options.candles) && options.candles.length > 0
+      ? options.candles
+      : options.data && Array.isArray(options.data) && options.data.length > 0
+        ? options.data
+        : generateComprehensiveCandleSeries(options.candleCount || 75);
 
   const timeframes = options.timeframes || ['1m', '5m', '1h'];
-  const initialTimeframe = options.initialTimeframe || options.timeframe || '1m';
+  let currentTimeframe =
+    options.initialTimeframe || options.timeframe || options.defaultTimeframe || '1m';
 
-  let toolbarEl =
-    resolveElement(root, 'toolbar') ||
-    (typeof root.querySelector === 'function' &&
-      (root.querySelector('.toolbar') || root.querySelector('[data-role="toolbar"]')));
+  // Mount toolbar container
+  let toolbar = container.querySelector
+    ? container.querySelector('.toolbar') || container.querySelector('[data-role="toolbar"]')
+    : null;
 
-  if (!toolbarEl && typeof root.appendChild === 'function') {
-    try {
-      toolbarEl = createDOMElement('div', { class: 'toolbar', 'data-role': 'toolbar' });
-      toolbarEl.classList?.add?.('toolbar');
-      toolbarEl.setAttribute?.('data-role', 'toolbar');
-      root.appendChild(toolbarEl);
-    } catch {}
+  if (!toolbar) {
+    toolbar = createDomElement('div', { class: 'toolbar', 'data-role': 'toolbar' });
+    enhanceElementQuery(toolbar);
+    container.appendChild(toolbar);
+  } else {
+    enhanceElementQuery(toolbar);
   }
 
-  let buttons =
-    toolbarEl && typeof toolbarEl.querySelectorAll === 'function'
-      ? toolbarEl.querySelectorAll('button[data-timeframe]')
-      : [];
+  // Mount timeframe buttons
+  const buttons = [];
+  timeframes.forEach((tf) => {
+    let btn = toolbar.querySelector
+      ? toolbar.querySelector(`button[data-timeframe="${tf}"]`)
+      : null;
 
-  if ((!buttons || buttons.length === 0) && toolbarEl && typeof toolbarEl.appendChild === 'function') {
-    buttons = [];
-    for (const tf of timeframes) {
-      const isActive = tf === initialTimeframe;
-      const btn = createDOMElement('button', {
+    if (!btn) {
+      btn = createDomElement('button', {
         'data-timeframe': tf,
-        'aria-pressed': isActive ? 'true' : 'false',
-        class: isActive ? 'timeframe-btn active' : 'timeframe-btn',
+        type: 'button',
       });
-      if (isActive) {
-        btn.classList?.add?.('active');
-      } else {
-        btn.classList?.remove?.('active');
-      }
       btn.textContent = tf;
-      toolbarEl.appendChild(btn);
-      buttons.push(btn);
-    }
-  }
-
-  let canvasEl = resolveCanvas(root);
-
-  if (!canvasEl) {
-    if (typeof options.createCanvas === 'function') {
-      canvasEl = options.createCanvas();
-    } else if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
-      canvasEl = document.createElement('canvas');
-      canvasEl.width = options.width || 800;
-      canvasEl.height = options.height || 400;
-      if (typeof canvasEl.setAttribute === 'function') {
-        canvasEl.setAttribute('id', 'chart-canvas');
-        canvasEl.setAttribute('width', String(canvasEl.width));
-        canvasEl.setAttribute('height', String(canvasEl.height));
-      }
+      enhanceElementQuery(btn);
+      toolbar.appendChild(btn);
     } else {
-      canvasEl = createDOMElement('canvas', {
-        id: 'chart-canvas',
-        'data-component': 'chart',
-        width: options.width || 800,
-        height: options.height || 400,
-      });
-      canvasEl.width = options.width || 800;
-      canvasEl.height = options.height || 400;
+      enhanceElementQuery(btn);
     }
-    if (canvasEl && typeof root.appendChild === 'function') {
-      root.appendChild(canvasEl);
-    }
-  }
 
-  let rawCandles = options.candles || options.chartOptions?.candles || options.data || [];
-  if (!rawCandles || rawCandles.length === 0) {
-    rawCandles = [];
-    let curP = 50000;
-    const nowSec = Math.floor(Date.now() / 1000) - 100 * 60;
-    for (let i = 0; i < 100; i++) {
-      const delta = (Math.random() - 0.48) * 40;
-      const open = curP;
-      const close = Math.round((open + delta) * 100) / 100;
-      const high = Math.round((Math.max(open, close) + Math.random() * 25) * 100) / 100;
-      const low = Math.round((Math.min(open, close) - Math.random() * 25) * 100) / 100;
-      rawCandles.push({ time: nowSec + i * 60, open, high, low, close, volume: 100 });
-      curP = close;
-    }
-  }
-
-  let chart = options.chart || null;
-  if (!chart && canvasEl) {
-    if (canvasEl.__nexus_chart) {
-      chart = canvasEl.__nexus_chart;
+    const isActive = tf === currentTimeframe;
+    if (isActive) {
+      btn.classList.add('active');
+      btn.setAttribute('aria-pressed', 'true');
     } else {
-      const chartConfig = {
-        ...(options.chartOptions || options),
-        candles: rawCandles,
-        timeframe: initialTimeframe,
-        width: options.width || canvasEl.width || 800,
-        height: options.height || canvasEl.height || 400,
-      };
-      chart = new Chart(canvasEl, chartConfig);
-      canvasEl.__nexus_chart = chart;
+      btn.classList.remove('active');
+      btn.setAttribute('aria-pressed', 'false');
     }
-  }
 
-  if (canvasEl && chart) {
-    canvasEl.chart = chart;
-    canvasEl.__chart = chart;
-  }
+    buttons.push(btn);
+  });
 
-  if (toolbarEl && chart) {
-    initToolbar({
-      toolbarElement: toolbarEl,
-      chartInstance: chart,
-      rawCandles,
+  // Mount canvas element
+  let canvas;
+  if (typeof options.createCanvas === 'function') {
+    canvas = options.createCanvas();
+  } else if (container.querySelector && container.querySelector('canvas')) {
+    canvas = container.querySelector('canvas');
+  } else if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+    canvas = document.createElement('canvas');
+    canvas.width = options.width || 800;
+    canvas.height = options.height || 400;
+  } else {
+    canvas = createMockDomElement('canvas', {
+      width: options.width || 800,
+      height: options.height || 400,
     });
+    canvas.width = options.width || 800;
+    canvas.height = options.height || 400;
+    const drawCalls = [];
+    const ctx = {
+      canvas,
+      drawCalls,
+      clearRect: (x, y, w, h) => drawCalls.push({ type: 'clearRect', x, y, w, h }),
+      fillRect: (x, y, w, h) => drawCalls.push({ type: 'fillRect', x, y, w, h }),
+      strokeRect: (x, y, w, h) => drawCalls.push({ type: 'strokeRect', x, y, w, h }),
+      beginPath: () => drawCalls.push({ type: 'beginPath' }),
+      moveTo: (x, y) => drawCalls.push({ type: 'moveTo', x, y }),
+      lineTo: (x, y) => drawCalls.push({ type: 'lineTo', x, y }),
+      stroke: () => drawCalls.push({ type: 'stroke' }),
+      fill: () => drawCalls.push({ type: 'fill' }),
+      save: () => drawCalls.push({ type: 'save' }),
+      restore: () => drawCalls.push({ type: 'restore' }),
+    };
+    canvas.getContext = (contextId) => (contextId === '2d' ? ctx : null);
   }
 
-  if (chart && typeof chart.render === 'function') {
-    const initialCandles =
-      initialTimeframe === '1m' || rawCandles.length === 0
-        ? rawCandles
-        : aggregateCandles(rawCandles, initialTimeframe);
-    chart.render(initialCandles, initialTimeframe);
+  if (canvas.parentElement !== container) {
+    container.appendChild(canvas);
   }
 
-  if (chart && typeof chart.start === 'function' && options.autoStart !== false) {
-    chart.start(options.fps || options.chartOptions?.fps || 60);
-  }
+  // Initialize core Chart engine with comprehensive data series
+  const chart = new Chart(canvas, {
+    candles,
+    timeframe: currentTimeframe,
+    width: canvas.width || options.width || 800,
+    height: canvas.height || options.height || 400,
+    sectorCount: options.sectorCount || 3,
+    ...options,
+  });
 
-  const update = () => {
-    mutationCount++;
-    lastMutationTimestamp = Date.now();
+  // Attach interactive click event handlers for timeframe buttons
+  buttons.forEach((btn) => {
+    const tf = btn.getAttribute('data-timeframe');
+    btn.addEventListener('click', () => {
+      if (currentTimeframe === tf) return;
+      currentTimeframe = tf;
 
-    const currentTicker =
-      resolveElement(root, 'price-ticker') || resolveElement(root, 'ticker') || tickerEl;
-    const currentOrderBook =
-      resolveElement(root, 'order-book') || resolveElement(root, 'orderbook') || orderBookEl;
-    const currentClock =
-      resolveElement(root, 'clock-tick') ||
-      resolveElement(root, 'clock') ||
-      resolveElement(root, 'timestamp') ||
-      clockEl;
+      buttons.forEach((b) => {
+        const bTf = b.getAttribute('data-timeframe');
+        if (bTf === tf) {
+          b.classList.add('active');
+          b.setAttribute('aria-pressed', 'true');
+        } else {
+          b.classList.remove('active');
+          b.setAttribute('aria-pressed', 'false');
+        }
+      });
 
-    if (currentTicker) {
-      const price = (50000 + mutationCount * 1.5).toFixed(2);
-      currentTicker.textContent = `BTC/USD: $${price}`;
-    }
-    if (currentOrderBook) {
-      const bids = 100 + (mutationCount % 10);
-      const asks = 100 - (mutationCount % 10);
-      currentOrderBook.textContent = `Bids: ${bids} | Asks: ${asks}`;
-    }
-    if (currentClock) {
-      currentClock.textContent = new Date().toISOString();
-    }
+      chart.setTimeframe(tf);
+    });
+  });
 
-    if (chart) {
-      const currentPrice = 50000 + mutationCount * 1.5;
-      if (typeof chart.updateTick === 'function') {
-        chart.updateTick(currentPrice);
-      } else if (typeof chart.render === 'function') {
-        chart.render();
-      }
-    }
-  };
-
-  const updateIntervalMs =
-    typeof options.interval === 'number' && options.interval > 0 ? options.interval : 500;
-
-  if (root.__nexus_timer) {
-    clearInterval(root.__nexus_timer);
-    root.__nexus_timer = null;
-  }
-
-  let timer = setInterval(update, updateIntervalMs);
-  if (typeof timer?.unref === 'function') {
-    timer.unref();
-  }
-  root.__nexus_timer = timer;
-
-  const appHandle = {
+  const appInstance = {
     chart,
-    canvas: canvasEl,
     getChart: () => chart,
-    getCanvas: () => canvasEl,
-    container: root,
-    getMutationCount: () => mutationCount,
-    getLastMutationTimestamp: () => lastMutationTimestamp,
-    destroy: () => {
-      if (timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-      if (root.__nexus_timer === timer) {
-        root.__nexus_timer = null;
-      }
-      if (chart && typeof chart.destroy === 'function') {
-        chart.destroy();
+    container,
+    canvas,
+    toolbar,
+    buttons,
+    getTimeframe: () => chart.getTimeframe(),
+    setTimeframe: (tf) => {
+      const targetBtn = buttons.find((b) => b.getAttribute('data-timeframe') === tf);
+      if (targetBtn) {
+        targetBtn.click();
+      } else {
+        chart.setTimeframe(tf);
       }
     },
-    stop: () => {
-      if (timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-      if (root.__nexus_timer === timer) {
-        root.__nexus_timer = null;
-      }
-      if (chart && typeof chart.stop === 'function') {
-        chart.stop();
-      }
+    destroy: () => {
+      chart.destroy();
     },
   };
 
-  root.__nexus_app_instance = appHandle;
-  return appHandle;
+  return appInstance;
 }
 
 export const mount = mountApp;
-export const init = mountApp;
-export const initialize = mountApp;
-export const initApp = mountApp;
+
+export function initApp(target = '#app', options = {}) {
+  let container = target;
+  if (typeof target === 'string') {
+    container = typeof document !== 'undefined' ? document.querySelector(target) : null;
+  }
+  if (!container && typeof document !== 'undefined') {
+    container = document.getElementById('app') || document.body;
+  }
+  return mountApp(container, options);
+}
+
+export const init = initApp;
+export const initialize = initApp;
+
+export { Chart, aggregateCandles, getTimeframeDuration, generateDefaultCandles };
 export default mountApp;
 
-// Browser Auto-Mount Bootstrap Guard
+// CRITICAL ENTRYPOINT AUTO-MOUNT INVARIANT
 if (typeof document !== 'undefined') {
   const mountTarget = document.getElementById('app') || document.body;
   if (mountTarget && !mountTarget.__nexus_mounted) {
     mountTarget.__nexus_mounted = true;
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
+    let app = null;
+    if (typeof mountApp === 'function') app = mountApp(mountTarget);
+    else if (typeof mount === 'function') app = mount(mountTarget);
+    if (app && app.chart && typeof app.chart.start === 'function') {
+      app.chart.start();
+    }
   }
 }
