@@ -370,7 +370,8 @@ export class Chart {
       this.timeframe = timeframe;
     }
 
-    const ctx = this.canvas && typeof this.canvas.getContext === 'function' ? this.canvas.getContext('2d') : null;
+    const ctx =
+      this.canvas && typeof this.canvas.getContext === 'function' ? this.canvas.getContext('2d') : null;
     if (!ctx) return;
 
     const width = this.canvas.width || 800;
@@ -405,12 +406,17 @@ export class Chart {
 
     for (let i = 0; i < this.data.length; i++) {
       const candle = this.data[i];
-      const time = candle.time !== undefined ? candle.time : (candle.timestamp !== undefined ? candle.timestamp : i);
+      const time =
+        candle.time !== undefined ? candle.time : (candle.timestamp !== undefined ? candle.timestamp : i);
       const x = ((time - minTime) / timeRange) * width + this.viewport.offsetX;
-      const yHigh = height - ((candle.high - minPrice) / priceRange) * height + this.viewport.offsetY;
-      const yLow = height - ((candle.low - minPrice) / priceRange) * height + this.viewport.offsetY;
-      const yOpen = height - ((candle.open - minPrice) / priceRange) * height + this.viewport.offsetY;
-      const yClose = height - ((candle.close - minPrice) / priceRange) * height + this.viewport.offsetY;
+      const yHigh =
+        height - ((candle.high - minPrice) / priceRange) * height + this.viewport.offsetY;
+      const yLow =
+        height - ((candle.low - minPrice) / priceRange) * height + this.viewport.offsetY;
+      const yOpen =
+        height - ((candle.open - minPrice) / priceRange) * height + this.viewport.offsetY;
+      const yClose =
+        height - ((candle.close - minPrice) / priceRange) * height + this.viewport.offsetY;
 
       const isBull = candle.close >= candle.open;
       const color = isBull ? '#00f5a0' : '#ff3b69';
