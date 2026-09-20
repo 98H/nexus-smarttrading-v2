@@ -1,8 +1,9 @@
 /**
  * SmartTrading-V2 — Main Application Entrypoint
  * Responsible for root application mounting, layout composition,
- * coordinate mapping, interactive control binding, and pan gesture wiring.
- * Satisfies STORY 29.4.1 (DF-GRAPHICS-01), STORY 29.7.1 (DF-TOOLS-01), and STORY 29.2.1 (DF-GESTURE-01).
+ * coordinate mapping, interactive control binding, and pan/zoom gesture wiring.
+ * Satisfies STORY 29.4.1 (DF-GRAPHICS-01), STORY 29.7.1 (DF-TOOLS-01),
+ * STORY 29.2.1 (DF-GESTURE-01), and STORY 29.3.1 (DF-GESTURE-02).
  */
 
 import {
@@ -446,17 +447,39 @@ export function mount(container) {
     if (!canvas.height) canvas.height = 500;
   }
 
-  // Initialize and mount chart
-  const chartInstance = new Chart(canvas);
+  // Initialize and mount chart with zoom synchronizer (DF-GESTURE-02)
+  const chartInstance = new Chart(canvas, {
+    onZoom: (scale) => {
+      if (zoomIndicator) {
+        zoomIndicator.textContent = `${Math.round(scale * 100)}%`;
+      }
+    },
+  });
+
   target._chart = chartInstance;
   target.chart = chartInstance;
   target.canvas = canvas;
   canvas._chart = chartInstance;
   chart = chartInstance;
 
+  btnZoomIn.addEventListener('click', () => {
+    if (typeof chartInstance.zoomIn === 'function') {
+      chartInstance.zoomIn();
+    }
+  });
+
+  btnZoomOut.addEventListener('click', () => {
+    if (typeof chartInstance.zoomOut === 'function') {
+      chartInstance.zoomOut();
+    }
+  });
+
   btnReset.addEventListener('click', () => {
     if (typeof chartInstance.resetViewport === 'function') {
       chartInstance.resetViewport();
+      if (zoomIndicator) {
+        zoomIndicator.textContent = '100%';
+      }
     }
   });
 
@@ -574,16 +597,28 @@ export function mountApp(container) {
  */
 export function init(container) {
   const target = container || (typeof document !== 'undefined' ? document.getElementById('app') : null);
-  if (target && target.children && target.children.length === 0) {
+  if (target) {
     target._appMounted = false;
   }
   mount(target);
   return target ? (target._chart || chart) : chart;
 }
 
+/**
+ * Application initialization function alias for testing and bootstrap lifecycle.
+ *
+ * @param {HTMLElement|Object} [container]
+ * @returns {Chart|Object}
+ */
+export function initApp(container) {
+  return init(container);
+}
+
 export function bootstrap(container) {
   return init(container);
 }
+
+export default initApp;
 
 // Automatic mount guard when loaded into an active browser document
 if (typeof document !== 'undefined') {

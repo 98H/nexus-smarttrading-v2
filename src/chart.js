@@ -1,8 +1,8 @@
 /**
  * SmartTrading-V2 — Charting Engine
  * Implements financial chart rendering, price/time scales, candlestick series,
- * indicator overlays, layout geometry, and interactive pan gestures.
- * Satisfies STORY 29.4.1 (DF-GRAPHICS-01) and STORY 29.2.1 (DF-GESTURE-01).
+ * indicator overlays, layout geometry, interactive pan gestures, and canvas zoom.
+ * Satisfies STORY 29.4.1 (DF-GRAPHICS-01), STORY 29.2.1 (DF-GESTURE-01), and STORY 29.3.1 (DF-GESTURE-02).
  */
 
 export const PERIOD_DEFAULT = 20;
@@ -87,7 +87,7 @@ export function generateDenseCandles(count = 80, basePrice = 100, startTime = 17
     const high = Math.round((maxOC + Math.random() * 2 + 0.5) * 100) / 100;
     const low = Math.round((minOC - Math.random() * 2 - 0.5) * 100) / 100;
     price = close;
-    candles.push({ timestamp, open, high, low, close });
+    candles.push({ timestamp, time: timestamp, open, high, low, close });
   }
 
   return candles;
@@ -115,7 +115,7 @@ export function hydrateCandles(candles = [], targetCount = 80) {
   const result = [...candles];
   const last = candles[candles.length - 1];
   let price = typeof last.close === 'number' ? last.close : (typeof last.open === 'number' ? last.open : 100);
-  const baseTime = typeof last.timestamp === 'number' ? last.timestamp : 1711929600000;
+  const baseTime = typeof last.timestamp === 'number' ? last.timestamp : (typeof last.time === 'number' ? last.time : 1711929600000);
   const needed = desired - result.length;
 
   for (let i = 1; i <= needed; i++) {
@@ -128,7 +128,7 @@ export function hydrateCandles(candles = [], targetCount = 80) {
     const high = Math.round((maxOC + Math.random() * 2 + 0.5) * 100) / 100;
     const low = Math.round((minOC - Math.random() * 2 - 0.5) * 100) / 100;
     price = close;
-    result.push({ timestamp, open, high, low, close });
+    result.push({ timestamp, time: timestamp, open, high, low, close });
   }
 
   return result;
@@ -167,6 +167,7 @@ export function formatTimestamp(timestamp, isDaily = false) {
 
 /**
  * Computes price and time ranges across candlestick data.
+ * Supports both timestamp and time entity properties.
  *
  * @param {Array<Object>} candles
  * @returns {{ priceRange: { min: number, max: number }, timeRange: { min: number, max: number } }}
@@ -189,9 +190,10 @@ export function computeCandleRanges(candles = []) {
     const high = c.high !== undefined ? c.high : Math.max(c.open, c.close);
     if (low < minPrice) minPrice = low;
     if (high > maxPrice) maxPrice = high;
-    if (c.timestamp !== undefined) {
-      if (c.timestamp < minTime) minTime = c.timestamp;
-      if (c.timestamp > maxTime) maxTime = c.timestamp;
+    const t = c.timestamp !== undefined ? c.timestamp : c.time;
+    if (t !== undefined) {
+      if (t < minTime) minTime = t;
+      if (t > maxTime) maxTime = t;
     }
   }
 
@@ -309,7 +311,9 @@ export function renderTimeScale(ctx, plotArea, candles, width, height, reservedB
     indices.push(count - 1);
   }
 
-  const isDaily = count > 1 && (candles[1].timestamp - candles[0].timestamp >= 86400000);
+  const firstTime = candles[0].timestamp !== undefined ? candles[0].timestamp : candles[0].time;
+  const secondTime = candles[1] ? (candles[1].timestamp !== undefined ? candles[1].timestamp : candles[1].time) : firstTime;
+  const isDaily = count > 1 && (secondTime - firstTime >= 86400000);
   const candleStep = plotArea.width / count;
   const textY = axisLineY + Math.min(reservedBottom - 5, Math.max(6, Math.round(reservedBottom / 2)));
 
@@ -330,7 +334,8 @@ export function renderTimeScale(ctx, plotArea, candles, width, height, reservedB
     ctx.lineTo?.(x, axisLineY + 4);
     ctx.stroke?.();
 
-    const text = formatTimestamp(candle.timestamp, isDaily);
+    const timestamp = candle.timestamp !== undefined ? candle.timestamp : candle.time;
+    const text = formatTimestamp(timestamp, isDaily);
     if (typeof ctx.fillText === 'function') {
       ctx.fillText(text, x, textY);
     }
@@ -450,7 +455,8 @@ export class AxesRenderer {
 }
 
 /**
- * Core quantitative Chart class supporting viewport panning and responsive rendering.
+ * Core quantitative Chart class supporting viewport panning, responsive rendering,
+ * and wheel gesture zooming with dynamic time/price scale recalculation (DF-GESTURE-02).
  */
 export class Chart {
   constructor(canvasOrOptions = {}, maybeOptions = {}) {
@@ -485,6 +491,18 @@ export class Chart {
     this._lastDragY = 0;
     this._eventTarget = null;
 
+    // Zoom level scale and boundary state (STORY 29.3.1: DF-GESTURE-02)
+    this.initialZoom = typeof options.initialZoom === 'number'
+      ? options.initialZoom
+      : typeof options.zoom === 'number'
+      ? options.zoom
+      : typeof options.scale === 'number'
+      ? options.scale
+      : 1.0;
+    this.scale = this.initialZoom;
+    this.minZoom = typeof options.minZoom === 'number' ? options.minZoom : 0.2;
+    this.maxZoom = typeof options.maxZoom === 'number' ? options.maxZoom : 5.0;
+
     const bottomMargin =
       typeof options.bottomMargin === 'number'
         ? options.bottomMargin
@@ -512,11 +530,92 @@ export class Chart {
     this.data = this.candles;
     this.overlayType = options.overlay || 'SMA (20)';
 
+    this.timeScale = { range: { min: 0, max: 1 } };
+    this.priceScale = { range: { min: 0, max: 100 } };
+    this._recalculateScales();
+
     if (this.canvas) {
       this._attachEvents(this.canvas);
     }
 
     this.updatePlotArea();
+  }
+
+  _recalculateScales() {
+    const ranges = computeCandleRanges(this.candles);
+    const timeMin = ranges.timeRange.min;
+    const timeMax = ranges.timeRange.max;
+    const timeCenter = (timeMin + timeMax) / 2;
+    const timeSpan = (timeMax - timeMin) / (this.scale || 1.0);
+
+    this.timeScale = {
+      range: {
+        min: timeCenter - timeSpan / 2,
+        max: timeCenter + timeSpan / 2,
+      },
+    };
+
+    const priceMin = ranges.priceRange.min;
+    const priceMax = ranges.priceRange.max;
+    const priceCenter = (priceMin + priceMax) / 2;
+    const priceSpan = (priceMax - priceMin) / (this.scale || 1.0);
+
+    this.priceScale = {
+      range: {
+        min: priceCenter - priceSpan / 2,
+        max: priceCenter + priceSpan / 2,
+      },
+    };
+  }
+
+  getZoomLevel() {
+    return this.scale;
+  }
+
+  setZoomLevel(scale) {
+    const clamped = Math.max(this.minZoom, Math.min(this.maxZoom, scale));
+    if (clamped !== this.scale) {
+      this.scale = clamped;
+      this._recalculateScales();
+      this.render();
+      if (typeof this.options?.onZoom === 'function') {
+        this.options.onZoom(this.scale);
+      }
+    }
+  }
+
+  getTimeRange() {
+    return { ...this.timeScale.range };
+  }
+
+  getPriceRange() {
+    return { ...this.priceScale.range };
+  }
+
+  zoomIn(factor = 1.2) {
+    this.setZoomLevel(this.scale * factor);
+  }
+
+  zoomOut(factor = 1.2) {
+    this.setZoomLevel(this.scale / factor);
+  }
+
+  handleWheel(e) {
+    if (e && typeof e.preventDefault === 'function') {
+      e.preventDefault();
+    }
+    if (!e || e.deltaY === 0 || e.deltaY === undefined) {
+      return;
+    }
+    const zoomFactor = Math.exp(-e.deltaY * 0.001);
+    const targetScale = Math.max(this.minZoom, Math.min(this.maxZoom, this.scale * zoomFactor));
+    if (targetScale === this.scale) return;
+    this.scale = targetScale;
+    this._recalculateScales();
+    this.render();
+    if (typeof this.options?.onZoom === 'function') {
+      this.options.onZoom(this.scale);
+    }
   }
 
   _attachEvents(canvas) {
@@ -526,7 +625,6 @@ export class Chart {
     this._eventTarget = canvas;
 
     this._onMouseDown = (e) => {
-      // Primary mouse button only (0 = left click)
       if (!e || (e.button !== undefined && e.button !== 0)) return;
       this._isDragging = true;
       this._lastDragX = e.clientX ?? 0;
@@ -552,10 +650,15 @@ export class Chart {
       this._isDragging = false;
     };
 
+    this._onWheel = (e) => {
+      this.handleWheel(e);
+    };
+
     canvas.addEventListener('mousedown', this._onMouseDown);
     canvas.addEventListener('mousemove', this._onMouseMove);
     canvas.addEventListener('mouseup', this._onMouseUp);
     canvas.addEventListener('mouseleave', this._onMouseLeave);
+    canvas.addEventListener('wheel', this._onWheel, { passive: false });
   }
 
   _detachEvents() {
@@ -564,6 +667,7 @@ export class Chart {
       if (this._onMouseMove) this._eventTarget.removeEventListener('mousemove', this._onMouseMove);
       if (this._onMouseUp) this._eventTarget.removeEventListener('mouseup', this._onMouseUp);
       if (this._onMouseLeave) this._eventTarget.removeEventListener('mouseleave', this._onMouseLeave);
+      if (this._onWheel) this._eventTarget.removeEventListener('wheel', this._onWheel);
     }
     this._eventTarget = null;
     this._isDragging = false;
@@ -594,6 +698,8 @@ export class Chart {
   resetViewport() {
     this.viewport.x = 0;
     this.viewport.y = 0;
+    this.scale = this.initialZoom || 1.0;
+    this._recalculateScales();
     this.render();
   }
 
@@ -626,6 +732,7 @@ export class Chart {
     }
 
     this.updatePlotArea();
+    this._recalculateScales();
     this.render();
     return this;
   }
@@ -679,10 +786,6 @@ export class Chart {
     };
   }
 
-  getPriceRange() {
-    return computeCandleRanges(this.candles).priceRange;
-  }
-
   priceToY(price) {
     const { min, max } = this.getPriceRange();
     const range = max - min || 1;
@@ -713,6 +816,7 @@ export class Chart {
     const candidate = Array.isArray(candles) ? candles : [];
     this.candles = candidate.length < 50 || candidate.length > 100 ? hydrateCandles(candidate, 80) : candidate;
     this.data = this.candles;
+    this._recalculateScales();
     this.render();
   }
 
@@ -746,23 +850,25 @@ export class Chart {
       } catch {}
     }
 
-    const ranges = computeCandleRanges(this.candles);
+    const priceRange = this.getPriceRange();
 
     // 1. Grid lines
     renderGrid(ctx, this.plotArea, w, h);
 
     // 2. Candlestick series
-    renderCandlesticksSeries(ctx, this.plotArea, this.candles, ranges.priceRange);
+    renderCandlesticksSeries(ctx, this.plotArea, this.candles, priceRange);
 
     // 3. Analytical indicator overlay
     if (this.overlayType && this.overlayType !== 'None') {
-      renderOverlay(ctx, this.plotArea, this.candles, ranges.priceRange, this.overlayType);
+      renderOverlay(ctx, this.plotArea, this.candles, priceRange, this.overlayType);
     }
 
     // 4. Vertical price scale
-    renderPriceScale(ctx, this.plotArea, ranges.priceRange, w, h);
+    renderPriceScale(ctx, this.plotArea, priceRange, w, h);
 
     // 5. Horizontal time scale axis (DF-SCALES-02)
     renderTimeScale(ctx, this.plotArea, this.candles, w, h, reservedBottom);
   }
 }
+
+export default Chart;
