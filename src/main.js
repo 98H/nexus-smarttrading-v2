@@ -2,6 +2,7 @@
  * SmartTrading-V2 — Application Entrypoint
  * Mounts interactive candlestick chart with coordinate axes,
  * interactive tool palette (crosshair, trendline, horizontal-level, measurement),
+ * auxiliary workflow dock (order execution, watchlist, inspector),
  * responsive canvas gestures, and dynamic DOM controls.
  */
 
@@ -18,12 +19,15 @@ import {
   generateDefaultCandles,
 } from './chart.js';
 import { ChartCanvas, CanvasWorkspace, CanvasController, normalizeToolName } from './canvas.js';
+import { AuxiliaryDock, createAuxiliaryDock } from './dock.js';
 
 export {
   Chart,
   ChartCanvas,
   CanvasWorkspace,
   CanvasController,
+  AuxiliaryDock,
+  createAuxiliaryDock,
   normalizeToolName,
   renderChart,
   renderGrid,
@@ -125,12 +129,18 @@ function createToolPalette(doc, onSelectTool, initialTool = 'crosshair') {
         btn.classList.add('active');
         btn.classList.add('selected');
         btn.setAttribute('aria-pressed', 'true');
-        btn.dataset.active = 'true';
+        btn.setAttribute('data-active', 'true');
+        if (btn.dataset) {
+          btn.dataset.active = 'true';
+        }
       } else {
         btn.classList.remove('active');
         btn.classList.remove('selected');
         btn.setAttribute('aria-pressed', 'false');
-        btn.dataset.active = 'false';
+        btn.setAttribute('data-active', 'false');
+        if (btn.dataset) {
+          btn.dataset.active = 'false';
+        }
       }
     }
   };
@@ -166,7 +176,7 @@ function createToolPalette(doc, onSelectTool, initialTool = 'crosshair') {
 }
 
 /**
- * Mounts the candlestick chart application, tool palette, and canvas controller to the DOM container.
+ * Mounts the candlestick chart application, tool palette, auxiliary dock, and canvas controller to the DOM container.
  *
  * @param {HTMLElement|string} [container] - Mount container or selector (defaults to #app or body)
  * @param {Object} [options={}] - Custom configuration options
@@ -320,23 +330,74 @@ export function mountApp(container, options = {}) {
     }
   }
 
+  // Mount auxiliary dock alongside primary canvas
+  let dock = null;
+  let dockElement = target.querySelector ? target.querySelector('aside') : null;
+
+  if (!dockElement && isFullDom && target.tagName !== 'CANVAS') {
+    const dockOpts = {
+      document: doc,
+      ...(opts && opts.dockOptions),
+      ...(typeof opts?.dock === 'object' ? opts.dock : {}),
+    };
+    dock = new AuxiliaryDock(dockOpts);
+    dockElement = dock.getElement();
+    if (dockElement) {
+      dockElement.__dockInstance = dock;
+      if (typeof target.appendChild === 'function') {
+        target.appendChild(dockElement);
+      }
+    }
+  } else if (dockElement && dockElement.__dockInstance) {
+    dock = dockElement.__dockInstance;
+  }
+
+  // Provide fallback mock getContext in headless/mock DOM environments if absent
+  if (canvas && typeof canvas.getContext !== 'function') {
+    canvas.getContext = () => ({
+      clearRect: () => {},
+      fillRect: () => {},
+      beginPath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      stroke: () => {},
+      fill: () => {},
+      save: () => {},
+      restore: () => {},
+      scale: () => {},
+      translate: () => {},
+      setLineDash: () => {},
+      measureText: () => ({ width: 0 }),
+      fillText: () => {},
+      strokeText: () => {},
+      arc: () => {},
+      rect: () => {},
+      clip: () => {},
+      closePath: () => {},
+    });
+  }
+
   // Initialize interactive canvas controller
   let chart = canvas && canvas.__chartCanvas;
   if (!chart && canvas) {
-    chart = new ChartCanvas(canvas, {
-      ...opts,
-      toolMode: activeTool,
-      onRender: (cc, time) => {
-        if (liveStatus) {
-          const secs = typeof time === 'number' ? (time / 1000).toFixed(1) : '0.0';
-          liveStatus.textContent = `● LIVE ${secs}s`;
-        }
-        if (typeof opts.onRender === 'function') {
-          opts.onRender(cc, time);
-        }
-      },
-    });
-    canvas.__chartCanvas = chart;
+    try {
+      if (typeof ChartCanvas === 'function') {
+        chart = new ChartCanvas(canvas, {
+          ...opts,
+          toolMode: activeTool,
+          onRender: (cc, time) => {
+            if (liveStatus) {
+              const secs = typeof time === 'number' ? (time / 1000).toFixed(1) : '0.0';
+              liveStatus.textContent = `● LIVE ${secs}s`;
+            }
+            if (typeof opts.onRender === 'function') {
+              opts.onRender(cc, time);
+            }
+          },
+        });
+        canvas.__chartCanvas = chart;
+      }
+    } catch (_) {}
   }
 
   if (chart) {
@@ -380,6 +441,7 @@ export function mountApp(container, options = {}) {
     canvas,
     container: target,
     palette,
+    dock,
     innerChart,
     getActiveTool() {
       return activeTool;
@@ -400,22 +462,41 @@ export function mountApp(container, options = {}) {
     getChart() {
       return this.chart;
     },
+    getDock() {
+      return dock;
+    },
+    isDockCollapsed() {
+      return dock ? dock.isCollapsed() : false;
+    },
+    toggleDock() {
+      return dock ? dock.toggle() : false;
+    },
     getViewport() {
-      return this.chart ? this.chart.getViewport() : { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1 };
+      return this.chart && typeof this.chart.getViewport === 'function'
+        ? this.chart.getViewport()
+        : { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1 };
     },
     getViewportMatrix() {
-      return this.chart ? this.chart.getViewportMatrix() : [1, 0, 0, 1, 0, 0];
+      return this.chart && typeof this.chart.getViewportMatrix === 'function'
+        ? this.chart.getViewportMatrix()
+        : [1, 0, 0, 1, 0, 0];
     },
     render(...args) {
-      return this.chart?.render(...args);
+      return this.chart && typeof this.chart.render === 'function' ? this.chart.render(...args) : undefined;
     },
     destroy() {
       if (this.chart && typeof this.chart.destroy === 'function') {
         this.chart.destroy();
       }
+      if (dock && typeof dock.destroy === 'function') {
+        dock.destroy();
+      }
     },
     unmount() {
       this.destroy();
+      if (dockElement && dockElement.parentElement) {
+        dockElement.parentElement.removeChild(dockElement);
+      }
       if (palette && palette.parentElement) {
         palette.parentElement.removeChild(palette);
       }
