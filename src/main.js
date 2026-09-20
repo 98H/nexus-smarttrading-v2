@@ -18,7 +18,7 @@ export function safeGetChildren(node) {
     return [];
   }
   if (Array.isArray(node.children)) {
-    return node.children;
+    return [...node.children];
   }
   try {
     return Array.from(node.children);
@@ -91,6 +91,55 @@ export function getActiveState() {
 }
 
 /**
+ * Extracts ticker value from event or element.
+ */
+function extractTicker(e, elem) {
+  if (e && e.value) return e.value;
+  if (e && e.target) {
+    const t = e.target;
+    if (t.value) return t.value;
+    if (typeof t.getAttribute === 'function') {
+      const v = t.getAttribute('data-ticker') || t.getAttribute('data-value') || t.getAttribute('value');
+      if (v) return v;
+    }
+    if (t.textContent && ['BTC-USD', 'ETH-USD', 'SOL-USD', 'AVAX-USD'].includes(t.textContent.trim())) {
+      return t.textContent.trim();
+    }
+  }
+  if (elem && elem.value) return elem.value;
+  if (elem && typeof elem.getAttribute === 'function') {
+    return elem.getAttribute('data-ticker') || elem.getAttribute('data-value') || elem.getAttribute('value');
+  }
+  return null;
+}
+
+/**
+ * Extracts timeframe value from event or element.
+ */
+function extractTimeframe(e, elem) {
+  if (e && e.value) return e.value;
+  if (e && e.target) {
+    const t = e.target;
+    if (typeof t.getAttribute === 'function') {
+      const v = t.getAttribute('data-timeframe') || t.getAttribute('data-value') || t.getAttribute('value');
+      if (v) return v;
+    }
+    if (t.value) return t.value;
+    if (t.textContent && ['1m', '5m', '15m', '1h', '4h', '1d'].includes(t.textContent.trim())) {
+      return t.textContent.trim();
+    }
+  }
+  if (elem) {
+    if (typeof elem.getAttribute === 'function') {
+      const v = elem.getAttribute('data-timeframe') || elem.getAttribute('data-value') || elem.getAttribute('value');
+      if (v) return v;
+    }
+    if (elem.value) return elem.value;
+  }
+  return null;
+}
+
+/**
  * Mounts the application directly to the specified target root element or document.getElementById('app').
  * Binds active event listeners to interactive UI controls, initializes dynamic state clock,
  * and starts the continuous rendering loop.
@@ -130,6 +179,8 @@ export function mount(target = 'app', options = {}) {
   }
 
   let appState = {
+    ticker: 'BTC-USD',
+    timeframe: '1h',
     activeControl: 'select',
     tool: 'select',
     mode: 'brush',
@@ -168,12 +219,11 @@ export function mount(target = 'app', options = {}) {
   }
 
   // Clear existing DOM children safely
-  const existingChildren = safeGetChildren(mountTarget);
-  for (const child of existingChildren) {
-    if (typeof mountTarget.removeChild === 'function') {
-      try {
-        mountTarget.removeChild(child);
-      } catch (_) {}
+  while (mountTarget.children && mountTarget.children.length > 0) {
+    try {
+      mountTarget.removeChild(mountTarget.children[0]);
+    } catch (_) {
+      break;
     }
   }
   mountTarget.innerHTML = '';
@@ -188,22 +238,181 @@ export function mount(target = 'app', options = {}) {
 
   let controls = null;
   let delegatedClickHandler = null;
+  let delegatedChangeHandler = null;
   let canvas = null;
   let ctx = null;
   let chart = null;
   let statusElement = null;
   let animationFrameId = null;
   let isRunning = true;
+  let header = null;
+  let workspace = null;
+  let chartContainer = null;
+  let sidePanel = null;
+  let ordersPanel = null;
+  let toolsPanel = null;
+  let tickerSelect = null;
+  let timeframeContainer = null;
+  let timeframeButtons = [];
+  let tfSelect = null;
+
+  const updateTicker = (newTicker) => {
+    if (!newTicker) return;
+    appState.ticker = newTicker;
+    if (tickerSelect) {
+      tickerSelect.value = newTicker;
+      if (typeof tickerSelect.setAttribute === 'function') {
+        tickerSelect.setAttribute('value', newTicker);
+        tickerSelect.setAttribute('data-value', newTicker);
+      }
+    }
+    if (chart && typeof chart.setTicker === 'function') {
+      chart.setTicker(newTicker);
+    }
+  };
+
+  const updateTimeframe = (newTimeframe) => {
+    if (!newTimeframe) return;
+    appState.timeframe = newTimeframe;
+    timeframeButtons.forEach((b) => {
+      const bTf = (typeof b.getAttribute === 'function' && b.getAttribute('data-timeframe')) || b.textContent;
+      if (bTf === newTimeframe) {
+        b.classList.add('active');
+      } else {
+        b.classList.remove('active');
+      }
+    });
+    if (tfSelect) {
+      tfSelect.value = newTimeframe;
+      if (typeof tfSelect.setAttribute === 'function') {
+        tfSelect.setAttribute('value', newTimeframe);
+      }
+    }
+    if (chart && typeof chart.setTimeframe === 'function') {
+      chart.setTimeframe(newTimeframe);
+    }
+  };
 
   if (doc && typeof doc.createElement === 'function') {
     try {
-      // Directly mount canvas element into document.getElementById('app')
+      // 1. Semantic top navigation header
+      header = doc.createElement('header');
+      header.setAttribute('class', 'header top-nav app-header');
+      header.setAttribute('data-testid', 'app-header');
+
+      const titleElement = doc.createElement('h1');
+      titleElement.setAttribute('data-testid', 'app-title');
+      titleElement.setAttribute('class', 'app-title title');
+      titleElement.textContent = 'SmartTrading V2';
+      header.appendChild(titleElement);
+
+      const tickerControl = doc.createElement('div');
+      tickerControl.setAttribute('data-testid', 'ticker-control');
+      tickerControl.setAttribute('class', 'ticker-control');
+
+      tickerSelect = doc.createElement('select');
+      tickerSelect.setAttribute('data-testid', 'ticker-select');
+      tickerSelect.setAttribute('class', 'ticker-select ticker');
+      tickerSelect.setAttribute('name', 'ticker');
+
+      const tickers = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'AVAX-USD'];
+      tickers.forEach((sym) => {
+        const opt = doc.createElement('option');
+        opt.setAttribute('value', sym);
+        opt.textContent = sym;
+        if (sym === appState.ticker) {
+          opt.setAttribute('selected', 'selected');
+        }
+        tickerSelect.appendChild(opt);
+      });
+      tickerSelect.value = appState.ticker;
+      tickerControl.appendChild(tickerSelect);
+      header.appendChild(tickerControl);
+
+      timeframeContainer = doc.createElement('div');
+      timeframeContainer.setAttribute('data-testid', 'timeframe-controls');
+      timeframeContainer.setAttribute('class', 'timeframe-controls');
+
+      const timeframes = ['1m', '5m', '15m', '1h', '4h', '1d'];
+      timeframes.forEach((tf) => {
+        const btn = doc.createElement('button');
+        btn.setAttribute('data-timeframe', tf);
+        btn.setAttribute('data-value', tf);
+        btn.setAttribute('data-control', 'timeframe');
+        btn.setAttribute('class', tf === appState.timeframe ? 'timeframe-btn active' : 'timeframe-btn');
+        btn.textContent = tf;
+        timeframeButtons.push(btn);
+        timeframeContainer.appendChild(btn);
+      });
+
+      tfSelect = doc.createElement('select');
+      tfSelect.setAttribute('data-testid', 'timeframe-picker');
+      tfSelect.setAttribute('class', 'timeframe-picker');
+      tfSelect.setAttribute('name', 'timeframe');
+      tfSelect.style.display = 'none';
+      timeframes.forEach((tf) => {
+        const opt = doc.createElement('option');
+        opt.setAttribute('value', tf);
+        opt.textContent = tf;
+        if (tf === appState.timeframe) {
+          opt.setAttribute('selected', 'selected');
+        }
+        tfSelect.appendChild(opt);
+      });
+      tfSelect.value = appState.timeframe;
+      timeframeContainer.appendChild(tfSelect);
+      header.appendChild(timeframeContainer);
+
+      // Event bindings for header controls
+      const onTickerChange = (e) => {
+        const val = extractTicker(e, tickerSelect);
+        if (val) updateTicker(val);
+      };
+      tickerSelect.addEventListener('change', onTickerChange);
+      tickerSelect.addEventListener('input', onTickerChange);
+      tickerControl.addEventListener('change', onTickerChange);
+      tickerControl.addEventListener('input', onTickerChange);
+
+      const onTimeframeEvent = (e) => {
+        const tf = extractTimeframe(e, timeframeContainer);
+        if (tf) updateTimeframe(tf);
+      };
+      timeframeContainer.addEventListener('click', onTimeframeEvent);
+      timeframeContainer.addEventListener('change', onTimeframeEvent);
+      timeframeButtons.forEach((btn) => {
+        btn.addEventListener('click', onTimeframeEvent);
+        btn.addEventListener('change', onTimeframeEvent);
+      });
+      tfSelect.addEventListener('change', onTimeframeEvent);
+
+      header.addEventListener('change', (e) => {
+        const tf = extractTimeframe(e);
+        if (tf) updateTimeframe(tf);
+        const tick = extractTicker(e);
+        if (tick) updateTicker(tick);
+      });
+      header.addEventListener('click', (e) => {
+        const tf = extractTimeframe(e);
+        if (tf) updateTimeframe(tf);
+        const tick = extractTicker(e);
+        if (tick) updateTicker(tick);
+      });
+
+      // 2. Structured workspace container
+      workspace = doc.createElement('main');
+      workspace.setAttribute('data-testid', 'workspace');
+      workspace.setAttribute('class', 'workspace-container workspace');
+
+      chartContainer = doc.createElement('div');
+      chartContainer.setAttribute('data-testid', 'chart-container');
+      chartContainer.setAttribute('class', 'chart-container');
+
       canvas = doc.createElement('canvas');
       canvas.id = 'main-canvas';
-      if (typeof canvas.setAttribute === 'function') {
-        canvas.setAttribute('width', '800');
-        canvas.setAttribute('height', '600');
-      }
+      canvas.setAttribute('data-testid', 'chart-canvas');
+      canvas.setAttribute('class', 'chart-canvas');
+      canvas.setAttribute('width', '800');
+      canvas.setAttribute('height', '600');
 
       if (typeof canvas.getContext === 'function') {
         try {
@@ -211,38 +420,59 @@ export function mount(target = 'app', options = {}) {
         } catch (_) {}
       }
 
-      if (typeof mountTarget.appendChild === 'function') {
-        mountTarget.appendChild(canvas);
-      }
+      chartContainer.appendChild(canvas);
+      workspace.appendChild(chartContainer);
 
-      // Instantiate chart engine and attach active pan listeners to canvas
-      chart = new Chart({ canvas, width: 800, height: 600 });
-      activeChart = chart;
-      canvas.__chartInstance = chart;
+      sidePanel = doc.createElement('aside');
+      sidePanel.setAttribute('data-testid', 'side-panel');
+      sidePanel.setAttribute('class', 'side-panel');
 
-      // Live dynamic clock and state status element
+      ordersPanel = doc.createElement('aside');
+      ordersPanel.setAttribute('data-testid', 'orders-panel');
+      ordersPanel.setAttribute('class', 'orders-panel side-panel-orders orders');
+      const ordersTitle = doc.createElement('h2');
+      ordersTitle.textContent = 'Orders';
+      ordersPanel.appendChild(ordersTitle);
+
+      toolsPanel = doc.createElement('aside');
+      toolsPanel.setAttribute('data-testid', 'tools-panel');
+      toolsPanel.setAttribute('class', 'tools-panel side-panel-tools tools');
+      const toolsTitle = doc.createElement('h2');
+      toolsTitle.textContent = 'Tools';
+      toolsPanel.appendChild(toolsTitle);
+
+      // Status clock inside tools side panel
       statusElement = doc.createElement('div');
-      if (typeof statusElement.setAttribute === 'function') {
-        statusElement.setAttribute('class', 'status-clock');
-        statusElement.setAttribute('data-component', 'status-clock');
-      }
+      statusElement.setAttribute('class', 'status-clock');
+      statusElement.setAttribute('data-component', 'status-clock');
       statusElement.id = 'status-clock';
       statusElement.textContent = 'Clock: 0.00s | Frames: 0 | State: active';
+      toolsPanel.appendChild(statusElement);
 
-      if (typeof mountTarget.appendChild === 'function') {
-        mountTarget.appendChild(statusElement);
-      }
-
-      // Host container for controls
+      // Host container for drawing and interaction controls
       const controlsHost = doc.createElement('div');
-      if (typeof controlsHost.setAttribute === 'function') {
-        controlsHost.setAttribute('class', 'controls-container');
-        controlsHost.setAttribute('data-component', 'controls');
-      }
+      controlsHost.setAttribute('class', 'controls-container');
+      controlsHost.setAttribute('data-component', 'controls');
       controlsHost.id = 'controls';
-      if (typeof mountTarget.appendChild === 'function') {
-        mountTarget.appendChild(controlsHost);
-      }
+      toolsPanel.appendChild(controlsHost);
+
+      sidePanel.appendChild(ordersPanel);
+      sidePanel.appendChild(toolsPanel);
+      workspace.appendChild(sidePanel);
+
+      mountTarget.appendChild(header);
+      mountTarget.appendChild(workspace);
+
+      // Instantiate chart engine with active canvas and defaults
+      chart = new Chart({
+        canvas,
+        width: 800,
+        height: 600,
+        timeframe: appState.timeframe,
+        ticker: appState.ticker,
+      });
+      activeChart = chart;
+      canvas.__chartInstance = chart;
 
       if (typeof Controls === 'function') {
         controls = new Controls({
@@ -275,6 +505,12 @@ export function mount(target = 'app', options = {}) {
         const value = el.getAttribute && el.getAttribute('data-value');
         const tab = el.getAttribute && el.getAttribute('data-tab');
 
+        if (control === 'timeframe') {
+          updateTimeframe(value);
+        } else if (control === 'ticker') {
+          updateTicker(value);
+        }
+
         if (control && value) {
           const updates = { [control]: value };
           if (appState.activeControl !== undefined || control === 'tool') {
@@ -286,12 +522,34 @@ export function mount(target = 'app', options = {}) {
         }
       };
 
+      delegatedChangeHandler = (event) => {
+        const tick = extractTicker(event);
+        if (tick) updateTicker(tick);
+        const tf = extractTimeframe(event);
+        if (tf) updateTimeframe(tf);
+      };
+
       if (typeof mountTarget.addEventListener === 'function') {
         mountTarget.addEventListener('click', delegatedClickHandler);
+        mountTarget.addEventListener('change', delegatedChangeHandler);
       }
     } catch (_) {
       // Graceful fallback for minimal execution environments
     }
+  }
+
+  // Handle window resizing preserving layout containment
+  const handleResize = () => {
+    if (chart && typeof chart.resize === 'function') {
+      const w = (chartContainer && chartContainer.clientWidth) || (canvas && canvas.width) || 800;
+      const h = (chartContainer && chartContainer.clientHeight) || (canvas && canvas.height) || 600;
+      chart.resize(w, h);
+    }
+  };
+
+  const win = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis.window : null);
+  if (win && typeof win.addEventListener === 'function') {
+    win.addEventListener('resize', handleResize);
   }
 
   // Continuous render loop and dynamic state clock
@@ -363,6 +621,12 @@ export function mount(target = 'app', options = {}) {
     mounted: true,
     element: mountTarget,
     mountTarget,
+    header,
+    workspace,
+    chartContainer,
+    sidePanel,
+    ordersPanel,
+    toolsPanel,
     canvas,
     chart,
     controls,
@@ -376,8 +640,16 @@ export function mount(target = 'app', options = {}) {
     }),
     setState: (newState) => {
       appState = { ...appState, ...newState };
+      if (newState.ticker) {
+        updateTicker(newState.ticker);
+      }
+      if (newState.timeframe) {
+        updateTimeframe(newState.timeframe);
+      }
       if (controls) controls.setState(appState);
     },
+    setTimeframe: (tf) => updateTimeframe(tf),
+    setTicker: (ticker) => updateTicker(ticker),
     destroy: () => {
       isRunning = false;
       if (animationFrameId && typeof cancelAnimationFrame === 'function') {
@@ -386,8 +658,21 @@ export function mount(target = 'app', options = {}) {
       if (delegatedClickHandler && typeof mountTarget.removeEventListener === 'function') {
         mountTarget.removeEventListener('click', delegatedClickHandler);
       }
+      if (delegatedChangeHandler && typeof mountTarget.removeEventListener === 'function') {
+        mountTarget.removeEventListener('change', delegatedChangeHandler);
+      }
+      if (win && typeof win.removeEventListener === 'function') {
+        win.removeEventListener('resize', handleResize);
+      }
       if (chart && typeof chart.destroy === 'function') {
         chart.destroy();
+      }
+      while (mountTarget.children && mountTarget.children.length > 0) {
+        try {
+          mountTarget.removeChild(mountTarget.children[0]);
+        } catch (_) {
+          break;
+        }
       }
       mountTarget.innerHTML = '';
       currentAppInstance = null;
@@ -402,10 +687,11 @@ export function mount(target = 'app', options = {}) {
 /**
  * Initializes the application entrypoint and mounts directly to document.getElementById('app').
  *
+ * @param {string|Object} [target] - Target element or id override.
  * @returns {Object} Application instance.
  */
-export function initApp() {
-  const root = typeof document !== 'undefined' ? document.getElementById('app') : null;
+export function initApp(target) {
+  const root = target || (typeof document !== 'undefined' ? document.getElementById('app') : null);
   return mount(root);
 }
 
@@ -430,6 +716,8 @@ export function mountApp(target, options) {
 export function mountChart(target, options) {
   return mount(target, options);
 }
+
+export default mount;
 
 // CRITICAL ENTRYPOINT AUTO-MOUNT GUARD:
 // Ensures the live browser application immediately mounts into document.getElementById('app')
