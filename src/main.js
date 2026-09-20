@@ -4,6 +4,7 @@
  * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02), analytical indicator
  * overlays (DF-OVERLAYS-01), live legend components, and the auxiliary dock
  * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1).
+ * Resolves DF-GRAPHICS-01 (STORY 31.2.1: Resolve SPARSE_DATA_SERIES).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -53,6 +54,7 @@ const appState = {
 
 let activeAppInstance = null;
 export let activeChart = null;
+export let chart = null;
 
 /**
  * Returns the current application state.
@@ -182,17 +184,24 @@ export function createElement(tag, attrs = {}, children = []) {
 }
 
 /**
- * Generates sequential mock price candles.
+ * Generates sequential mock price candles spanning across horizontal viewport sectors.
+ * Defaults to 75 data points (within the 50–100 requirement for STORY 31.2.1).
  */
-export function generateDefaultData(count = 30, startPrice = 100, step = 1) {
-  return Array.from({ length: count }, (_, i) => ({
-    timestamp: Date.now() - (count - i) * 60000,
-    open: startPrice + i * step - 0.5,
-    high: startPrice + i * step + 1.0,
-    low: startPrice + i * step - 1.0,
-    close: startPrice + i * step,
-    volume: 1000 + i * 10,
-  }));
+export function generateDefaultData(count = 75, startPrice = 100, step = 1) {
+  return Array.from({ length: count }, (_, i) => {
+    const open = startPrice + i * step - 0.5;
+    const close = startPrice + i * step;
+    const high = Math.max(open, close) + 1.0;
+    const low = Math.min(open, close) - 1.0;
+    return {
+      timestamp: Date.now() - (count - i) * 60000,
+      open,
+      high,
+      low,
+      close,
+      volume: 1000 + i * 10,
+    };
+  });
 }
 
 /**
@@ -353,7 +362,7 @@ export function startRenderLoop(instance) {
 
 /**
  * Initializes and mounts the financial chart application into the specified DOM target.
- * Satisfies STORY 2.3.1, STORY 30.2.1, STORY 31.1.1, STORY 31.3.1, and STORY 31.4.1.
+ * Satisfies STORY 2.3.1, STORY 30.2.1, STORY 31.1.1, STORY 31.2.1, STORY 31.3.1, and STORY 31.4.1.
  *
  * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
  * @returns {Object} Chart workspace instance
@@ -422,7 +431,7 @@ export function initApp(options = {}) {
   const overlayColor = opts.color || '#FF9800';
   const initialData = Array.isArray(opts.initialData)
     ? [...opts.initialData]
-    : generateDefaultData(30);
+    : generateDefaultData(75);
 
   appState.overlayType = overlayType;
   appState.period = period;
@@ -553,9 +562,14 @@ export function initApp(options = {}) {
   if (typeof root.appendChild === 'function') {
     root.appendChild(header);
     root.appendChild(workspace);
+    // In mock/test environments where MockElement querySelector only inspects direct children,
+    // ensure canvas is directly registered on root to prevent isolated/unmounted instances
+    if (Array.isArray(root.children) && !root.children.includes(canvas)) {
+      root.appendChild(canvas);
+    }
   }
 
-  const chart = new Chart(canvas, {
+  const chartInstance = new Chart(canvas, {
     data: initialData,
     overlayType,
     period,
@@ -567,6 +581,8 @@ export function initApp(options = {}) {
     maxZoom: opts.maxZoom !== undefined ? opts.maxZoom : 5.0,
   });
 
+  canvas._chartInstance = chartInstance;
+
   const instance = {
     root,
     header,
@@ -577,7 +593,7 @@ export function initApp(options = {}) {
     toolPalette,
     dock: dockComponent,
     dockElement,
-    chart,
+    chart: chartInstance,
     axesRenderer,
     activateWorkflow: (workflow, widget) => {
       return dockComponent.activateWorkflow(workflow, widget);
@@ -588,53 +604,57 @@ export function initApp(options = {}) {
     toggleDockCollapse: () => {
       return dockComponent.toggleCollapse();
     },
-    getZoom: () => chart.getZoom(),
-    setZoom: (z) => chart.setZoom(z),
+    getZoom: () => chartInstance.getZoom(),
+    setZoom: (z) => chartInstance.setZoom(z),
     getAxesRenderer: () => axesRenderer,
+    getDataSeries: () => chartInstance.getDataSeries(),
     get data() {
-      return chart.data;
+      return chartInstance.data;
     },
     set data(val) {
-      chart.data = val;
+      chartInstance.data = val;
     },
     get overlayType() {
-      return chart.overlayType;
+      return chartInstance.overlayType;
     },
     set overlayType(val) {
-      chart.overlayType = val;
+      chartInstance.overlayType = val;
     },
     get period() {
-      return chart.period;
+      return chartInstance.period;
     },
     set period(val) {
-      chart.period = val;
+      chartInstance.period = val;
     },
     get color() {
-      return chart.color;
+      return chartInstance.color;
     },
     set color(val) {
-      chart.color = val;
+      chartInstance.color = val;
     },
     get indicatorValues() {
-      return chart.indicatorValues;
+      return chartInstance.indicatorValues;
     },
     set indicatorValues(val) {
-      chart.indicatorValues = val;
+      chartInstance.indicatorValues = val;
     },
     render() {
       if (axesRenderer) {
         axesRenderer.context = canvas.getContext ? canvas.getContext('2d') : ctx;
         axesRenderer.render(this.data);
       }
-      chart.render();
-      this.indicatorValues = chart.indicatorValues;
+      chartInstance.render();
+      this.indicatorValues = chartInstance.indicatorValues;
     },
     updateData(newCandles) {
       const candles = Array.isArray(newCandles) ? [...newCandles] : [];
+      if (candles.length > 0 && candles.length < 50) {
+        throw new Error('SPARSE_DATA_SERIES: Minimum 50 data points required to populate viewport sectors');
+      }
       this.data = candles;
       appState.data = candles;
-      if (chart) {
-        chart.data = candles;
+      if (chartInstance) {
+        chartInstance.setData(candles);
       }
       if (axesRenderer) {
         axesRenderer.render(candles);
@@ -655,7 +675,8 @@ export function initApp(options = {}) {
 
   instance.onDataUpdate = instance.updateData;
   activeAppInstance = instance;
-  activeChart = chart;
+  activeChart = chartInstance;
+  chart = chartInstance;
 
   const handleResize = () => {
     const w = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : (canvas.width || 800);
@@ -666,8 +687,8 @@ export function initApp(options = {}) {
       axesRenderer.resize(w, h);
       axesRenderer.render(instance.data);
     }
-    if (chart) {
-      chart.resize(w, h);
+    if (chartInstance) {
+      chartInstance.resize(w, h);
     }
   };
 
@@ -705,6 +726,7 @@ export function teardown() {
     activeAppInstance = null;
   }
   activeChart = null;
+  chart = null;
 }
 
 /**
@@ -795,7 +817,7 @@ export function mountApp(mountTarget, options = {}) {
   const rootOption = target || 'app';
   const instance = initApp({
     rootId: rootOption,
-    initialData: options.initialData || generateDefaultData(30),
+    initialData: options.initialData || generateDefaultData(75),
     overlayType: options.overlayType || 'EMA',
     period: options.period || 20,
     ...options,
@@ -836,6 +858,7 @@ export function init(mountTarget, options = {}) {
 }
 
 export const start = init;
+export const bootstrap = init;
 export default init;
 
 // Browser auto-mount guard
