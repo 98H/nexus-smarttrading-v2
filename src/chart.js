@@ -632,21 +632,10 @@ export class Chart {
 
     this.computeCoordinates();
 
-<<<<<<< HEAD
     for (let i = 0; i < this.candleCoordinates.length; i++) {
       const coord = this.candleCoordinates[i];
-=======
-    this.updateScales();
-    const { min: minTime, max: maxTime } = this.timeScale;
-    const { min: minPrice, max: maxPrice } = this.priceScale;
-
-    const timeRange = maxTime - minTime || 1;
-    const priceRange = maxPrice - minPrice || 1;
-    const candleWidth = Math.max(2, (width / this.data.length) * 0.6 * this.zoomFactor);
-
-    for (let i = 0; i < this.data.length; i++) {
->>>>>>> task/story-574da399
       const candle = this.data[i];
+      if (!candle || !coord) continue;
       const isBull = candle.close >= candle.open;
       const color = isBull ? '#00f5a0' : '#ff3b69';
 
@@ -661,7 +650,9 @@ export class Chart {
 
         const bodyY = Math.min(coord.openY, coord.closeY);
         const bodyH = Math.max(1, Math.abs(coord.closeY - coord.openY));
-        ctx.fillRect(coord.x - coord.candleWidth / 2, bodyY, coord.candleWidth, bodyH);
+        if (typeof ctx.fillRect === 'function') {
+          ctx.fillRect(coord.x - coord.candleWidth / 2, bodyY, coord.candleWidth, bodyH);
+        }
       }
     }
   }
@@ -680,3 +671,11 @@ export class Chart {
 }
 
 export class ChartCanvas extends Chart {}
+
+export function createChart(canvas, options) {
+  return new Chart(canvas, options);
+}
+
+export const initChart = createChart;
+export const renderChart = createChart;
+export default Chart;

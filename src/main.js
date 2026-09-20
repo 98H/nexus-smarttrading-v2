@@ -105,6 +105,85 @@ export function aggregateCandles(candles, timeframe) {
 }
 
 /**
+ * Ensures an element has a functioning classList abstraction in headless/mock runtimes.
+ *
+ * @param {Object|HTMLElement} element - Target element
+ * @returns {Object|HTMLElement}
+ */
+export function ensureClassList(element) {
+  if (!element || typeof element !== 'object') return element;
+  if (element.classList && typeof element.classList.add === 'function') {
+    return element;
+  }
+
+  const getClassList = () => {
+    let raw = '';
+    if (typeof element.getAttribute === 'function') {
+      raw = element.getAttribute('class') || '';
+    } else if (element.attributes instanceof Map) {
+      raw = element.attributes.get('class') || '';
+    } else if (element.attributes && typeof element.attributes === 'object') {
+      raw = element.attributes.class || '';
+    } else if (typeof element.className === 'string') {
+      raw = element.className;
+    }
+    return new Set(String(raw).trim().split(/\s+/).filter(Boolean));
+  };
+
+  const setClassList = (set) => {
+    const val = Array.from(set).join(' ');
+    if (typeof element.setAttribute === 'function') {
+      element.setAttribute('class', val);
+    } else if (element.attributes instanceof Map) {
+      element.attributes.set('class', val);
+    } else if (element.attributes && typeof element.attributes === 'object') {
+      element.attributes.class = val;
+    }
+    try {
+      element.className = val;
+    } catch {}
+  };
+
+  element.classList = {
+    add(...tokens) {
+      const set = getClassList();
+      for (const t of tokens) {
+        if (t) set.add(String(t));
+      }
+      setClassList(set);
+    },
+    remove(...tokens) {
+      const set = getClassList();
+      for (const t of tokens) {
+        if (t) set.delete(String(t));
+      }
+      setClassList(set);
+    },
+    contains(token) {
+      return getClassList().has(String(token));
+    },
+    toggle(token, force) {
+      const set = getClassList();
+      const strToken = String(token);
+      const has = set.has(strToken);
+      const shouldAdd = force !== undefined ? Boolean(force) : !has;
+      if (shouldAdd) {
+        set.add(strToken);
+      } else {
+        set.delete(strToken);
+      }
+      setClassList(set);
+      return shouldAdd;
+    },
+    toString() {
+      return Array.from(getClassList()).join(' ');
+    },
+  };
+
+  return element;
+}
+
+/**
  * Initializes toolbar timeframe controls and links them to the chart instance.
  *
  * @param {Object} options - Configuration object
@@ -134,6 +213,7 @@ export function initToolbar({ toolbarElement, chartInstance, rawCandles = [] } =
     return (
       btn.dataset?.timeframe ||
       (typeof btn.getAttribute === 'function' ? btn.getAttribute('data-timeframe') : null) ||
+      (btn.attributes instanceof Map ? btn.attributes.get('data-timeframe') : null) ||
       (btn.attributes && btn.attributes['data-timeframe']) ||
       btn.textContent?.trim() ||
       null
@@ -145,6 +225,7 @@ export function initToolbar({ toolbarElement, chartInstance, rawCandles = [] } =
     (chartInstance && typeof chartInstance.getCandles === 'function' ? chartInstance.getCandles() : []);
 
   buttons.forEach((btn) => {
+    ensureClassList(btn);
     btn.addEventListener('click', () => {
       const targetTf = getTf(btn);
       if (!targetTf) return;
@@ -159,14 +240,19 @@ export function initToolbar({ toolbarElement, chartInstance, rawCandles = [] } =
       }
 
       buttons.forEach((b) => {
+        ensureClassList(b);
         const bTf = getTf(b);
         if (bTf === targetTf) {
-          b.classList.add('active');
+          if (b.classList && typeof b.classList.add === 'function') {
+            b.classList.add('active');
+          }
           if (typeof b.setAttribute === 'function') {
             b.setAttribute('aria-pressed', 'true');
           }
         } else {
-          b.classList.remove('active');
+          if (b.classList && typeof b.classList.remove === 'function') {
+            b.classList.remove('active');
+          }
           if (typeof b.setAttribute === 'function') {
             b.setAttribute('aria-pressed', 'false');
           }
@@ -224,6 +310,7 @@ export function elementMatches(element, selector) {
     const actualId =
       element.id ||
       (typeof element.getAttribute === 'function' ? element.getAttribute('id') : null) ||
+      (element.attributes instanceof Map ? element.attributes.get('id') : null) ||
       (element.attributes && element.attributes.id);
     if (actualId !== expectedId) return false;
     remaining = remaining.replace(idMatch[0], '');
@@ -240,6 +327,7 @@ export function elementMatches(element, selector) {
         const classAttr =
           element.className ||
           (typeof element.getAttribute === 'function' ? element.getAttribute('class') : '') ||
+          (element.attributes instanceof Map ? element.attributes.get('class') : '') ||
           (element.attributes && element.attributes.class) ||
           '';
         const classes = String(classAttr).split(/\s+/).filter(Boolean);
@@ -261,6 +349,8 @@ export function elementMatches(element, selector) {
       let actualVal = null;
       if (typeof element.getAttribute === 'function') {
         actualVal = element.getAttribute(attrName);
+      } else if (element.attributes instanceof Map) {
+        actualVal = element.attributes.get(attrName);
       } else if (element.attributes && attrName in element.attributes) {
         actualVal = element.attributes[attrName];
       }
@@ -286,12 +376,20 @@ export function elementMatches(element, selector) {
  */
 export function patchMockElement(element) {
   if (!element || typeof element !== 'object') return element;
+  ensureClassList(element);
   if (element.__nexus_patched) return element;
   element.__nexus_patched = true;
 
   const originalQSA = element.querySelectorAll;
 
   element.querySelectorAll = function (selector) {
+    if (typeof selector === 'string' && selector.toLowerCase() === 'canvas') {
+      const canvases = (element.children || []).filter(
+        (c) => c && (c.tagName === 'CANVAS' || c.nodeName?.toUpperCase() === 'CANVAS')
+      );
+      if (canvases.length > 0) return canvases;
+    }
+
     const results = [];
     function traverse(node) {
       if (!node || !Array.isArray(node.children)) return;
@@ -315,20 +413,31 @@ export function patchMockElement(element) {
   };
 
   element.querySelector = function (selector) {
+    if (typeof selector === 'string' && selector.toLowerCase() === 'canvas') {
+      const foundCanvas = (element.children || []).find(
+        (c) => c && (c.tagName === 'CANVAS' || c.nodeName?.toUpperCase() === 'CANVAS')
+      );
+      if (foundCanvas) return foundCanvas;
+    }
     const all = element.querySelectorAll(selector);
     return all.length > 0 ? all[0] : null;
   };
 
   const origAppend = element.appendChild;
-  if (typeof origAppend === 'function') {
+  if (typeof origAppend === 'function' && !element.__nexus_append_patched) {
+    element.__nexus_append_patched = true;
     element.appendChild = function (child) {
-      patchMockElement(child);
+      if (child) {
+        ensureClassList(child);
+        patchMockElement(child);
+      }
       return origAppend.call(element, child);
     };
   }
 
   if (Array.isArray(element.children)) {
     for (const child of element.children) {
+      ensureClassList(child);
       patchMockElement(child);
     }
   }
@@ -344,122 +453,98 @@ export function patchMockElement(element) {
  * @returns {HTMLElement|Object} DOM or mock element
  */
 function createDOMElement(tagName, attributes = {}) {
+  let el;
   if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
-    const el = document.createElement(tagName);
-    for (const [key, value] of Object.entries(attributes)) {
-      el.setAttribute(key, String(value));
+    try {
+      el = document.createElement(tagName);
+    } catch {
+      el = null;
     }
-    return el;
   }
 
-  const listeners = new Map();
-  const children = [];
-  const classListSet = new Set();
+  if (!el) {
+    const listeners = new Map();
+    const children = [];
+    const attrMap = new Map();
 
-  const element = {
-    tagName: tagName.toUpperCase(),
-    attributes: { ...attributes },
-    dataset: {},
-    style: {},
-    children,
-    parentElement: null,
-    textContent: '',
-    classList: {
-      add: (...tokens) => {
-        tokens.forEach((t) => classListSet.add(t));
-        element.attributes['class'] = Array.from(classListSet).join(' ');
+    el = {
+      tagName: tagName.toUpperCase(),
+      id: attributes.id || '',
+      children,
+      attributes: attrMap,
+      eventListeners: listeners,
+      _innerHTML: '',
+      get innerHTML() {
+        return this._innerHTML;
       },
-      remove: (...tokens) => {
-        tokens.forEach((t) => classListSet.delete(t));
-        element.attributes['class'] = Array.from(classListSet).join(' ');
+      set innerHTML(html) {
+        this._innerHTML = html;
+        this.children = [];
       },
-      contains: (token) => classListSet.has(token),
-      toggle: (token, force) => {
-        const has = classListSet.has(token);
-        const next = force !== undefined ? force : !has;
-        if (next) classListSet.add(token);
-        else classListSet.delete(token);
-        element.attributes['class'] = Array.from(classListSet).join(' ');
-        return next;
+      appendChild(child) {
+        this.children.push(child);
+        return child;
       },
-      toString: () => Array.from(classListSet).join(' '),
-    },
-    getAttribute: (key) => element.attributes[key] ?? null,
-    setAttribute: (key, value) => {
-      element.attributes[key] = String(value);
-      if (key === 'class') {
-        classListSet.clear();
-        value
-          .split(/\s+/)
-          .filter(Boolean)
-          .forEach((c) => classListSet.add(c));
-      }
-      if (key.startsWith('data-')) {
-        const dataKey = key
-          .slice(5)
-          .replace(/-([a-z])/g, (_, char) => char.toUpperCase());
-        element.dataset[dataKey] = String(value);
-      }
-    },
-    removeAttribute: (key) => {
-      delete element.attributes[key];
-      if (key === 'class') classListSet.clear();
-    },
-    appendChild: (child) => {
-      child.parentElement = element;
-      children.push(child);
-      return child;
-    },
-    addEventListener: (type, handler) => {
-      if (!listeners.has(type)) listeners.set(type, []);
-      listeners.get(type).push(handler);
-    },
-    removeEventListener: (type, handler) => {
-      const handlers = listeners.get(type) || [];
-      const index = handlers.indexOf(handler);
-      if (index !== -1) handlers.splice(index, 1);
-    },
-    dispatchEvent: (event) => {
-      event.target = element;
-      event.currentTarget = element;
-      const handlers = listeners.get(event.type) || [];
-      handlers.forEach((fn) => fn(event));
-      return !event.defaultPrevented;
-    },
-    click: () => {
-      element.dispatchEvent({
-        type: 'click',
-        defaultPrevented: false,
-        preventDefault() {
-          this.defaultPrevented = true;
-        },
-      });
-    },
-    querySelector: (selector) => {
-      const all = element.querySelectorAll(selector);
-      return all.length > 0 ? all[0] : null;
-    },
-    querySelectorAll: (selector) => {
-      const results = [];
-      function traverse(node) {
-        for (const child of node.children || []) {
-          if (elementMatches(child, selector)) {
-            results.push(child);
-          }
-          traverse(child);
+      removeChild(child) {
+        const idx = this.children.indexOf(child);
+        if (idx !== -1) this.children.splice(idx, 1);
+        return child;
+      },
+      querySelector(selector) {
+        if (selector.toLowerCase() === 'canvas') {
+          return this.children.find((c) => c.tagName === 'CANVAS') || null;
         }
-      }
-      traverse(element);
-      return results;
-    },
-  };
+        return null;
+      },
+      querySelectorAll(selector) {
+        if (selector.toLowerCase() === 'canvas') {
+          return this.children.filter((c) => c.tagName === 'CANVAS');
+        }
+        return [];
+      },
+      setAttribute(k, v) {
+        this.attributes.set(k, String(v));
+      },
+      getAttribute(k) {
+        return this.attributes.get(k) || null;
+      },
+      addEventListener(type, handler) {
+        if (!this.eventListeners.has(type)) this.eventListeners.set(type, []);
+        this.eventListeners.get(type).push(handler);
+      },
+      dispatchEvent(event) {
+        const handlers = this.eventListeners.get(event.type) || [];
+        for (const h of handlers) h(event);
+      },
+    };
+  }
+
+  ensureClassList(el);
+  patchMockElement(el);
 
   for (const [key, value] of Object.entries(attributes)) {
-    element.setAttribute(key, value);
+    if (typeof el.setAttribute === 'function') {
+      el.setAttribute(key, String(value));
+    } else if (el.attributes instanceof Map) {
+      el.attributes.set(key, String(value));
+    }
+    if (key === 'id') {
+      el.id = String(value);
+    }
+    if (key === 'class') {
+      try {
+        el.className = String(value);
+      } catch {}
+      if (el.classList && typeof el.classList.add === 'function') {
+        const classes = String(value).trim().split(/\s+/).filter(Boolean);
+        for (const c of classes) {
+          el.classList.add(c);
+        }
+      }
+    }
   }
 
-  patchMockElement(element);
-  return element;
+  return el;
 }
 
 /**
@@ -471,14 +556,8 @@ function createDOMElement(tagName, attributes = {}) {
  */
 function resolveElement(root, id) {
   if (!root) return null;
-  if (root.id === id || root.getAttribute?.('id') === id || root.attributes?.id === id) return root;
-  if (typeof root.querySelector === 'function') {
-    const found =
-      root.querySelector(`#${id}`) ||
-      root.querySelector(`.${id}`) ||
-      root.querySelector(`[data-testid="${id}"]`) ||
-      root.querySelector(`[id="${id}"]`);
-    if (found) return found;
+  if (root.id === id || root.getAttribute?.('id') === id || (root.attributes instanceof Map && root.attributes.get('id') === id) || root.attributes?.id === id) {
+    return root;
   }
   if (Array.isArray(root.children)) {
     const found = root.children.find(
@@ -486,9 +565,18 @@ function resolveElement(root, id) {
         child &&
         (child.id === id ||
           child.getAttribute?.('id') === id ||
+          (child.attributes instanceof Map && child.attributes.get('id') === id) ||
           child.attributes?.id === id ||
           child.classList?.contains?.(id))
     );
+    if (found) return found;
+  }
+  if (typeof root.querySelector === 'function') {
+    const found =
+      root.querySelector(`#${id}`) ||
+      root.querySelector(`.${id}`) ||
+      root.querySelector(`[data-testid="${id}"]`) ||
+      root.querySelector(`[id="${id}"]`);
     if (found) return found;
   }
   return null;
@@ -503,15 +591,6 @@ function resolveElement(root, id) {
 function resolveCanvas(root) {
   if (!root) return null;
   if (typeof root.getContext === 'function') return root;
-  if (typeof root.querySelector === 'function') {
-    const found =
-      root.querySelector('canvas') ||
-      root.querySelector('#chart-canvas') ||
-      root.querySelector('#chart') ||
-      root.querySelector('#candlestick-chart') ||
-      root.querySelector('#canvas');
-    if (found) return found;
-  }
   if (Array.isArray(root.children)) {
     const found = root.children.find(
       (child) =>
@@ -526,6 +605,15 @@ function resolveCanvas(root) {
     );
     if (found) return found;
   }
+  if (typeof root.querySelector === 'function') {
+    const found =
+      root.querySelector('canvas') ||
+      root.querySelector('#chart-canvas') ||
+      root.querySelector('#chart') ||
+      root.querySelector('#candlestick-chart') ||
+      root.querySelector('#canvas');
+    if (found) return found;
+  }
   return null;
 }
 
@@ -537,10 +625,14 @@ function resolveCanvas(root) {
  * @returns {Object} Application handle with lifecycle and chart state observation methods
  */
 export function mountApp(container, options = {}) {
-  const root =
-    typeof container === 'string' && typeof document !== 'undefined'
-      ? document.querySelector(container)
-      : container;
+  let root = container;
+  if (!root && typeof document !== 'undefined') {
+    root =
+      (typeof document.getElementById === 'function' ? document.getElementById('app') : null) ||
+      document.body;
+  } else if (typeof root === 'string' && typeof document !== 'undefined') {
+    root = document.querySelector(root);
+  }
 
   if (!root) {
     return {
@@ -553,6 +645,7 @@ export function mountApp(container, options = {}) {
     };
   }
 
+  ensureClassList(root);
   patchMockElement(root);
 
   let mutationCount = 0;
@@ -591,14 +684,17 @@ export function mountApp(container, options = {}) {
   const initialTimeframe = options.initialTimeframe || options.timeframe || '1m';
 
   let toolbarEl =
+    resolveElement(root, 'toolbar') ||
     (typeof root.querySelector === 'function' &&
-      (root.querySelector('.toolbar') || root.querySelector('[data-role="toolbar"]'))) ||
-    resolveElement(root, 'toolbar');
+      (root.querySelector('.toolbar') || root.querySelector('[data-role="toolbar"]')));
 
   if (!toolbarEl && typeof root.appendChild === 'function') {
     try {
-      toolbarEl = createDOMElement('div', { class: 'toolbar', 'data-role': 'toolbar' });
-      toolbarEl.classList.add('toolbar');
+      toolbarEl = createDOMElement('div', { id: 'toolbar', class: 'toolbar', 'data-role': 'toolbar' });
+      ensureClassList(toolbarEl);
+      if (toolbarEl.classList && typeof toolbarEl.classList.add === 'function') {
+        toolbarEl.classList.add('toolbar');
+      }
       toolbarEl.setAttribute('data-role', 'toolbar');
       root.appendChild(toolbarEl);
     } catch {}
@@ -618,10 +714,13 @@ export function mountApp(container, options = {}) {
         'aria-pressed': isActive ? 'true' : 'false',
         class: isActive ? 'timeframe-btn active' : 'timeframe-btn',
       });
-      if (isActive) {
-        btn.classList.add('active');
-      } else {
-        btn.classList.remove('active');
+      ensureClassList(btn);
+      if (btn.classList && typeof btn.classList.add === 'function') {
+        if (isActive) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
       }
       btn.textContent = tf;
       toolbarEl.appendChild(btn);
@@ -635,6 +734,15 @@ export function mountApp(container, options = {}) {
   if (!canvasEl) {
     if (typeof options.createCanvas === 'function') {
       canvasEl = options.createCanvas();
+    } else if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+      canvasEl = document.createElement('canvas');
+      canvasEl.width = options.width || 800;
+      canvasEl.height = options.height || 400;
+      if (typeof canvasEl.setAttribute === 'function') {
+        canvasEl.setAttribute('id', 'chart-canvas');
+        canvasEl.setAttribute('width', String(canvasEl.width));
+        canvasEl.setAttribute('height', String(canvasEl.height));
+      }
     } else {
       canvasEl = createDOMElement('canvas', {
         id: 'chart-canvas',
@@ -652,14 +760,19 @@ export function mountApp(container, options = {}) {
   const rawCandles = options.candles || options.chartOptions?.candles || options.data || [];
 
   if (!chart && canvasEl) {
-    const chartConfig = {
-      ...(options.chartOptions || options),
-      candles: rawCandles,
-      timeframe: initialTimeframe,
-      width: options.width || canvasEl.width || 800,
-      height: options.height || canvasEl.height || 400,
-    };
-    chart = new Chart(canvasEl, chartConfig);
+    if (canvasEl.__nexus_chart) {
+      chart = canvasEl.__nexus_chart;
+    } else {
+      const chartConfig = {
+        ...(options.chartOptions || options),
+        candles: rawCandles,
+        timeframe: initialTimeframe,
+        width: options.width || canvasEl.width || 800,
+        height: options.height || canvasEl.height || 400,
+      };
+      chart = new Chart(canvasEl, chartConfig);
+      canvasEl.__nexus_chart = chart;
+    }
   }
 
   if (toolbarEl && chart) {
@@ -721,10 +834,17 @@ export function mountApp(container, options = {}) {
 
   const updateIntervalMs =
     typeof options.interval === 'number' && options.interval > 0 ? options.interval : 500;
+
+  if (root.__nexus_timer) {
+    clearInterval(root.__nexus_timer);
+    root.__nexus_timer = null;
+  }
+
   let timer = setInterval(update, updateIntervalMs);
   if (typeof timer?.unref === 'function') {
     timer.unref();
   }
+  root.__nexus_timer = timer;
 
   return {
     chart,
@@ -737,6 +857,9 @@ export function mountApp(container, options = {}) {
         clearInterval(timer);
         timer = null;
       }
+      if (root.__nexus_timer === timer) {
+        root.__nexus_timer = null;
+      }
       if (chart && typeof chart.destroy === 'function') {
         chart.destroy();
       }
@@ -746,6 +869,9 @@ export function mountApp(container, options = {}) {
         clearInterval(timer);
         timer = null;
       }
+      if (root.__nexus_timer === timer) {
+        root.__nexus_timer = null;
+      }
       if (chart && typeof chart.stop === 'function') {
         chart.stop();
       }
@@ -753,62 +879,29 @@ export function mountApp(container, options = {}) {
   };
 }
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-export const mount = mountApp;
-export const init = mountApp;
-export const initialize = mountApp;
-export const initApp = mountApp;
-
->>>>>>> task/story-574da399
-// Browser Auto-Mount Bootstrap Guard
-=======
-=======
->>>>>>> task/story-aef278d5
 export const mount = mountApp;
 
 export function initApp(container, options = {}) {
-  return mountApp(container, options);
+  const target =
+    container ||
+    (typeof document !== 'undefined'
+      ? (typeof document.getElementById === 'function' ? document.getElementById('app') : null) ||
+        document.body
+      : null);
+  return mountApp(target, options);
 }
 
 export const init = initApp;
 export const initialize = initApp;
 
+// Browser Auto-Mount Bootstrap Guard
 if (typeof document !== 'undefined') {
   const mountTarget =
     (typeof document.getElementById === 'function' ? document.getElementById('app') : null) ||
     document.body;
   if (mountTarget && !mountTarget.__nexus_mounted) {
     mountTarget.__nexus_mounted = true;
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-    if (typeof mountApp === 'function') {
-      mountApp(mountTarget);
-    } else if (typeof mount === 'function') {
-      mount(mountTarget);
-    } else if (typeof init === 'function') {
-      init(mountTarget);
-    }
-  }
-}
-=======
     if (typeof mountApp === 'function') mountApp(mountTarget);
     else if (typeof mount === 'function') mount(mountTarget);
   }
 }
->>>>>>> task/story-44727988
-=======
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
-  }
-}
->>>>>>> task/story-574da399
-=======
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
-  }
-}
->>>>>>> task/story-aef278d5
