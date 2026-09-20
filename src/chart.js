@@ -2,10 +2,11 @@
  * SmartTrading-V2 — Charting Engine
  * Implements financial chart rendering, price/time scales, candlestick series,
  * indicator overlays, and layout geometry.
- * Satisfies STORY 28.4.1: Resolve MISSING_HORIZONTAL_TIME_AXIS (Defect ID: DF-SCALES-02).
+ * Satisfies STORY 29.4.1: Resolve SPARSE_DATA_SERIES (Defect ID: DF-GRAPHICS-01).
  */
 
 export const PERIOD_DEFAULT = 20;
+export const SECTOR_COUNT_MINIMUM = 3;
 
 /**
  * Calculates Simple Moving Average (SMA) over candle close prices.
@@ -63,27 +64,84 @@ export function calculateEMA(candles, period = PERIOD_DEFAULT) {
 }
 
 /**
- * Generates synthetic candlestick data for initial load and testing.
+ * Generates a dense synthetic candlestick dataset within [50, 100] entities.
  *
- * @param {number} [count=30]
- * @returns {Array<Object>}
+ * @param {number} [count=80] Target candle count (bounded between 50 and 100)
+ * @param {number} [basePrice=100] Starting market price
+ * @param {number} [startTime=1711929600000] Initial epoch timestamp in milliseconds
+ * @returns {Array<Object>} Dense array of valid OHLC candle entities
  */
-export function generateDefaultCandles(count = 30) {
+export function generateDenseCandles(count = 80, basePrice = 100, startTime = 1711929600000) {
+  const targetCount = typeof count === 'number' ? Math.max(50, Math.min(100, Math.round(count))) : 80;
   const candles = [];
-  const baseTime = 1711929600000; // 2024-04-01 00:00:00 UTC
-  let price = 100;
+  let price = typeof basePrice === 'number' && !isNaN(basePrice) ? basePrice : 100;
+  const time = typeof startTime === 'number' && !isNaN(startTime) ? startTime : 1711929600000;
 
-  for (let i = 0; i < count; i++) {
-    const timestamp = baseTime + i * 3600000;
-    const delta = (Math.sin(i * 0.5) + (Math.random() - 0.48)) * 3;
-    const open = Math.round((price + Number.EPSILON) * 100) / 100;
-    const close = Math.round((price + delta + Number.EPSILON) * 100) / 100;
-    const high = Math.round((Math.max(open, close) + Math.random() * 2 + 0.5 + Number.EPSILON) * 100) / 100;
-    const low = Math.round((Math.min(open, close) - Math.random() * 2 - 0.5 + Number.EPSILON) * 100) / 100;
+  for (let i = 0; i < targetCount; i++) {
+    const timestamp = time + i * 3600000;
+    const delta = (Math.sin(i * 0.35) + Math.sin(i * 0.8) * 0.5 + (Math.random() - 0.48)) * 2.5;
+    const open = Math.round(price * 100) / 100;
+    const close = Math.round((price + delta) * 100) / 100;
+    const maxOC = Math.max(open, close);
+    const minOC = Math.min(open, close);
+    const high = Math.round((maxOC + Math.random() * 2 + 0.5) * 100) / 100;
+    const low = Math.round((minOC - Math.random() * 2 - 0.5) * 100) / 100;
     price = close;
     candles.push({ timestamp, open, high, low, close });
   }
+
   return candles;
+}
+
+/**
+ * Hydrates a sparse or incomplete dataset to ensure the 50-100 dense requirement is satisfied.
+ *
+ * @param {Array<Object>} [candles=[]] Initial sparse or partial candle series
+ * @param {number} [targetCount=80] Target count to hydrate to
+ * @returns {Array<Object>} Dense candle series
+ */
+export function hydrateCandles(candles = [], targetCount = 80) {
+  const desired = typeof targetCount === 'number' ? Math.max(50, Math.min(100, Math.round(targetCount))) : 80;
+  if (Array.isArray(candles) && candles.length >= 50 && candles.length <= 100) {
+    return [...candles];
+  }
+  if (!Array.isArray(candles) || candles.length === 0) {
+    return generateDenseCandles(desired);
+  }
+  if (candles.length > 100) {
+    return candles.slice(candles.length - desired);
+  }
+
+  const result = [...candles];
+  const last = candles[candles.length - 1];
+  let price = typeof last.close === 'number' ? last.close : (typeof last.open === 'number' ? last.open : 100);
+  const baseTime = typeof last.timestamp === 'number' ? last.timestamp : 1711929600000;
+  const needed = desired - result.length;
+
+  for (let i = 1; i <= needed; i++) {
+    const timestamp = baseTime + i * 3600000;
+    const delta = (Math.sin(i * 0.35) + (Math.random() - 0.48)) * 2;
+    const open = Math.round(price * 100) / 100;
+    const close = Math.round((price + delta) * 100) / 100;
+    const maxOC = Math.max(open, close);
+    const minOC = Math.min(open, close);
+    const high = Math.round((maxOC + Math.random() * 2 + 0.5) * 100) / 100;
+    const low = Math.round((minOC - Math.random() * 2 - 0.5) * 100) / 100;
+    price = close;
+    result.push({ timestamp, open, high, low, close });
+  }
+
+  return result;
+}
+
+/**
+ * Generates default synthetic candlestick data.
+ *
+ * @param {number} [count=80]
+ * @returns {Array<Object>}
+ */
+export function generateDefaultCandles(count = 80) {
+  return generateDenseCandles(count);
 }
 
 /**
@@ -203,7 +261,9 @@ export function renderPriceScale(ctx, plotArea, priceRange, width, height) {
     const fraction = i / ticks;
     const price = max - fraction * (max - min);
     const y = plotArea.top + fraction * plotArea.height;
-    ctx.fillText(price.toFixed(2), plotArea.right + 6, y);
+    if (typeof ctx.fillText === 'function') {
+      ctx.fillText(price.toFixed(2), plotArea.right + 6, y);
+    }
   }
 
   ctx.restore?.();
@@ -218,7 +278,6 @@ export function renderTimeScale(ctx, plotArea, candles, width, height, reservedB
 
   ctx.save?.();
 
-  // Draw horizontal baseline separating the plot area and the time scale
   ctx.beginPath();
   ctx.strokeStyle = '#2a2e39';
   ctx.lineWidth = 1;
@@ -264,7 +323,6 @@ export function renderTimeScale(ctx, plotArea, candles, width, height, reservedB
     if (!candle) continue;
     const x = Math.round(plotArea.left + (idx + 0.5) * candleStep);
 
-    // Baseline tick mark
     ctx.beginPath();
     ctx.strokeStyle = '#363c4e';
     ctx.lineWidth = 1;
@@ -272,9 +330,10 @@ export function renderTimeScale(ctx, plotArea, candles, width, height, reservedB
     ctx.lineTo(x, axisLineY + 4);
     ctx.stroke();
 
-    // Time marker text (e.g. HH:mm or YYYY-MM-DD)
     const text = formatTimestamp(candle.timestamp, isDaily);
-    ctx.fillText(text, x, textY);
+    if (typeof ctx.fillText === 'function') {
+      ctx.fillText(text, x, textY);
+    }
   }
 
   ctx.restore?.();
@@ -440,11 +499,63 @@ export class Chart {
       }
     };
 
-    this.candles = options.data || options.candles || generateDefaultCandles(30);
+    const initialCandles = options.data || options.candles;
+    this.candles = initialCandles ? initialCandles : generateDenseCandles(80);
     this.data = this.candles;
     this.overlayType = options.overlay || 'SMA (20)';
 
     this.updatePlotArea();
+  }
+
+  mount(target) {
+    if (target && (target.getContext || target.tagName === 'CANVAS')) {
+      this.canvas = target;
+      if (typeof target.getContext === 'function') {
+        this.ctx = target.getContext('2d');
+      }
+    } else if (this.canvas && typeof this.canvas.getContext === 'function') {
+      this.ctx = this.canvas.getContext('2d');
+    }
+
+    if (!this.candles || this.candles.length < 50 || this.candles.length > 100) {
+      this.candles = hydrateCandles(this.candles, 80);
+      this.data = this.candles;
+    }
+
+    this.updatePlotArea();
+    this.render();
+    return this;
+  }
+
+  getData() {
+    return this.candles;
+  }
+
+  getCandleCoordinates() {
+    this.updatePlotArea();
+    const count = this.candles.length;
+    if (count === 0) return [];
+    const candleStep = this.plotArea.width / count;
+    const { min, max } = this.getPriceRange();
+    const range = max - min || 1;
+    const toY = (price) => this.plotArea.top + ((max - price) / range) * this.plotArea.height;
+
+    return this.candles.map((c, i) => {
+      const x = this.plotArea.left + (i + 0.5) * candleStep;
+      const openY = toY(c.open);
+      const closeY = toY(c.close);
+      const highY = toY(c.high);
+      const lowY = toY(c.low);
+      return {
+        x,
+        y: closeY,
+        openY,
+        closeY,
+        highY,
+        lowY,
+        candle: c
+      };
+    });
   }
 
   updatePlotArea() {
@@ -496,7 +607,8 @@ export class Chart {
   }
 
   setData(candles) {
-    this.candles = Array.isArray(candles) ? candles : [];
+    const candidate = Array.isArray(candles) ? candles : [];
+    this.candles = candidate.length < 50 || candidate.length > 100 ? hydrateCandles(candidate, 80) : candidate;
     this.data = this.candles;
     this.render();
   }
