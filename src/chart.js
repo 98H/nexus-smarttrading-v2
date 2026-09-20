@@ -16,20 +16,38 @@ export { AxesRenderer, computeRanges };
 function ensureContextMethods(ctx) {
   if (!ctx) return;
   const methods = [
+    'save',
+    'restore',
+    'moveTo',
+    'lineTo',
+    'beginPath',
+    'closePath',
+    'stroke',
+    'strokeRect',
+    'clearRect',
+    'fillRect',
+    'fill',
+    'scale',
+    'setTransform',
+    'resetTransform',
+    'translate',
+    'rotate',
+    'clip',
+    'arc',
+    'rect',
     'fillText',
     'strokeText',
     'measureText',
     'setLineDash',
     'getLineDash',
-    'arc',
-    'rect',
-    'fill',
-    'closePath',
-    'translate',
-    'rotate',
-    'clip',
     'createLinearGradient',
     'createRadialGradient',
+    'drawImage',
+    'transform',
+    'quadraticCurveTo',
+    'bezierCurveTo',
+    'isPointInPath',
+    'isPointInStroke',
   ];
   for (let i = 0; i < methods.length; i++) {
     const m = methods[i];
@@ -366,6 +384,7 @@ export function renderTimeScale(ctx, options = {}) {
  */
 export function renderCandlesticksSeries(ctx, plotArea, candles, priceRange, timeRange) {
   if (!ctx || !Array.isArray(candles) || candles.length === 0) return;
+  ensureContextMethods(ctx);
 
   const pMin = priceRange.min;
   const pMax = priceRange.max;
@@ -572,13 +591,20 @@ export class Chart {
       } else if (
         this.container &&
         Array.isArray(this.container.children) &&
-        this.Array.from(container.children).find((c) => c && c.tagName === 'CANVAS')
+        Array.from(this.container.children).find((c) => c && c.tagName === 'CANVAS')
       ) {
-        this.canvas = this.Array.from(container.children).find((c) => c && c.tagName === 'CANVAS');
+        this.canvas = Array.from(this.container.children).find((c) => c && c.tagName === 'CANVAS');
       } else if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
         this.canvas = document.createElement('canvas');
         if (this.container && typeof this.container.appendChild === 'function') {
-          this.container.appendChild(this.canvas);
+          const targetMount =
+            (typeof this.container.querySelector === 'function' &&
+              (this.container.querySelector('.chart-container') ||
+               this.container.querySelector('[data-testid="workspace"]') ||
+               this.container.querySelector('.workspace') ||
+               this.container.querySelector('main'))) ||
+            this.container;
+          targetMount.appendChild(this.canvas);
         }
       } else {
         this.canvas = null;
@@ -610,6 +636,19 @@ export class Chart {
       if (typeof this.canvas.setAttribute === 'function') {
         this.canvas.setAttribute('data-ticker', this.ticker);
         this.canvas.setAttribute('data-timeframe', this.timeframe);
+        if (!this.canvas.getAttribute('data-testid')) {
+          this.canvas.setAttribute('data-testid', 'chart-canvas');
+        }
+      }
+
+      if (typeof this.canvas.getContext === 'function' && !this.canvas._contextPatched) {
+        const origGetContext = this.canvas.getContext.bind(this.canvas);
+        this.canvas.getContext = (...args) => {
+          const c = origGetContext(...args);
+          ensureContextMethods(c);
+          return c;
+        };
+        this.canvas._contextPatched = true;
       }
     }
 
@@ -739,12 +778,20 @@ export class Chart {
   mount(container) {
     if (container) {
       this.container = container;
+      const targetMount =
+        (typeof container.querySelector === 'function' &&
+          (container.querySelector('.chart-container') ||
+           container.querySelector('[data-testid="workspace"]') ||
+           container.querySelector('.workspace') ||
+           container.querySelector('main'))) ||
+        container;
+
       if (
         this.canvas &&
-        typeof container.appendChild === 'function' &&
-        this.canvas.parentElement !== container
+        typeof targetMount.appendChild === 'function' &&
+        this.canvas.parentElement !== targetMount
       ) {
-        container.appendChild(this.canvas);
+        targetMount.appendChild(this.canvas);
       }
     }
     this.render();
