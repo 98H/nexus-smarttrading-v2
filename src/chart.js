@@ -2,6 +2,7 @@
  * SmartTrading-V2 — Chart Engine & Candlestick/Axes Orchestrator
  * Integrates Candlestick rendering, AxesRenderer (DF-SCALES-01, DF-SCALES-02),
  * and analytical overlays (DF-OVERLAYS-01) within constrained viewport bounds.
+ * Satisfies STORY 31.1.1 (Resolve UNRESPONSIVE_CANVAS_ZOOM).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -67,7 +68,10 @@ export function polyfillCanvasContext(ctx) {
  * Maps a financial price value to a canvas Y pixel coordinate (DF-TOOLS-03).
  */
 export function mapPriceToY(price, plotTop, plotHeight, minPrice, maxPrice) {
-  if (maxPrice === minPrice) return plotTop + plotHeight / 2;
+  if (!Number.isFinite(price)) return plotTop + plotHeight / 2;
+  if (maxPrice === minPrice || !Number.isFinite(maxPrice) || !Number.isFinite(minPrice)) {
+    return plotTop + plotHeight / 2;
+  }
   return plotTop + ((maxPrice - price) / (maxPrice - minPrice)) * plotHeight;
 }
 
@@ -75,7 +79,11 @@ export function mapPriceToY(price, plotTop, plotHeight, minPrice, maxPrice) {
  * Maps a canvas Y pixel coordinate to a financial price value (DF-TOOLS-03).
  */
 export function mapYToPrice(y, plotTop, plotHeight, minPrice, maxPrice) {
-  if (plotHeight === 0) return minPrice;
+  if (!Number.isFinite(y)) return minPrice;
+  if (plotHeight === 0 || !Number.isFinite(plotHeight)) return minPrice;
+  if (maxPrice === minPrice || !Number.isFinite(maxPrice) || !Number.isFinite(minPrice)) {
+    return minPrice;
+  }
   return maxPrice - ((y - plotTop) / plotHeight) * (maxPrice - minPrice);
 }
 
@@ -84,13 +92,34 @@ export function mapYToPrice(y, plotTop, plotHeight, minPrice, maxPrice) {
  */
 export class Chart {
   /**
-   * @param {HTMLCanvasElement|Object} canvas
-   * @param {Object} [options={}]
+   * @param {HTMLCanvasElement|Object} canvasOrOptions
+   * @param {Object} [maybeOptions={}]
    */
-  constructor(canvas, options = {}) {
+  constructor(canvasOrOptions, maybeOptions = {}) {
+    let canvas = canvasOrOptions;
+    let options = maybeOptions || {};
+
+    if (canvasOrOptions && typeof canvasOrOptions.getContext !== 'function' && canvasOrOptions.canvas) {
+      canvas = canvasOrOptions.canvas;
+      options = canvasOrOptions;
+    }
+
     this.canvas = canvas;
     this.ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
     polyfillCanvasContext(this.ctx);
+
+    this.minZoom = typeof options.minZoom === 'number' && Number.isFinite(options.minZoom)
+      ? options.minZoom
+      : 0.2;
+    this.maxZoom = typeof options.maxZoom === 'number' && Number.isFinite(options.maxZoom)
+      ? options.maxZoom
+      : 5.0;
+
+    const initial = typeof options.initialZoom === 'number' && Number.isFinite(options.initialZoom)
+      ? options.initialZoom
+      : (typeof options.zoom === 'number' && Number.isFinite(options.zoom) ? options.zoom : 1.0);
+    this.zoom = Math.min(this.maxZoom, Math.max(this.minZoom, initial));
+
     this.data = Array.isArray(options.data) ? [...options.data] : [];
     this.overlayType = options.overlayType || 'EMA';
     this.period = Number(options.period) || 20;
@@ -110,7 +139,61 @@ export class Chart {
 
     if (this.canvas) {
       this.canvas.axesRenderer = this.axesRenderer;
+      this.bindEvents();
     }
+  }
+
+  bindEvents() {
+    if (!this.canvas || typeof this.canvas.addEventListener !== 'function') return;
+    this.unbindEvents();
+    this.onWheel = (e) => this.handleWheel(e);
+    this.canvas.addEventListener('wheel', this.onWheel);
+  }
+
+  unbindEvents() {
+    if (!this.canvas || typeof this.canvas.removeEventListener !== 'function') return;
+    if (this.onWheel) {
+      this.canvas.removeEventListener('wheel', this.onWheel);
+      this.onWheel = null;
+    }
+  }
+
+  destroy() {
+    this.unbindEvents();
+  }
+
+  handleWheel(e) {
+    if (!e) return;
+    if (typeof e.preventDefault === 'function') {
+      e.preventDefault();
+    }
+
+    const deltaY = typeof e.deltaY === 'number' && Number.isFinite(e.deltaY) ? e.deltaY : 0;
+    if (deltaY === 0) {
+      return;
+    }
+
+    const zoomFactor = Math.exp(-deltaY * 0.001);
+    if (!Number.isFinite(zoomFactor) || Number.isNaN(zoomFactor)) {
+      return;
+    }
+
+    const newZoom = this.zoom * zoomFactor;
+    this.setZoom(newZoom);
+  }
+
+  getZoom() {
+    return this.zoom;
+  }
+
+  setZoom(newZoom) {
+    if (typeof newZoom !== 'number' || !Number.isFinite(newZoom) || Number.isNaN(newZoom)) {
+      return this.zoom;
+    }
+    const clamped = Math.min(this.maxZoom, Math.max(this.minZoom, newZoom));
+    this.zoom = clamped;
+    this.render();
+    return this.zoom;
   }
 
   getAxesRenderer() {
@@ -134,11 +217,11 @@ export class Chart {
 
   resize(width, height) {
     if (this.canvas) {
-      if (width !== undefined) this.canvas.width = width;
-      if (height !== undefined) this.canvas.height = height;
+      if (typeof width === 'number') this.canvas.width = width;
+      if (typeof height === 'number') this.canvas.height = height;
     }
-    const w = this.canvas ? this.canvas.width : (width || 800);
-    const h = this.canvas ? this.canvas.height : (height || 600);
+    const w = (this.canvas && this.canvas.width) || width || 800;
+    const h = (this.canvas && this.canvas.height) || height || 600;
     if (this.axesRenderer) {
       this.axesRenderer.resize(w, h);
     }
@@ -154,8 +237,8 @@ export class Chart {
     const ctx = this.ctx;
     if (!ctx) return;
 
-    const width = this.canvas.width || 800;
-    const height = this.canvas.height || 600;
+    const width = (this.canvas && this.canvas.width) || 800;
+    const height = (this.canvas && this.canvas.height) || 600;
 
     if (typeof ctx.clearRect === 'function') {
       ctx.clearRect(0, 0, width, height);
@@ -195,7 +278,7 @@ export class Chart {
     const priceMin = ranges.priceRange.min;
     const priceMax = ranges.priceRange.max;
 
-    // Draw candlestick bars
+    // Draw candlestick bars reflecting active zoom scale
     this.drawCandles(ctx, data, plotArea, priceMin, priceMax);
 
     // Analytical indicator overlay mapping
@@ -217,18 +300,20 @@ export class Chart {
   drawCandles(ctx, data, plotArea, minPrice, maxPrice) {
     if (!ctx || !Array.isArray(data) || data.length === 0) return;
     const n = data.length;
-    const candleWidth = Math.max(1, Math.min(14, (plotArea.width / n) * 0.7));
+    const plotWidth = Number.isFinite(plotArea.width) && plotArea.width > 0 ? plotArea.width : 1;
+    const baseWidth = Math.max(1, Math.min(14, (plotWidth / n) * 0.7));
+    const candleWidth = Math.max(1, Math.min(plotWidth / Math.max(1, n), baseWidth * this.zoom));
 
     ctx.save?.();
     for (let i = 0; i < n; i++) {
       const c = data[i];
       if (!c) continue;
-      const open = typeof c.open === 'number' ? c.open : (typeof c.close === 'number' ? c.close : 0);
-      const close = typeof c.close === 'number' ? c.close : open;
-      const high = typeof c.high === 'number' ? c.high : Math.max(open, close);
-      const low = typeof c.low === 'number' ? c.low : Math.min(open, close);
+      const open = typeof c.open === 'number' && Number.isFinite(c.open) ? c.open : (typeof c.close === 'number' && Number.isFinite(c.close) ? c.close : 0);
+      const close = typeof c.close === 'number' && Number.isFinite(c.close) ? c.close : open;
+      const high = typeof c.high === 'number' && Number.isFinite(c.high) ? c.high : Math.max(open, close);
+      const low = typeof c.low === 'number' && Number.isFinite(c.low) ? c.low : Math.min(open, close);
 
-      const x = plotArea.left + (n > 1 ? (i / (n - 1)) * (plotArea.width - candleWidth) + candleWidth / 2 : plotArea.width / 2);
+      const x = plotArea.left + (n > 1 ? (i / (n - 1)) * (plotWidth - candleWidth) + candleWidth / 2 : plotWidth / 2);
       const yHigh = mapPriceToY(high, plotArea.top, plotArea.height, minPrice, maxPrice);
       const yLow = mapPriceToY(low, plotArea.top, plotArea.height, minPrice, maxPrice);
       const yOpen = mapPriceToY(open, plotArea.top, plotArea.height, minPrice, maxPrice);
