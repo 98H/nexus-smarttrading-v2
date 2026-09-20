@@ -1,10 +1,18 @@
 /**
  * SmartTrading-V2 — Main Application Entrypoint
  * Mounts the financial chart workspace, active canvas rendering context,
- * analytical indicator overlays, and live legend components.
- * Resolves STATIC_APPLICATION (STORY 30.2.1 / DF-LIVENESS-01).
+ * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02), analytical indicator
+ * overlays (DF-OVERLAYS-01), and live legend components.
+ * Satisfies STORY 2.3.1, STORY 30.2.1, and STORY 31.3.1.
  */
 
+import { AxesRenderer, computeRanges } from './axes.js';
+import {
+  Chart,
+  polyfillCanvasContext,
+  mapYToPrice,
+  mapPriceToY,
+} from './chart.js';
 import {
   calculateSMA,
   calculateEMA,
@@ -15,6 +23,12 @@ import {
 } from './indicators.js';
 
 export {
+  AxesRenderer,
+  computeRanges,
+  Chart,
+  polyfillCanvasContext,
+  mapYToPrice,
+  mapPriceToY,
   calculateSMA,
   calculateEMA,
   renderOverlay,
@@ -22,73 +36,6 @@ export {
   updateIndicatorLegend,
   getClosePrice,
 };
-
-/**
- * Polyfills missing CanvasRenderingContext2D methods in mock / headless environments
- * to ensure non-throwing canvas path and overlay operations.
- *
- * @param {Object} ctx 2D rendering context
- * @returns {Object} Polyfilled context
- */
-export function polyfillCanvasContext(ctx) {
-  if (!ctx || typeof ctx !== 'object') return ctx;
-  const proto = Object.getPrototypeOf(ctx);
-  const targets = proto && proto !== Object.prototype ? [ctx, proto] : [ctx];
-  const noop = () => {};
-  const methods = [
-    'moveTo',
-    'lineTo',
-    'beginPath',
-    'closePath',
-    'stroke',
-    'fill',
-    'clearRect',
-    'fillRect',
-    'strokeRect',
-    'save',
-    'restore',
-    'setLineDash',
-    'getLineDash',
-    'arc',
-    'arcTo',
-    'ellipse',
-    'rect',
-    'clip',
-    'measureText',
-    'fillText',
-    'strokeText',
-    'drawImage',
-    'createLinearGradient',
-    'createRadialGradient',
-    'createPattern',
-    'scale',
-    'rotate',
-    'translate',
-    'transform',
-    'setTransform',
-    'resetTransform',
-    'isPointInPath',
-    'isPointInStroke',
-  ];
-
-  for (const target of targets) {
-    for (const m of methods) {
-      if (typeof target[m] !== 'function') {
-        if (m === 'measureText') {
-          target[m] = () => ({ width: 0 });
-        } else if (m === 'getLineDash') {
-          target[m] = () => [];
-        } else if (m === 'createLinearGradient' || m === 'createRadialGradient') {
-          target[m] = () => ({ addColorStop: noop });
-        } else {
-          target[m] = noop;
-        }
-      }
-    }
-  }
-
-  return ctx;
-}
 
 /**
  * Application state store.
@@ -102,6 +49,8 @@ const appState = {
   selectedDrawing: null,
 };
 
+let activeAppInstance = null;
+
 /**
  * Returns the current application state.
  *
@@ -112,7 +61,8 @@ export function getState() {
 }
 
 /**
- * DOM Element creation utility helper.
+ * DOM Element creation utility helper that safely supports mock DOM environments
+ * without mutating native read-only DOM getters.
  *
  * @param {string} tag
  * @param {Object} [attrs={}]
@@ -120,20 +70,57 @@ export function getState() {
  * @returns {HTMLElement|Object}
  */
 export function createElement(tag, attrs = {}, children = []) {
-  const el = typeof document !== 'undefined' && typeof document.createElement === 'function'
-    ? document.createElement(tag)
-    : {
-        tagName: tag.toUpperCase(),
-        className: '',
-        id: '',
-        style: {},
-        children: [],
-        textContent: '',
-        appendChild(child) {
-          this.children.push(child);
-          return child;
-        },
-      };
+  let el;
+  if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+    el = document.createElement(tag);
+  } else {
+    el = {
+      tagName: tag.toUpperCase(),
+      className: '',
+      id: '',
+      style: {},
+      children: [],
+      textContent: '',
+    };
+  }
+
+  // Ensure helper methods if missing on mock elements
+  if (typeof el.appendChild !== 'function') {
+    if (!('children' in el)) {
+      el.children = [];
+    }
+    el.appendChild = function (child) {
+      if (Array.isArray(this.children)) {
+        this.children.push(child);
+      }
+      return child;
+    };
+  }
+  if (typeof el.removeChild !== 'function') {
+    el.removeChild = function (child) {
+      if (Array.isArray(this.children)) {
+        const idx = this.children.indexOf(child);
+        if (idx !== -1) this.children.splice(idx, 1);
+      }
+      return child;
+    };
+  }
+  if (typeof el.addEventListener !== 'function') {
+    el.addEventListener = function () {};
+  }
+  if (typeof el.removeEventListener !== 'function') {
+    el.removeEventListener = function () {};
+  }
+  if (typeof el.setAttribute !== 'function') {
+    el.setAttribute = function (name, value) {
+      this[name] = value;
+    };
+  }
+  if (typeof el.getAttribute !== 'function') {
+    el.getAttribute = function (name) {
+      return this[name] !== undefined ? this[name] : null;
+    };
+  }
 
   if (attrs) {
     Object.keys(attrs).forEach((key) => {
@@ -168,7 +155,9 @@ export function createElement(tag, attrs = {}, children = []) {
       if (child) {
         if (typeof child === 'string') {
           if (typeof document !== 'undefined' && typeof document.createTextNode === 'function') {
-            el.appendChild(document.createTextNode(child));
+            if (typeof el.appendChild === 'function') {
+              el.appendChild(document.createTextNode(child));
+            }
           } else {
             el.textContent = (el.textContent || '') + child;
           }
@@ -182,20 +171,6 @@ export function createElement(tag, attrs = {}, children = []) {
   }
 
   return el;
-}
-
-/**
- * Maps a canvas Y pixel coordinate to a financial price value (DF-TOOLS-03).
- */
-export function mapYToPrice(y, plotTop, plotHeight, minPrice, maxPrice) {
-  return maxPrice - ((y - plotTop) / plotHeight) * (maxPrice - minPrice);
-}
-
-/**
- * Maps a financial price value to a canvas Y pixel coordinate (DF-TOOLS-03).
- */
-export function mapPriceToY(price, plotTop, plotHeight, minPrice, maxPrice) {
-  return plotTop + ((maxPrice - price) / (maxPrice - minPrice)) * plotHeight;
 }
 
 /**
@@ -263,7 +238,9 @@ export function ToolPalette(options = {}) {
         }
       },
     });
-    container.appendChild(btn);
+    if (typeof container.appendChild === 'function') {
+      container.appendChild(btn);
+    }
   });
 
   return container;
@@ -302,7 +279,9 @@ export function AuxiliaryDock(options = {}) {
       letterSpacing: '0.5px',
     },
   });
-  dock.appendChild(dockHeader);
+  if (typeof dock.appendChild === 'function') {
+    dock.appendChild(dockHeader);
+  }
 
   const stats = createElement('div', {
     className: 'dock-stats',
@@ -331,12 +310,18 @@ export function AuxiliaryDock(options = {}) {
     });
     const labelSpan = createElement('span', { textContent: item.label, style: { color: '#787b86' } });
     const valSpan = createElement('span', { textContent: item.value });
-    row.appendChild(labelSpan);
-    row.appendChild(valSpan);
-    stats.appendChild(row);
+    if (typeof row.appendChild === 'function') {
+      row.appendChild(labelSpan);
+      row.appendChild(valSpan);
+    }
+    if (typeof stats.appendChild === 'function') {
+      stats.appendChild(row);
+    }
   });
 
-  dock.appendChild(stats);
+  if (typeof dock.appendChild === 'function') {
+    dock.appendChild(stats);
+  }
   return dock;
 }
 
@@ -379,8 +364,10 @@ export function initControls(header, options = {}) {
     optEMA.selected = true;
   }
 
-  select.appendChild(optEMA);
-  select.appendChild(optSMA);
+  if (typeof select.appendChild === 'function') {
+    select.appendChild(optEMA);
+    select.appendChild(optSMA);
+  }
 
   if (typeof select.addEventListener === 'function') {
     select.addEventListener('change', (e) => {
@@ -391,7 +378,9 @@ export function initControls(header, options = {}) {
     });
   }
 
-  controls.appendChild(select);
+  if (typeof controls.appendChild === 'function') {
+    controls.appendChild(select);
+  }
   if (header && typeof header.appendChild === 'function') {
     header.appendChild(controls);
   }
@@ -399,106 +388,7 @@ export function initControls(header, options = {}) {
 }
 
 /**
- * Chart Engine and Overlay Renderer.
- */
-export class Chart {
-  constructor(canvas, options = {}) {
-    this.canvas = canvas;
-    this.ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
-    polyfillCanvasContext(this.ctx);
-    this.data = Array.isArray(options.data) ? [...options.data] : [];
-    this.overlayType = options.overlayType || 'EMA';
-    this.period = Number(options.period) || 20;
-    this.color = options.color || '#FF9800';
-    this.legend = options.legend || null;
-    this.indicatorValues = [];
-  }
-
-  setData(data) {
-    this.data = Array.isArray(data) ? [...data] : [];
-    this.render();
-  }
-
-  setOverlay(type, period = 20) {
-    this.overlayType = type;
-    this.period = period;
-    this.render();
-  }
-
-  render() {
-    if (!this.canvas) return;
-    if (!this.ctx && typeof this.canvas.getContext === 'function') {
-      this.ctx = this.canvas.getContext('2d');
-    }
-    polyfillCanvasContext(this.ctx);
-
-    const data = this.data;
-    const values = this.overlayType === 'SMA'
-      ? calculateSMA(data, this.period)
-      : calculateEMA(data, this.period);
-
-    this.indicatorValues = values;
-
-    if (this.legend) {
-      const latestVal = values.length > 0 ? values[values.length - 1] : null;
-      updateIndicatorLegend(this.legend, latestVal);
-    }
-
-    const ctx = this.ctx;
-    if (!ctx) return;
-
-    const width = this.canvas.width || 800;
-    const height = this.canvas.height || 400;
-
-    if (typeof ctx.clearRect === 'function') {
-      ctx.clearRect(0, 0, width, height);
-    }
-
-    if (data.length === 0) return;
-
-    let minPrice = Infinity;
-    let maxPrice = -Infinity;
-    for (let i = 0; i < data.length; i++) {
-      const c = getClosePrice(data[i]);
-      const l = typeof data[i].low === 'number' ? data[i].low : c;
-      const h = typeof data[i].high === 'number' ? data[i].high : c;
-      if (!Number.isNaN(l) && l < minPrice) minPrice = l;
-      if (!Number.isNaN(h) && h > maxPrice) maxPrice = h;
-    }
-
-    if (minPrice === Infinity || maxPrice === -Infinity || minPrice === maxPrice) {
-      minPrice = 0;
-      maxPrice = 100;
-    }
-
-    const padding = (maxPrice - minPrice) * 0.08 || 1;
-    const plotMin = minPrice - padding;
-    const plotMax = maxPrice + padding;
-    const plotTop = 20;
-    const plotBottom = height - 20;
-    const plotHeight = Math.max(1, plotBottom - plotTop);
-    const plotLeft = 20;
-    const plotRight = width - 20;
-    const plotWidth = Math.max(1, plotRight - plotLeft);
-
-    const coordinates = values.map((val, idx) => {
-      const x = plotLeft + (data.length > 1 ? (idx / (data.length - 1)) * plotWidth : plotWidth / 2);
-      if (val === null || val === undefined || Number.isNaN(val)) {
-        return { x, y: 0 };
-      }
-      const y = mapPriceToY(val, plotTop, plotHeight, plotMin, plotMax);
-      return { x, y };
-    });
-
-    renderOverlay(ctx, values, coordinates, {
-      color: this.color,
-      lineWidth: 2,
-    });
-  }
-}
-
-/**
- * Starts an active render loop via requestAnimationFrame (or fallback timer)
+ * Starts an active render loop via requestAnimationFrame
  * to continuously re-render the canvas and prevent static paint detection.
  * Satisfies STORY 30.2.1 (DF-LIVENESS-01).
  *
@@ -508,26 +398,21 @@ export class Chart {
 export function startRenderLoop(instance) {
   let isRunning = true;
 
+  if (typeof requestAnimationFrame !== 'function') {
+    return () => {
+      isRunning = false;
+    };
+  }
+
   function renderFrame() {
     if (!isRunning) return;
     if (typeof instance.render === 'function') {
       instance.render();
     }
-    if (typeof requestAnimationFrame === 'function') {
-      instance.rafId = requestAnimationFrame(renderFrame);
-    }
+    instance.rafId = requestAnimationFrame(renderFrame);
   }
 
-  if (typeof requestAnimationFrame === 'function') {
-    instance.rafId = requestAnimationFrame(renderFrame);
-  } else if (typeof setInterval === 'function') {
-    instance.timerId = setInterval(() => {
-      if (!isRunning) return;
-      if (typeof instance.render === 'function') {
-        instance.render();
-      }
-    }, 16);
-  }
+  instance.rafId = requestAnimationFrame(renderFrame);
 
   return () => {
     isRunning = false;
@@ -535,17 +420,14 @@ export function startRenderLoop(instance) {
       cancelAnimationFrame(instance.rafId);
       instance.rafId = null;
     }
-    if (instance.timerId && typeof clearInterval === 'function') {
-      clearInterval(instance.timerId);
-      instance.timerId = null;
-    }
   };
 }
 
 /**
  * Initializes and mounts the financial chart application into the specified DOM target.
+ * Satisfies STORY 2.3.1 (DF-SCALES-01) and STORY 31.3.1 (DF-SCALES-02).
  *
- * @param {Object} options Initialization settings
+ * @param {Object} [options={}] Initialization settings
  * @returns {Object} Chart workspace instance
  */
 export function initApp(options = {}) {
@@ -565,19 +447,32 @@ export function initApp(options = {}) {
     throw new Error(`Target container '${rootId}' was not found in the DOM`);
   }
 
-  // Layout styling: 100vh responsive flex layout (DF-LAYOUT-02)
-  if (!root.style) {
-    root.style = {};
+  // Layout styling: 100vh responsive flex layout with overflow hidden (DF-LAYOUT-02 / STORY 31.3.1)
+  if (root.style) {
+    root.style.display = 'flex';
+    root.style.flexDirection = 'column';
+    root.style.width = '100vw';
+    root.style.height = '100vh';
+    root.style.maxHeight = '100vh';
+    root.style.overflow = 'hidden';
+    root.style.boxSizing = 'border-box';
+    root.style.background = '#131722';
+    root.style.color = '#d1d4dc';
+    root.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
   }
-  root.style.display = 'flex';
-  root.style.flexDirection = 'column';
-  root.style.width = '100vw';
-  root.style.height = '100vh';
-  root.style.overflow = 'hidden';
-  root.style.boxSizing = 'border-box';
-  root.style.background = '#131722';
-  root.style.color = '#d1d4dc';
-  root.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+
+  if (typeof document !== 'undefined') {
+    if (document.documentElement && document.documentElement.style) {
+      document.documentElement.style.height = '100%';
+      document.documentElement.style.overflow = 'hidden';
+    }
+    if (document.body && document.body.style) {
+      document.body.style.height = '100%';
+      document.body.style.margin = '0';
+      document.body.style.padding = '0';
+      document.body.style.overflow = 'hidden';
+    }
+  }
 
   const overlayType = options.overlayType || 'EMA';
   const period = Number(options.period) || 20;
@@ -601,8 +496,10 @@ export function initApp(options = {}) {
       background: '#1e222d',
       borderBottom: '1px solid #2a2e39',
       minHeight: '40px',
+      maxHeight: '48px',
       gap: '12px',
       boxSizing: 'border-box',
+      flexShrink: '0',
     },
   });
 
@@ -631,10 +528,12 @@ export function initApp(options = {}) {
     style: {
       display: 'flex',
       flexDirection: 'row',
-      flex: '1',
+      flex: '1 1 0%',
       minHeight: '0',
+      maxHeight: 'calc(100vh - 48px)',
       width: '100%',
       overflow: 'hidden',
+      boxSizing: 'border-box',
     },
   });
 
@@ -647,52 +546,76 @@ export function initApp(options = {}) {
   const chartContainer = createElement('div', {
     className: 'chart-container',
     style: {
-      flex: '1',
+      flex: '1 1 0%',
       minHeight: '0',
+      height: '100%',
+      maxHeight: '100%',
       display: 'flex',
       flexDirection: 'column',
       position: 'relative',
       overflow: 'hidden',
+      boxSizing: 'border-box',
     },
   });
 
   const canvas = createElement('canvas', {
     className: 'chart-canvas',
     style: {
-      flex: '1',
+      flex: '1 1 0%',
       minHeight: '0',
       width: '100%',
       height: '100%',
+      maxHeight: '100%',
       display: 'block',
       background: '#131722',
+      boxSizing: 'border-box',
     },
   });
-  canvas.width = options.width || 800;
-  canvas.height = options.height || 400;
 
-  if (canvas && typeof canvas.getContext === 'function') {
-    const ctx = canvas.getContext('2d');
+  const canvasWidth = options.width || (canvas && canvas.width) || 800;
+  const canvasHeight = options.height || (canvas && canvas.height) || 600;
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
+
+  let ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+  if (ctx) {
     polyfillCanvasContext(ctx);
   }
 
-  chartContainer.appendChild(canvas);
+  // AxesRenderer instance for scale markers and gridlines
+  const axesRenderer = new AxesRenderer({
+    canvas,
+    context: ctx,
+    priceAxisWidth: options.priceAxisWidth !== undefined ? options.priceAxisWidth : 70,
+    timeAxisHeight: options.timeAxisHeight !== undefined ? options.timeAxisHeight : 50,
+  });
+
+  canvas.axesRenderer = axesRenderer;
+
+  if (typeof chartContainer.appendChild === 'function') {
+    chartContainer.appendChild(canvas);
+  }
 
   const dock = AuxiliaryDock();
 
-  workspace.appendChild(toolPalette);
-  workspace.appendChild(chartContainer);
-  workspace.appendChild(dock);
+  if (typeof workspace.appendChild === 'function') {
+    workspace.appendChild(toolPalette);
+    workspace.appendChild(chartContainer);
+    workspace.appendChild(dock);
+  }
 
   // Mount components
-  root.appendChild(header);
-  root.appendChild(workspace);
-
-  // Direct mounting into root for shallow mock DOM querySelector compatibility
-  if (root.querySelector && !root.querySelector('canvas')) {
-    root.appendChild(canvas);
+  if (typeof root.appendChild === 'function') {
+    root.appendChild(header);
+    root.appendChild(workspace);
   }
-  if (root.querySelector && !root.querySelector('.indicator-legend')) {
-    root.appendChild(legend);
+
+  // In shallow mock DOMs (where querySelector only scans direct children), ensure canvas is attached to root
+  if (typeof root.querySelector === 'function') {
+    const foundCanvas = root.querySelector('canvas');
+    if (!foundCanvas && typeof root.appendChild === 'function') {
+      root.appendChild(canvas);
+    }
   }
 
   // Chart manager instance
@@ -702,6 +625,7 @@ export function initApp(options = {}) {
     period,
     color: overlayColor,
     legend,
+    axesRenderer,
   });
 
   const instance = {
@@ -713,6 +637,8 @@ export function initApp(options = {}) {
     toolPalette,
     dock,
     chart,
+    axesRenderer,
+    getAxesRenderer: () => axesRenderer,
     get data() {
       return chart.data;
     },
@@ -744,18 +670,56 @@ export function initApp(options = {}) {
       chart.indicatorValues = val;
     },
     render() {
+      if (axesRenderer) {
+        axesRenderer.context = canvas.getContext ? canvas.getContext('2d') : ctx;
+        axesRenderer.render(this.data);
+      }
       chart.render();
       this.indicatorValues = chart.indicatorValues;
     },
+    updateData(newCandles) {
+      const candles = Array.isArray(newCandles) ? [...newCandles] : [];
+      this.data = candles;
+      appState.data = candles;
+      if (chart) {
+        chart.data = candles;
+      }
+      if (axesRenderer) {
+        axesRenderer.render(candles);
+      }
+      return Promise.resolve(this);
+    },
   };
 
-  // Initial render of overlays and legend
+  instance.onDataUpdate = instance.updateData;
+  activeAppInstance = instance;
+
+  // Window resize handler triggering coordinate axes redrawing
+  const handleResize = () => {
+    const w = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : (canvas.width || 800);
+    const h = (typeof window !== 'undefined' && window.innerHeight) ? window.innerHeight : (canvas.height || 600);
+    canvas.width = w;
+    canvas.height = h;
+    if (axesRenderer) {
+      axesRenderer.resize(w, h);
+      axesRenderer.render(instance.data);
+    }
+    if (chart) {
+      chart.resize(w, h);
+    }
+  };
+
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('resize', handleResize);
+  }
+
+  // Initial render
   instance.render();
 
   // Active continuous render loop (DF-LIVENESS-01 / STORY 30.2.1)
   instance.stopRenderLoop = startRenderLoop(instance);
 
-  // Attach interactive drag and zoom handlers
+  // Interactive mouse handlers
   if (canvas && typeof canvas.addEventListener === 'function') {
     let isDragging = false;
     let dragStartX = 0;
@@ -767,7 +731,7 @@ export function initApp(options = {}) {
       dragStartY = e.clientY || 0;
     });
 
-    canvas.addEventListener('mousemove', (e) => {
+    canvas.addEventListener('mousemove', () => {
       if (isDragging) {
         // Drag interaction
       }
@@ -786,6 +750,26 @@ export function initApp(options = {}) {
 }
 
 /**
+ * Updates real-time candle data and redraws coordinate axes and overlays.
+ *
+ * @param {Object|Array<Object>} targetOrData - Application instance or candle batch
+ * @param {Array<Object>} [maybeCandles] - Updated price candle series
+ * @returns {Promise<Object>}
+ */
+export function updateCandleData(targetOrData, maybeCandles) {
+  let inst = activeAppInstance;
+  let data = targetOrData;
+  if (maybeCandles !== undefined) {
+    inst = targetOrData;
+    data = maybeCandles;
+  }
+  if (inst && typeof inst.updateData === 'function') {
+    return inst.updateData(data);
+  }
+  return Promise.resolve();
+}
+
+/**
  * Updates chart price series data and recalculates visual overlays and legend.
  *
  * @param {Object} chartInstance Instantiated chart returned by initApp
@@ -796,6 +780,12 @@ export function updatePriceSeries(chartInstance, updatedData) {
   const newData = Array.isArray(updatedData) ? [...updatedData] : [];
   chartInstance.data = newData;
   appState.data = newData;
+  if (chartInstance.chart) {
+    chartInstance.chart.setData(newData);
+  }
+  if (chartInstance.axesRenderer) {
+    chartInstance.axesRenderer.render(newData);
+  }
   if (typeof chartInstance.render === 'function') {
     chartInstance.render();
   }
@@ -868,9 +858,12 @@ export function mountApp(mountTarget, options = {}) {
 /**
  * Alias mount function.
  */
-export function mount(mountTarget, options = {}) {
-  return mountApp(mountTarget, options);
-}
+export const mount = mountApp;
+
+/**
+ * Alias mountChart function.
+ */
+export const mountChart = initApp;
 
 /**
  * Lifecycle initialization function supporting module export patterns.
