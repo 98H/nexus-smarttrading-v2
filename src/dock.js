@@ -4,7 +4,7 @@
  * panels (Watchlist, active Orders, Market Depth, and Tool Parameters) side-by-side
  * with the primary chart workspace. Supports collapse/expand drawer states, reactive
  * tab switching, and dark-theme styled controls conforming to DF-PANEL-01 / DF-PANEL-02.
- * Satisfies STORY 38.3.1 (Resolve MISSING_AUXILIARY_DOCK).
+ * Satisfies STORY 38.3.1 & STORY 49.4.1 (Resolve MISSING_AUXILIARY_DOCK).
  */
 
 /**
@@ -420,52 +420,55 @@ export function patchMockDOM(element) {
 
   if (!target) return;
   patchMockElement(target);
-  const proto = Object.getPrototypeOf(target);
-  if (!proto || proto === Object.prototype || proto.__nexusPatchedQSA) return;
+  let proto = Object.getPrototypeOf(target);
+  while (proto && proto !== Object.prototype) {
+    if (!proto.__nexusPatchedQSA) {
+      const origQSA = proto.querySelectorAll;
+      const origQS = proto.querySelector;
 
-  const origQSA = proto.querySelectorAll;
-  const origQS = proto.querySelector;
-
-  if (typeof origQSA === 'function') {
-    proto.querySelectorAll = function (selector) {
-      if (typeof selector !== 'string') return [];
-      if (selector.includes(',')) {
-        const parts = selector
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean);
-        const seen = new Set();
-        const results = [];
-        for (const part of parts) {
-          const matched = origQSA.call(this, part);
-          if (matched) {
-            for (let i = 0; i < matched.length; i++) {
-              const item = matched[i];
-              if (!seen.has(item)) {
-                seen.add(item);
-                results.push(item);
+      if (typeof origQSA === 'function') {
+        proto.querySelectorAll = function (selector) {
+          if (typeof selector !== 'string') return [];
+          if (selector.includes(',')) {
+            const parts = selector
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean);
+            const seen = new Set();
+            const results = [];
+            for (const part of parts) {
+              const matched = origQSA.call(this, part);
+              if (matched) {
+                for (let i = 0; i < matched.length; i++) {
+                  const item = matched[i];
+                  if (!seen.has(item)) {
+                    seen.add(item);
+                    results.push(item);
+                  }
+                }
               }
             }
+            return results;
           }
-        }
-        return results;
+          return origQSA.call(this, selector);
+        };
       }
-      return origQSA.call(this, selector);
-    };
-  }
 
-  if (typeof origQS === 'function') {
-    proto.querySelector = function (selector) {
-      if (typeof selector !== 'string') return null;
-      if (selector.includes(',')) {
-        const matches = this.querySelectorAll(selector);
-        return matches.length > 0 ? matches[0] : null;
+      if (typeof origQS === 'function') {
+        proto.querySelector = function (selector) {
+          if (typeof selector !== 'string') return null;
+          if (selector.includes(',')) {
+            const matches = this.querySelectorAll(selector);
+            return matches.length > 0 ? matches[0] : null;
+          }
+          return origQS.call(this, selector);
+        };
       }
-      return origQS.call(this, selector);
-    };
-  }
 
-  proto.__nexusPatchedQSA = true;
+      proto.__nexusPatchedQSA = true;
+    }
+    proto = Object.getPrototypeOf(proto);
+  }
 }
 
 patchMockDOM();
@@ -1122,12 +1125,10 @@ export class AuxiliaryDock {
 
     if (typeof this.panelBody.replaceChildren === 'function') {
       this.panelBody.replaceChildren();
-    } else if (typeof this.panelBody.removeChild === 'function') {
-      while (this.panelBody.children && this.panelBody.children.length > 0) {
-        this.panelBody.removeChild(this.panelBody.children[0]);
+    } else {
+      while (this.panelBody.firstChild && typeof this.panelBody.removeChild === 'function') {
+        this.panelBody.removeChild(this.panelBody.firstChild);
       }
-    } else if (Array.isArray(this.panelBody.children)) {
-      this.panelBody.children.length = 0;
     }
 
     let widget = null;
