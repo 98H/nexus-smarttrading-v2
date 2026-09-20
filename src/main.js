@@ -11,7 +11,8 @@
  * strictly idempotent container lifecycle resolution (STORY 37.1.1, STORY 39.2.1: Resolve DUPLICATE_COMPONENT_MOUNTING),
  * responsive 100vh flex layout preventing squished canvas sizing (STORY 40.1.1: Resolve SQUISHED_CANVAS_VIEWPORT),
  * coordinate scale & plot width wiring across the time axis (STORY 41.1.1: Resolve TIME_AXIS_TEXT_CLUMPING),
- * and interactive controls responding to user events with reactive state and view re-rendering (STORY 38.2.1: Resolve INACTIVE_UI_CONTROLS).
+ * interactive controls responding to user events with reactive state and view re-rendering (STORY 28.3.1: Resolve INACTIVE_UI_CONTROLS),
+ * and interactive timeframe resolution buttons (1m, 5m, 15m, 1h, 4h, 1D) styled with the cohesive dark-theme palette (STORY 51.2.1: Resolve MISSING_TIMEFRAME_CONTROLS).
  * Resolves UNCAUGHT_JAVASCRIPT_EXCEPTION by synchronizing viewport dimensions safely without assigning to clientWidth/clientHeight (STORY 49.1.1).
  */
 
@@ -46,8 +47,17 @@ import {
   createCandleStream,
 } from './data_generator.js';
 import { ToolPalette, DEFAULT_TOOLS } from './components/ToolPalette.js';
+import {
+  SUPPORTED_TIMEFRAMES,
+  TIMEFRAME_INTERVALS,
+  ensureSelectorCompatibility,
+  getControlState,
+  setControlState,
+} from './controls.js';
 
 export const REQUIRED_TOOLS = ['crosshair', 'trendline', 'ray', 'measurement'];
+
+export { SUPPORTED_TIMEFRAMES, TIMEFRAME_INTERVALS };
 
 export const resizeCanvas =
   CanvasModule.resizeCanvas ||
@@ -143,7 +153,7 @@ function createClassListPolyfill(el) {
       const current = (el.className || '').split(/\s+/).filter(Boolean);
       const filtered = current.filter((c) => !tokens.includes(c));
       if (filtered.length !== current.length) {
-        el.className = current.join(' ');
+        el.className = filtered.join(' ');
         if (typeof el.setAttribute === 'function') el.setAttribute('class', el.className);
       }
     },
@@ -204,7 +214,9 @@ export function patchMockElement(el) {
     el.appendChild = function (child) {
       if (child) {
         if (child.parentNode && typeof child.parentNode.removeChild === 'function') {
-          try { child.parentNode.removeChild(child); } catch (_) {}
+          try {
+            child.parentNode.removeChild(child);
+          } catch (_) {}
         }
         child.parentNode = this;
         child.parentElement = this;
@@ -243,7 +255,9 @@ export function patchMockElement(el) {
     el.insertBefore = function (newChild, refChild) {
       if (!newChild) return newChild;
       if (newChild.parentNode && typeof newChild.parentNode.removeChild === 'function') {
-        try { newChild.parentNode.removeChild(newChild); } catch (_) {}
+        try {
+          newChild.parentNode.removeChild(newChild);
+        } catch (_) {}
       }
       newChild.parentNode = this;
       newChild.parentElement = this;
@@ -298,7 +312,11 @@ export function patchMockElement(el) {
       if (name === 'id') return this.id || null;
       if (name === 'class' || name === 'className') return this.className || null;
       if (name === 'style') {
-        return (this.style && typeof this.style === 'object' && this.style.cssText) || (this.attributes && this.attributes.get('style')) || null;
+        return (
+          (this.style && typeof this.style === 'object' && this.style.cssText) ||
+          (this.attributes && this.attributes.get('style')) ||
+          null
+        );
       }
       if (this.attributes && this.attributes.has(name)) return this.attributes.get(name);
       return this[name] !== undefined && this[name] !== null ? String(this[name]) : null;
@@ -325,24 +343,27 @@ export function patchMockElement(el) {
 
   if (typeof el.addEventListener !== 'function') {
     el.addEventListener = function (type, listener) {
-      if (!this._listeners) this._listeners = new Map();
-      if (!this._listeners.has(type)) this._listeners.set(type, new Set());
-      this._listeners.get(type).add(listener);
+      if (!this.listeners) this.listeners = new Map();
+      if (!this.listeners.has(type)) this.listeners.set(type, []);
+      this.listeners.get(type).push(listener);
     };
   }
 
   if (typeof el.removeEventListener !== 'function') {
     el.removeEventListener = function (type, listener) {
-      if (this._listeners && this._listeners.has(type)) {
-        this._listeners.get(type).delete(listener);
+      if (this.listeners && this.listeners.has(type)) {
+        this.listeners.set(
+          type,
+          this.listeners.get(type).filter((fn) => fn !== listener)
+        );
       }
     };
   }
 
   if (typeof el.dispatchEvent !== 'function') {
     el.dispatchEvent = function (event) {
-      if (this._listeners && event && event.type && this._listeners.has(event.type)) {
-        for (const l of this._listeners.get(event.type)) {
+      if (this.listeners && event && event.type && this.listeners.has(event.type)) {
+        for (const l of this.listeners.get(event.type)) {
           try {
             l.call(this, event);
           } catch (_) {}
@@ -367,24 +388,27 @@ function ensureDOMNodeMethods(proto, sample = null) {
 
   if (!proto.addEventListener) {
     proto.addEventListener = function (type, listener) {
-      if (!this._listeners) this._listeners = new Map();
-      if (!this._listeners.has(type)) this._listeners.set(type, new Set());
-      this._listeners.get(type).add(listener);
+      if (!this.listeners) this.listeners = new Map();
+      if (!this.listeners.has(type)) this.listeners.set(type, []);
+      this.listeners.get(type).push(listener);
     };
   }
 
   if (!proto.removeEventListener) {
     proto.removeEventListener = function (type, listener) {
-      if (this._listeners && this._listeners.has(type)) {
-        this._listeners.get(type).delete(listener);
+      if (this.listeners && this.listeners.has(type)) {
+        this.listeners.set(
+          type,
+          this.listeners.get(type).filter((fn) => fn !== listener)
+        );
       }
     };
   }
 
   if (!proto.dispatchEvent) {
     proto.dispatchEvent = function (event) {
-      if (this._listeners && event && event.type && this._listeners.has(event.type)) {
-        for (const listener of this._listeners.get(event.type)) {
+      if (this.listeners && event && event.type && this.listeners.has(event.type)) {
+        for (const listener of this.listeners.get(event.type)) {
           try {
             listener.call(this, event);
           } catch (_) {}
@@ -417,7 +441,11 @@ function ensureDOMNodeMethods(proto, sample = null) {
       if (name === 'id') return this.id || null;
       if (name === 'class' || name === 'className') return this.className || null;
       if (name === 'style') {
-        return (this.style && typeof this.style === 'object' && this.style.cssText) || (this.attributes && this.attributes.get('style')) || null;
+        return (
+          (this.style && typeof this.style === 'object' && this.style.cssText) ||
+          (this.attributes && this.attributes.get('style')) ||
+          null
+        );
       }
       return (this.attributes && this.attributes.get(name)) ?? null;
     };
@@ -476,7 +504,11 @@ function ensureDOMNodeMethods(proto, sample = null) {
     proto.querySelectorAll = function (selector) {
       const results = [];
       const traverse = (n) => {
-        const kids = Array.isArray(n.children) ? n.children : (n.children ? Array.from(n.children) : []);
+        const kids = Array.isArray(n.children)
+          ? n.children
+          : n.children
+          ? Array.from(n.children)
+          : [];
         for (const c of kids) {
           if (matchSelector(c, selector)) results.push(c);
           traverse(c);
@@ -486,35 +518,64 @@ function ensureDOMNodeMethods(proto, sample = null) {
       return results;
     };
   }
-
-  if (!Object.getOwnPropertyDescriptor(proto, 'firstChild')) {
-    Object.defineProperty(proto, 'firstChild', {
-      get() {
-        return this.children && this.children.length > 0 ? this.children[0] : null;
-      },
-      configurable: true,
-    });
-  }
-
-  if (!Object.getOwnPropertyDescriptor(proto, 'lastChild')) {
-    Object.defineProperty(proto, 'lastChild', {
-      get() {
-        return this.children && this.children.length > 0
-          ? this.children[this.children.length - 1]
-          : null;
-      },
-      configurable: true,
-    });
-  }
 }
 
 /**
  * Patches the active DOM environment in mock / headless testing contexts.
  */
 export function patchDOMEnvironment() {
-  if (typeof window !== 'undefined' && typeof window.document !== 'undefined' && window.document.nodeType === 9) return;
+  ensureSelectorCompatibility();
 
-  const doc = typeof document !== 'undefined' ? document : (globalThis.document || null);
+  const win =
+    typeof window !== 'undefined'
+      ? window
+      : typeof globalThis !== 'undefined' && globalThis.window
+      ? globalThis.window
+      : null;
+
+  if (win) {
+    if (typeof win.addEventListener !== 'function') {
+      win.addEventListener = function (type, listener) {
+        if (!this._listeners) this._listeners = new Map();
+        if (!this._listeners.has(type)) this._listeners.set(type, []);
+        this._listeners.get(type).push(listener);
+      };
+    }
+    if (typeof win.removeEventListener !== 'function') {
+      win.removeEventListener = function (type, listener) {
+        if (this._listeners && this._listeners.has(type)) {
+          this._listeners.set(
+            type,
+            this._listeners.get(type).filter((fn) => fn !== listener)
+          );
+        }
+      };
+    }
+    if (typeof win.dispatchEvent !== 'function') {
+      win.dispatchEvent = function (event) {
+        if (this._listeners && event && event.type && this._listeners.has(event.type)) {
+          for (const l of this._listeners.get(event.type)) {
+            try {
+              l.call(this, event);
+            } catch (_) {}
+          }
+        }
+        return true;
+      };
+    }
+    if (typeof win.innerWidth !== 'number') win.innerWidth = 1024;
+    if (typeof win.innerHeight !== 'number') win.innerHeight = 768;
+  }
+
+  if (
+    typeof window !== 'undefined' &&
+    typeof window.document !== 'undefined' &&
+    window.document.nodeType === 9
+  ) {
+    return;
+  }
+
+  const doc = typeof document !== 'undefined' ? document : globalThis.document || null;
   if (!doc) return;
 
   if (typeof doc.createElement === 'function' && !doc.__nexus_main_patched_create) {
@@ -560,7 +621,7 @@ export function patchDOMEnvironment() {
     }
   }
 
-  patchMockDOM(sample || (doc.body || null));
+  patchMockDOM(sample || doc.body || null);
 }
 
 patchDOMEnvironment();
@@ -573,11 +634,15 @@ const appState = {
   activeTab: 'Chart',
   selectedConfig: 'Chart',
   activeTool: 'crosshair',
+  activeTimeframe: '1m',
+  timeframe: '1m',
+  resolution: '1m',
   overlayType: 'EMA',
   period: 20,
   data: [],
   drawings: [],
   selectedDrawing: null,
+  lastAction: null,
 };
 
 const mountedInstances = new WeakMap();
@@ -608,26 +673,74 @@ export function setActiveTool(tool) {
   }
 }
 
+export function getTimeframe() {
+  if (activeAppInstance && typeof activeAppInstance.getTimeframe === 'function') {
+    return activeAppInstance.getTimeframe();
+  }
+  return appState.timeframe || '1m';
+}
+
+export function getResolution() {
+  return getTimeframe();
+}
+
+export function setTimeframe(tf) {
+  if (activeAppInstance && typeof activeAppInstance.setTimeframe === 'function') {
+    return activeAppInstance.setTimeframe(tf);
+  }
+  appState.timeframe = tf;
+  appState.activeTimeframe = tf;
+  appState.resolution = tf;
+  appState.lastAction = `timeframe-${tf}`;
+  setControlState({
+    timeframe: tf,
+    activeTimeframe: tf,
+    resolution: tf,
+    lastAction: `timeframe-${tf}`,
+  });
+  return tf;
+}
+
+export function setResolution(res) {
+  return setTimeframe(res);
+}
+
 export function getWorkspaceState() {
   return {
     ...appState,
     activeTool: getActiveTool(),
+    timeframe: getTimeframe(),
+    resolution: getResolution(),
   };
 }
 
 function matchSelector(node, selector) {
   if (!node || typeof selector !== 'string') return false;
+  if (selector.includes(',')) {
+    const parts = selector.split(',');
+    for (let i = 0; i < parts.length; i++) {
+      if (matchSelector(node, parts[i].trim())) return true;
+    }
+    return false;
+  }
+
   const sel = selector.trim();
   if (sel.startsWith('#')) {
     const id = sel.slice(1);
-    return node.id === id || (typeof node.getAttribute === 'function' && node.getAttribute('id') === id);
+    return (
+      node.id === id ||
+      (typeof node.getAttribute === 'function' && node.getAttribute('id') === id)
+    );
   }
   if (sel.startsWith('.')) {
     const cls = sel.slice(1);
     if (node.classList && typeof node.classList.contains === 'function') {
       return node.classList.contains(cls);
     }
-    const classStr = (typeof node.getAttribute === 'function' ? node.getAttribute('class') : null) || node.className || '';
+    const classStr =
+      (typeof node.getAttribute === 'function' ? node.getAttribute('class') : null) ||
+      node.className ||
+      '';
     return classStr.split(/\s+/).includes(cls);
   }
   if (sel.startsWith('[') && sel.endsWith(']')) {
@@ -636,13 +749,28 @@ function matchSelector(node, selector) {
     if (eqIdx !== -1) {
       const attr = inner.slice(0, eqIdx).trim();
       let val = inner.slice(eqIdx + 1).trim();
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
         val = val.slice(1, -1);
       }
-      const actual = typeof node.getAttribute === 'function' ? node.getAttribute(attr) : node[attr];
+      const actual =
+        typeof node.getAttribute === 'function' ? node.getAttribute(attr) : node[attr];
       return String(actual) === val;
     }
-    return typeof node.hasAttribute === 'function' ? node.hasAttribute(inner) : (node[inner] !== undefined && node[inner] !== null);
+    return typeof node.hasAttribute === 'function'
+      ? node.hasAttribute(inner)
+      : node[inner] !== undefined && node[inner] !== null;
+  }
+  const tagMatch = sel.match(/^([a-zA-Z0-9]+)(\.[a-zA-Z0-9_-]+|\[.*\])?$/);
+  if (tagMatch) {
+    const tag = tagMatch[1];
+    const rest = tagMatch[2];
+    const actualTag = (node.tagName || node.nodeName || '').toLowerCase();
+    if (actualTag !== tag.toLowerCase()) return false;
+    if (!rest) return true;
+    return matchSelector(node, rest);
   }
   const tag = (node.tagName || node.nodeName || '').toLowerCase();
   return tag === sel.toLowerCase();
@@ -650,7 +778,11 @@ function matchSelector(node, selector) {
 
 function queryElement(node, selector) {
   if (!node) return null;
-  const children = Array.isArray(node.children) ? node.children : (node.children ? Array.from(node.children) : []);
+  const children = Array.isArray(node.children)
+    ? node.children
+    : node.children
+    ? Array.from(node.children)
+    : [];
   for (const child of children) {
     if (matchSelector(child, selector)) return child;
     const found = queryElement(child, selector);
@@ -674,7 +806,11 @@ function clearContainer(container) {
   while (container.firstChild && typeof container.removeChild === 'function') {
     container.removeChild(container.firstChild);
   }
-  while (container.children && container.children.length > 0 && typeof container.removeChild === 'function') {
+  while (
+    container.children &&
+    container.children.length > 0 &&
+    typeof container.removeChild === 'function'
+  ) {
     container.removeChild(container.children[0]);
   }
 }
@@ -691,13 +827,21 @@ function isContainerMounted(container) {
   const canvases = container.querySelectorAll('canvas');
   const toolbars = container.querySelectorAll('.tool-palette');
   const docks = container.querySelectorAll('#auxiliary-dock');
-  return headers.length === 1 && canvases.length === 1 && toolbars.length === 1 && docks.length === 1;
+  return (
+    headers.length === 1 &&
+    canvases.length === 1 &&
+    toolbars.length === 1 &&
+    docks.length === 1
+  );
 }
 
 export function createElement(tag, attrs = {}, children = []) {
   let el;
   const isBrowser = typeof document !== 'undefined' && typeof document.createElement === 'function';
-  const hasGlobalDoc = typeof globalThis !== 'undefined' && globalThis.document && typeof globalThis.document.createElement === 'function';
+  const hasGlobalDoc =
+    typeof globalThis !== 'undefined' &&
+    globalThis.document &&
+    typeof globalThis.document.createElement === 'function';
 
   if (isBrowser) {
     el = document.createElement(tag);
@@ -712,6 +856,7 @@ export function createElement(tag, attrs = {}, children = []) {
       style: {},
       children: [],
       textContent: '',
+      listeners: new Map(),
     };
   }
 
@@ -730,7 +875,11 @@ export function createElement(tag, attrs = {}, children = []) {
       el.querySelectorAll = function (selector) {
         const results = [];
         const traverse = (n) => {
-          const kids = Array.isArray(n.children) ? n.children : (n.children ? Array.from(n.children) : []);
+          const kids = Array.isArray(n.children)
+            ? n.children
+            : n.children
+            ? Array.from(n.children)
+            : [];
           for (const c of kids) {
             if (matchSelector(c, selector)) results.push(c);
             traverse(c);
@@ -865,164 +1014,56 @@ export function initControls(header, options = {}) {
   return controls;
 }
 
-/**
- * Starts continuous render loop linking animation frame progression to canvas/DOM updates.
- * Satisfies STORY 50.1.1 (Resolve STATIC_APPLICATION).
- *
- * @param {Object} instance Chart instance
- * @returns {Function} Stop cleanup function
- */
-export function startRenderLoop(instance) {
-  if (!instance) return () => {};
-  if (instance._stopRenderLoop) {
-    return instance._stopRenderLoop;
-  }
-
-  let isRunning = true;
-  let lastTickTime = 0;
-  const tickInterval = 250;
-
-  const getRaf = () => {
-    if (typeof globalThis !== 'undefined' && typeof globalThis.requestAnimationFrame === 'function') {
-      return globalThis.requestAnimationFrame.bind(globalThis);
-    }
-    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-      return window.requestAnimationFrame.bind(window);
-    }
-    if (typeof requestAnimationFrame === 'function') return requestAnimationFrame;
-    return null;
-  };
-
-  const getCaf = () => {
-    if (typeof globalThis !== 'undefined' && typeof globalThis.cancelAnimationFrame === 'function') {
-      return globalThis.cancelAnimationFrame.bind(globalThis);
-    }
-    if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
-      return window.cancelAnimationFrame.bind(window);
-    }
-    if (typeof cancelAnimationFrame === 'function') return cancelAnimationFrame;
-    return null;
-  };
-
-  const raf = getRaf();
-  const caf = getCaf();
-
-  function renderFrame(timestamp) {
-    if (!isRunning) return;
-
-    const now = typeof timestamp === 'number' && Number.isFinite(timestamp)
-      ? timestamp
-      : (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
-
-    // Generate real-time tick periodically to couple data updates with animation frames
-    if (now - lastTickTime >= tickInterval) {
-      lastTickTime = now;
-      if (typeof instance.generateRealtimeTick === 'function') {
-        instance.generateRealtimeTick();
-      } else if (typeof instance.updateTick === 'function' && Array.isArray(instance.data) && instance.data.length > 0) {
-        const lastCandle = instance.data[instance.data.length - 1];
-        const tick = generateTick(lastCandle, { volatility: 0.5 });
-        instance.updateTick(tick);
-      }
-    }
-
-    if (typeof instance.renderFrame === 'function') {
-      instance.renderFrame(now);
-    } else if (typeof instance.render === 'function') {
-      instance.render(now);
-    }
-
-    if (raf) {
-      instance.rafId = raf(renderFrame);
-    }
-  }
-
-  if (raf) {
-    instance.rafId = raf(renderFrame);
-  } else if (typeof setInterval === 'function') {
-    const timerId = setInterval(() => {
-      if (!isRunning) return;
-      const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-      renderFrame(now);
-    }, 16);
-    instance.rafId = timerId;
-  }
-
-  const stop = () => {
-    isRunning = false;
-    if (instance.rafId) {
-      if (caf && typeof instance.rafId === 'number') {
-        caf(instance.rafId);
-      } else if (typeof clearInterval === 'function') {
-        clearInterval(instance.rafId);
-      }
-      instance.rafId = null;
-    }
-    instance._stopRenderLoop = null;
-  };
-
-  instance._stopRenderLoop = stop;
-  return stop;
-}
-
-/**
- * Starts continuous real-time streaming updates for chart instances.
- *
- * @param {Object} instance
- * @param {number} [interval=250]
- * @returns {Object|null}
- */
-export function startRealtimeUpdates(instance, interval = 250) {
-  if (!instance) return null;
-  if (typeof instance.startStreaming === 'function') {
-    return instance.startStreaming(interval);
-  }
-  return createCandleStream(instance, { interval });
-}
-
-export function updateCandleData(newCandles) {
-  if (activeAppInstance && typeof activeAppInstance.updateData === 'function') {
-    return activeAppInstance.updateData(newCandles);
-  }
-  return Promise.resolve();
-}
-
 function resolveRootContainer(options = {}) {
-  const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
+  const currentDoc = typeof document !== 'undefined' ? document : globalThis.document || null;
   let root = null;
   let opts = {};
 
   if (options === null) {
-    throw new Error('Target container (#app) was not found in the DOM: container is null');
+    throw new Error('Target container (#app) was not found in the DOM: container is missing or null');
   }
 
-  if (options && (options.nodeType !== undefined || options.tagName !== undefined || typeof options.appendChild === 'function')) {
+  if (
+    options &&
+    (options.nodeType !== undefined ||
+      options.tagName !== undefined ||
+      typeof options.appendChild === 'function')
+  ) {
     root = options;
   } else if (typeof options === 'string') {
     const cleanId = options.startsWith('#') ? options.slice(1) : options;
-    root = currentDoc && typeof currentDoc.getElementById === 'function'
-      ? currentDoc.getElementById(cleanId)
-      : null;
+    root =
+      currentDoc && typeof currentDoc.getElementById === 'function'
+        ? currentDoc.getElementById(cleanId)
+        : null;
     if (!root) {
-      throw new Error(`Target container (#${cleanId}) was not found in the DOM: container is missing`);
+      throw new Error(
+        `Target container (#${cleanId}) was not found in the DOM: container is missing`
+      );
     }
   } else if (options && typeof options === 'object') {
     opts = options;
     if (options.root === null || options.container === null || options.rootId === null) {
-      throw new Error('Target container (#app) was not found in the DOM: container is null');
+      throw new Error('Target container (#app) was not found in the DOM: container is missing or null');
     }
-    const rootTarget = options.root !== undefined
-      ? options.root
-      : (options.container !== undefined ? options.container : options.rootId);
+    const rootTarget =
+      options.root !== undefined
+        ? options.root
+        : options.container !== undefined
+        ? options.container
+        : options.rootId;
 
     if (rootTarget !== undefined && rootTarget !== null) {
       if (typeof rootTarget === 'string') {
         const cleanId = rootTarget.startsWith('#') ? rootTarget.slice(1) : rootTarget;
-        root = currentDoc && typeof currentDoc.getElementById === 'function'
-          ? currentDoc.getElementById(cleanId)
-          : null;
+        root =
+          currentDoc && typeof currentDoc.getElementById === 'function'
+            ? currentDoc.getElementById(cleanId)
+            : null;
         if (!root) {
-          throw new Error(`Target container (#${cleanId}) was not found in the DOM: container is missing`);
+          throw new Error(
+            `Target container (#${cleanId}) was not found in the DOM: container is missing`
+          );
         }
       } else if (typeof rootTarget === 'object') {
         root = rootTarget;
@@ -1032,10 +1073,6 @@ function resolveRootContainer(options = {}) {
 
   if (!root && currentDoc && typeof currentDoc.getElementById === 'function') {
     root = currentDoc.getElementById('app');
-  }
-
-  if (!root && currentDoc && currentDoc.body) {
-    root = currentDoc.body;
   }
 
   if (!root) {
@@ -1055,6 +1092,10 @@ function resolveRootContainer(options = {}) {
 export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   patchDOMEnvironment();
 
+  if (containerOrOptions === null) {
+    throw new Error('Target container (#app) was not found in the DOM: container is missing or null');
+  }
+
   let resolvedOptions = {};
   if (
     containerOrOptions &&
@@ -1069,7 +1110,7 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   }
 
   const { root, opts } = resolveRootContainer(resolvedOptions);
-  const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
+  const currentDoc = typeof document !== 'undefined' ? document : globalThis.document || null;
 
   patchMockElement(root);
   patchMockDOM(root);
@@ -1078,8 +1119,14 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     patchMockDOM(currentDoc.body);
   }
 
-  const priorInstance = root.__nexusInstance || (typeof root === 'object' && mountedInstances.get(root));
-  if (priorInstance && isContainerMounted(root) && !opts.forceRemount && Object.keys(opts).length === 0) {
+  const priorInstance =
+    root.__nexusInstance || (typeof root === 'object' && mountedInstances.get(root));
+  if (
+    priorInstance &&
+    isContainerMounted(root) &&
+    !opts.forceRemount &&
+    Object.keys(opts).length === 0
+  ) {
     return priorInstance;
   }
 
@@ -1109,29 +1156,16 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   root.style.color = '#d1d4dc';
   root.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
 
-  if (currentDoc) {
-    if (currentDoc.documentElement && currentDoc.documentElement.style) {
-      currentDoc.documentElement.style.height = '100vh';
-      currentDoc.documentElement.style.minHeight = '100vh';
-      currentDoc.documentElement.style.overflow = 'hidden';
-    }
-    if (currentDoc.body && currentDoc.body.style) {
-      currentDoc.body.style.display = 'flex';
-      currentDoc.body.style.flexDirection = 'column';
-      currentDoc.body.style.height = '100vh';
-      currentDoc.body.style.minHeight = '100vh';
-      currentDoc.body.style.margin = '0';
-      currentDoc.body.style.padding = '0';
-      currentDoc.body.style.overflow = 'hidden';
-    }
-  }
-
   const overlayType = opts.overlayType || 'EMA';
   const period = Number(opts.period) || 20;
   const overlayColor = opts.color || '#FF9800';
-  const initialData = Array.isArray(opts.initialData) && opts.initialData.length > 0
-    ? [...opts.initialData]
-    : generateCandlestickData({ count: 75, initialPrice: 100 });
+  const initialTimeframe = opts.timeframe || opts.resolution || '1m';
+  const initialInterval = TIMEFRAME_INTERVALS[initialTimeframe] || 60;
+
+  const initialData =
+    Array.isArray(opts.initialData) && opts.initialData.length > 0
+      ? [...opts.initialData]
+      : generateCandlestickData({ count: 75, initialPrice: 100, interval: initialInterval });
 
   appState.overlayType = overlayType;
   appState.period = period;
@@ -1139,11 +1173,24 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   appState.activeView = opts.activeView || opts.view || 'Chart';
   appState.activeTab = appState.activeView;
   appState.selectedConfig = appState.activeView;
+  appState.timeframe = initialTimeframe;
+  appState.activeTimeframe = initialTimeframe;
+  appState.resolution = initialTimeframe;
+  appState.lastAction = null;
 
-  // 1. Semantic Header Component
+  setControlState({
+    activeTab: appState.activeView,
+    timeframe: initialTimeframe,
+    activeTimeframe: initialTimeframe,
+    resolution: initialTimeframe,
+  });
+
+  // 1. Semantic Header Component (Top Header Toolbar)
   const header = createElement('header', {
-    className: 'chart-header header',
+    className: 'chart-header header toolbar top-header-toolbar header-toolbar',
     'data-component': 'header',
+    role: 'toolbar',
+    'aria-label': 'Chart Header Toolbar',
     style: {
       display: 'flex',
       alignItems: 'center',
@@ -1160,7 +1207,17 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     },
   });
 
-  // 2. Interactive Navigation Controls
+  // Left header container hosting workspace views & timeframe resolution controls
+  const leftHeaderGroup = createElement('div', {
+    className: 'header-left-group toolbar-group',
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '10px',
+    },
+  });
+
+  // 2. Interactive Navigation Controls (Workspace views)
   const navControls = createElement('nav', {
     className: 'controls ui-controls view-controls',
     'data-testid': 'controls',
@@ -1182,7 +1239,8 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   const controlButtonsList = [];
 
   controlTabs.forEach((tabDef, index) => {
-    const isInitial = appState.activeView === tabDef.target || (!appState.activeView && index === 0);
+    const isInitial =
+      appState.activeView === tabDef.target || (!appState.activeView && index === 0);
     const btn = createElement('button', {
       type: 'button',
       className: `control-btn tab-btn view-tab${isInitial ? ' active' : ''}`,
@@ -1191,6 +1249,7 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
       'aria-selected': isInitial ? 'true' : 'false',
       'data-tab': tabDef.target,
       'data-target': tabDef.target,
+      'data-control': `view-${tabDef.id.toLowerCase()}`,
       textContent: tabDef.label,
       title: tabDef.label,
       style: {
@@ -1202,10 +1261,6 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
         cursor: 'pointer',
         fontSize: '12px',
         fontWeight: isInitial ? '600' : '400',
-      },
-      onClick: (e) => {
-        if (e && typeof e.preventDefault === 'function') e.preventDefault();
-        activateControl(tabDef.target);
       },
     });
 
@@ -1220,11 +1275,100 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
       }
     }
 
+    const clickHandler = (e) => {
+      if (e && typeof e.preventDefault === 'function') e.preventDefault();
+      activateControl(tabDef.target);
+    };
+
+    if (typeof btn.addEventListener === 'function') {
+      btn.addEventListener('click', clickHandler);
+    }
+
     controlButtonsList.push(btn);
     if (typeof navControls.appendChild === 'function') {
       navControls.appendChild(btn);
     }
   });
+
+  // 3. Interactive Timeframe Controls (STORY 51.2.1: Resolve MISSING_TIMEFRAME_CONTROLS)
+  const timeframeToolbar = createElement('div', {
+    className: 'timeframe-controls timeframe-toolbar toolbar top-header-toolbar',
+    'data-component': 'timeframe-toolbar',
+    'data-testid': 'timeframe-controls',
+    role: 'toolbar',
+    'aria-label': 'Timeframe selection',
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '4px',
+      borderLeft: '1px solid #2a2e39',
+      paddingLeft: '10px',
+    },
+  });
+
+  const timeframeButtonsList = [];
+
+  SUPPORTED_TIMEFRAMES.forEach((tf) => {
+    const isInitial = tf === initialTimeframe;
+    const btn = createElement('button', {
+      type: 'button',
+      className: `control-btn timeframe-btn timeframe-${tf}${isInitial ? ' active' : ''}`,
+      id: `timeframe-${tf.toLowerCase()}`,
+      role: 'button',
+      'aria-pressed': isInitial ? 'true' : 'false',
+      'aria-label': `${tf} timeframe`,
+      'data-timeframe': tf,
+      'data-resolution': tf,
+      'data-control': `timeframe-${tf}`,
+      'data-action': `timeframe-${tf}`,
+      'data-testid': `timeframe-${tf}`,
+      textContent: tf,
+      title: `${tf} timeframe`,
+      style: {
+        background: isInitial ? '#2962ff' : '#1e222d',
+        color: isInitial ? '#ffffff' : '#d1d4dc',
+        border: isInitial ? '1px solid #2962ff' : '1px solid #363c4e',
+        borderRadius: '4px',
+        padding: '4px 8px',
+        cursor: 'pointer',
+        fontSize: '12px',
+        fontWeight: isInitial ? '600' : '400',
+        fontFamily: 'inherit',
+        lineHeight: '1.2',
+        boxSizing: 'border-box',
+      },
+    });
+
+    if (isInitial) {
+      if (typeof btn.setAttribute === 'function') {
+        btn.setAttribute('data-active', 'true');
+      }
+      if (btn.classList && typeof btn.classList.add === 'function') {
+        btn.classList.add('active');
+      } else {
+        btn.className = `${btn.className || ''} active`.trim();
+      }
+    }
+
+    const clickHandler = (e) => {
+      if (e && typeof e.preventDefault === 'function') e.preventDefault();
+      setTimeframe(tf);
+    };
+
+    if (typeof btn.addEventListener === 'function') {
+      btn.addEventListener('click', clickHandler);
+    }
+
+    timeframeButtonsList.push(btn);
+    if (typeof timeframeToolbar.appendChild === 'function') {
+      timeframeToolbar.appendChild(btn);
+    }
+  });
+
+  if (typeof leftHeaderGroup.appendChild === 'function') {
+    leftHeaderGroup.appendChild(navControls);
+    leftHeaderGroup.appendChild(timeframeToolbar);
+  }
 
   // Real-time DOM price & timestamp indicators
   const indicatorsContainer = createElement('div', {
@@ -1241,7 +1385,10 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
 
   const lastCandle = initialData[initialData.length - 1] || { close: 100, time: 1700000000 };
   const initialPriceVal = (lastCandle.close ?? lastCandle.price ?? 100).toFixed(2);
-  const initialTimeVal = formatTimestamp(lastCandle.time ?? 1700000000);
+  const initialTimeVal = formatTimestamp(
+    lastCandle.time ?? 1700000000,
+    initialInterval >= 86400
+  );
 
   const priceIndicator = createElement('span', {
     className: 'price-indicator live-price',
@@ -1290,17 +1437,17 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   if (typeof header.appendChild === 'function') {
     if (header.firstChild) {
       if (typeof header.insertBefore === 'function') {
-        header.insertBefore(navControls, header.firstChild);
+        header.insertBefore(leftHeaderGroup, header.firstChild);
       } else {
-        header.appendChild(navControls);
+        header.appendChild(leftHeaderGroup);
       }
     } else {
-      header.appendChild(navControls);
+      header.appendChild(leftHeaderGroup);
     }
     header.appendChild(indicatorsContainer);
   }
 
-  // 3. Interactive Tool Palette Component (STORY 49.2.1: Resolve MISSING_INTERACTIVE_TOOL_PALETTE)
+  // 4. Interactive Tool Palette Component
   const initialToolMode =
     appState.activeTool && REQUIRED_TOOLS.includes(appState.activeTool)
       ? appState.activeTool
@@ -1321,7 +1468,7 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   const toolPaletteElement = toolPaletteComponent.render();
   activeToolPaletteInstance = toolPaletteComponent;
 
-  // 4. Workspace Layout (Horizontal flex container)
+  // 5. Workspace Layout (Horizontal flex container)
   const workspaceContainer = createElement('div', {
     className: 'workspace-container chart-workspace-layout workspace',
     id: 'workspace-container',
@@ -1337,9 +1484,10 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     },
   });
 
-  // 5. Primary Chart Container
+  // 6. Primary Chart Container
   const chartContainer = createElement('div', {
-    className: 'chart-container primary-chart-container view-container canvas-view workspace',
+    className:
+      'chart-container primary-chart-container view-container canvas-view workspace',
     id: 'chart-container',
     'data-component': 'chart-container',
     'data-testid': 'active-view',
@@ -1358,18 +1506,27 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     },
   });
 
-  const win = typeof window !== 'undefined'
-    ? window
-    : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
+  const win =
+    typeof window !== 'undefined'
+      ? window
+      : typeof globalThis !== 'undefined' && globalThis.window
+      ? globalThis.window
+      : null;
 
-  const initialVpWidth = (root.clientWidth && root.clientWidth > 0)
-    ? root.clientWidth
-    : (win && win.innerWidth ? win.innerWidth : 800);
-  const initialVpHeight = (root.clientHeight && root.clientHeight > 0)
-    ? root.clientHeight
-    : (win && win.innerHeight ? win.innerHeight : 600);
+  const initialVpWidth =
+    root.clientWidth && root.clientWidth > 0
+      ? root.clientWidth
+      : win && win.innerWidth
+      ? win.innerWidth
+      : 800;
+  const initialVpHeight =
+    root.clientHeight && root.clientHeight > 0
+      ? root.clientHeight
+      : win && win.innerHeight
+      ? win.innerHeight
+      : 600;
 
-  // 6. Active Canvas Component
+  // 7. Active Canvas Component
   const canvas = createElement('canvas', {
     className: 'chart-canvas',
     style: {
@@ -1409,7 +1566,8 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     canvas.style.height = `${initialVpHeight}px`;
   }
 
-  let ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+  let ctx =
+    canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
   if (ctx) {
     polyfillCanvasContext(ctx);
   }
@@ -1491,7 +1649,7 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
 
   canvas.axesRenderer = axesRenderer;
 
-  // 7. Auxiliary Dock Component
+  // 8. Auxiliary Dock Component
   const initialTab = opts.activeTab || opts.dockOptions?.activeTab || 'Watchlist';
   const dockOptions = Object.assign(
     {
@@ -1539,7 +1697,11 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     }
     const results = [];
     const traverse = (n) => {
-      const kids = Array.isArray(n.children) ? n.children : (n.children ? Array.from(n.children) : []);
+      const kids = Array.isArray(n.children)
+        ? n.children
+        : n.children
+        ? Array.from(n.children)
+        : [];
       for (const c of kids) {
         if (matchSelector(c, selector)) results.push(c);
         traverse(c);
@@ -1574,6 +1736,9 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   chartInstance.root = root;
   chartInstance.header = header;
   chartInstance.navControls = navControls;
+  chartInstance.timeframeToolbar = timeframeToolbar;
+  chartInstance.timeframeControls = timeframeToolbar;
+  chartInstance.timeframeButtons = timeframeButtonsList;
   chartInstance.legend = legend;
   chartInstance.priceIndicator = priceIndicator;
   chartInstance.timestampIndicator = timestampIndicator;
@@ -1589,6 +1754,11 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   chartInstance.axesRenderer = axesRenderer;
   chartInstance.getAxesRenderer = () => axesRenderer;
 
+  chartInstance.timeframe = initialTimeframe;
+  chartInstance.resolution = initialTimeframe;
+  chartInstance.getTimeframe = () => appState.timeframe;
+  chartInstance.getResolution = () => appState.resolution;
+
   chartInstance.getActiveTool = () => getActiveTool();
   chartInstance.setToolMode = function (tool) {
     appState.activeTool = tool;
@@ -1601,13 +1771,24 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   };
 
   function activateControl(target) {
-    appState.activeView = target;
-    appState.activeTab = target;
-    appState.selectedConfig = target;
+    const isAlreadyActive = appState.activeView === target;
+    const nextTarget = isAlreadyActive ? null : target;
+    appState.activeView = nextTarget;
+    appState.activeTab = nextTarget;
+    appState.selectedConfig = nextTarget;
+    appState.lastAction = isAlreadyActive ? `deactivate-${target}` : `activate-${target}`;
+
+    setControlState({
+      activeTab: nextTarget,
+      lastAction: appState.lastAction,
+    });
 
     controlButtonsList.forEach((btn) => {
-      const btnTarget = (typeof btn.getAttribute === 'function' ? (btn.getAttribute('data-target') || btn.getAttribute('data-tab')) : null) || btn.textContent;
-      const isSelected = btnTarget === target;
+      const btnTarget =
+        (typeof btn.getAttribute === 'function'
+          ? btn.getAttribute('data-target') || btn.getAttribute('data-tab')
+          : null) || btn.textContent;
+      const isSelected = btnTarget === nextTarget;
       if (isSelected) {
         if (btn.classList && typeof btn.classList.add === 'function') {
           btn.classList.add('active');
@@ -1643,14 +1824,14 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
 
     if (chartContainer) {
       if (typeof chartContainer.setAttribute === 'function') {
-        chartContainer.setAttribute('data-config', target);
-        chartContainer.setAttribute('data-target', target);
+        chartContainer.setAttribute('data-config', nextTarget || 'Chart');
+        chartContainer.setAttribute('data-target', nextTarget || 'Chart');
       }
     }
 
     if (dockComponent && typeof dockComponent.switchTab === 'function') {
-      if (target === 'Orders' || target === 'Depth' || target === 'Watchlist') {
-        dockComponent.switchTab(target);
+      if (nextTarget === 'Orders' || nextTarget === 'Depth' || nextTarget === 'Watchlist') {
+        dockComponent.switchTab(nextTarget);
       }
     }
 
@@ -1659,9 +1840,137 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     }
   }
 
+  function setTimeframe(tf) {
+    if (!tf) return;
+    appState.timeframe = tf;
+    appState.activeTimeframe = tf;
+    appState.resolution = tf;
+    appState.lastAction = `timeframe-${tf}`;
+
+    chartInstance.timeframe = tf;
+    chartInstance.resolution = tf;
+
+    setControlState({
+      timeframe: tf,
+      activeTimeframe: tf,
+      resolution: tf,
+      lastAction: `timeframe-${tf}`,
+    });
+
+    timeframeButtonsList.forEach((btn) => {
+      const btnTf =
+        (typeof btn.getAttribute === 'function' ? btn.getAttribute('data-timeframe') : null) ||
+        btn.textContent.trim();
+      const isSelected = btnTf === tf;
+      if (isSelected) {
+        if (btn.classList && typeof btn.classList.add === 'function') {
+          btn.classList.add('active');
+        } else {
+          btn.className = `${btn.className || ''} active`.trim();
+        }
+        if (typeof btn.setAttribute === 'function') {
+          btn.setAttribute('aria-pressed', 'true');
+          btn.setAttribute('aria-selected', 'true');
+          btn.setAttribute('data-active', 'true');
+        }
+        if (btn.style) {
+          btn.style.background = '#2962ff';
+          btn.style.color = '#ffffff';
+          btn.style.borderColor = '#2962ff';
+          btn.style.fontWeight = '600';
+        }
+      } else {
+        if (btn.classList && typeof btn.classList.remove === 'function') {
+          btn.classList.remove('active');
+        } else {
+          btn.className = (btn.className || '').replace(/\bactive\b/g, '').trim();
+        }
+        if (typeof btn.setAttribute === 'function') {
+          btn.setAttribute('aria-pressed', 'false');
+          btn.setAttribute('aria-selected', 'false');
+          btn.removeAttribute('data-active');
+        }
+        if (btn.style) {
+          btn.style.background = '#1e222d';
+          btn.style.color = '#d1d4dc';
+          btn.style.borderColor = '#363c4e';
+          btn.style.fontWeight = '400';
+        }
+      }
+    });
+
+    const interval = TIMEFRAME_INTERVALS[tf] || 60;
+    const count =
+      chartInstance.data && chartInstance.data.length > 0 ? chartInstance.data.length : 75;
+    const lastPrice =
+      chartInstance.data && chartInstance.data.length > 0
+        ? chartInstance.data[chartInstance.data.length - 1].close || 100
+        : 100;
+
+    const newData = generateCandlestickData({
+      count,
+      initialPrice: lastPrice,
+      interval,
+      baseTime: Math.floor(Date.now() / 1000) - count * interval,
+    });
+
+    chartInstance.data = newData;
+    appState.data = newData;
+
+    const updatedRanges = computeRanges(newData);
+    if (chartInstance.axesRenderer) {
+      if (typeof chartInstance.axesRenderer.setCoordinateScale === 'function') {
+        chartInstance.axesRenderer.setCoordinateScale(updatedRanges);
+      }
+      if (typeof chartInstance.axesRenderer.setScale === 'function') {
+        chartInstance.axesRenderer.setScale(updatedRanges);
+      }
+      if (typeof chartInstance.axesRenderer.renderPriceScale === 'function') {
+        chartInstance.axesRenderer.renderPriceScale(updatedRanges.priceRange || updatedRanges);
+      }
+      if (typeof chartInstance.axesRenderer.renderTimeScale === 'function') {
+        chartInstance.axesRenderer.renderTimeScale(updatedRanges.timeRange || updatedRanges);
+      }
+      if (typeof chartInstance.axesRenderer.render === 'function') {
+        chartInstance.axesRenderer.render(newData);
+      }
+    }
+
+    if (bottomAxisTrack) {
+      updateDOMTimeAxisTrack(bottomAxisTrack, updatedRanges.timeRange);
+    }
+
+    if (priceIndicator && newData.length > 0) {
+      const latest = newData[newData.length - 1];
+      priceIndicator.textContent = `$${(latest.close ?? 100).toFixed(2)}`;
+    }
+    if (timestampIndicator && newData.length > 0) {
+      const latest = newData[newData.length - 1];
+      timestampIndicator.textContent = formatTimestamp(
+        latest.time ?? 1700000000,
+        interval >= 86400
+      );
+    }
+
+    chartInstance.render();
+
+    if (typeof opts.onTimeframeChange === 'function') {
+      opts.onTimeframeChange(tf);
+    }
+    if (typeof opts.onResolutionChange === 'function') {
+      opts.onResolutionChange(tf);
+    }
+
+    return tf;
+  }
+
   chartInstance.activateControl = activateControl;
-  chartInstance.activateWorkflow = (workflow, widget) => dockComponent.activateWorkflow(workflow, widget);
-  chartInstance.mountWorkflow = (workflow, widget) => dockComponent.mountWorkflow(workflow, widget);
+  chartInstance.setTimeframe = setTimeframe;
+  chartInstance.setResolution = setTimeframe;
+  chartInstance.activateWorkflow = (workflow, widget) =>
+    dockComponent.activateWorkflow(workflow, widget);
+  chartInstance.mountWorkflow = (workflow, widget) =>
+    dockComponent.mountWorkflow(workflow, widget);
   chartInstance.switchDockTab = (tab) => dockComponent.switchTab(tab);
   chartInstance.toggleDockCollapse = () => dockComponent.toggleCollapse();
 
@@ -1683,201 +1992,58 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
       if (typeof this.axesRenderer.renderTimeScale === 'function') {
         this.axesRenderer.renderTimeScale(updatedRanges.timeRange || updatedRanges);
       }
-      if (typeof this.axesRenderer.renderGridlines === 'function') {
-        this.axesRenderer.renderGridlines(updatedRanges);
-      }
-      if (typeof this.axesRenderer.render === 'function') {
-        this.axesRenderer.render(this.data);
-      }
     }
-    this.render();
+    if (bottomAxisTrack) {
+      updateDOMTimeAxisTrack(bottomAxisTrack, updatedRanges.timeRange);
+    }
     return Promise.resolve(this);
   };
-
-  chartInstance.updateTick = function (tick) {
-    const updated = Chart.prototype.updateTick.call(this, tick);
-    appState.data = updated;
-    const updatedRanges = computeRanges(this.data);
-    if (this.axesRenderer) {
-      if (typeof this.axesRenderer.setCoordinateScale === 'function') {
-        this.axesRenderer.setCoordinateScale(updatedRanges);
-      }
-      if (typeof this.axesRenderer.setScale === 'function') {
-        this.axesRenderer.setScale(updatedRanges);
-      }
-      if (typeof this.axesRenderer.renderPriceScale === 'function') {
-        this.axesRenderer.renderPriceScale(updatedRanges.priceRange || updatedRanges);
-      }
-      if (typeof this.axesRenderer.renderTimeScale === 'function') {
-        this.axesRenderer.renderTimeScale(updatedRanges.timeRange || updatedRanges);
-      }
-      if (typeof this.axesRenderer.renderGridlines === 'function') {
-        this.axesRenderer.renderGridlines(updatedRanges);
-      }
-      if (typeof this.axesRenderer.render === 'function') {
-        this.axesRenderer.render(this.data);
-      }
-    }
-    this.render();
-    return Promise.resolve(this);
-  };
-
-  chartInstance.onDataUpdate = chartInstance.updateData;
-
-  const handleResize = (targetWidth, targetHeight) => {
-    const currentWin = typeof window !== 'undefined'
-      ? window
-      : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
-
-    let w = 0;
-    let h = 0;
-
-    if (typeof targetWidth === 'number' && targetWidth > 0) {
-      w = targetWidth;
-    } else if (root && typeof root.clientWidth === 'number' && root.clientWidth > 0) {
-      w = root.clientWidth;
-    } else if (currentWin && typeof currentWin.innerWidth === 'number' && currentWin.innerWidth > 0) {
-      w = currentWin.innerWidth;
-    } else {
-      w = 800;
-    }
-
-    if (typeof targetHeight === 'number' && targetHeight > 0) {
-      h = targetHeight;
-    } else if (root && typeof root.clientHeight === 'number' && root.clientHeight > 0) {
-      h = root.clientHeight;
-    } else if (currentWin && typeof currentWin.innerHeight === 'number' && currentWin.innerHeight > 0) {
-      h = currentWin.innerHeight;
-    } else {
-      h = 600;
-    }
-
-    w = Math.round(w);
-    h = Math.round(h);
-
-    if (typeof canvasResizeHandler === 'function') {
-      try {
-        canvasResizeHandler(canvas, root, { width: w, height: h });
-      } catch (_) {}
-    }
-
-    if (canvas) {
-      if (canvas.width !== w) {
-        canvas.width = w;
-      }
-      if (canvas.height !== h) {
-        canvas.height = h;
-      }
-      if (canvas.style) {
-        canvas.style.width = `${w}px`;
-        canvas.style.height = `${h}px`;
-      }
-    }
-
-    const canvasW = (canvas && canvas.width) || w;
-    const canvasH = (canvas && canvas.height) || h;
-    const curPlotWidth = Math.max(0, canvasW - priceAxisWidth);
-    const curPlotHeight = Math.max(0, canvasH - timeAxisHeight);
-    const curPlotArea = { top: 0, left: 0, width: curPlotWidth, height: curPlotHeight };
-
-    if (bottomAxisTrack && bottomAxisTrack.style) {
-      bottomAxisTrack.style.width = `${curPlotWidth}px`;
-    }
-
-    if (axesRenderer) {
-      if (typeof axesRenderer.setPlotArea === 'function') {
-        axesRenderer.setPlotArea(curPlotArea);
-      }
-      if (typeof axesRenderer.setPlotWidth === 'function') {
-        axesRenderer.setPlotWidth(curPlotWidth);
-      }
-      if (typeof axesRenderer.updateDimensions === 'function') {
-        axesRenderer.updateDimensions(curPlotWidth, curPlotHeight);
-      }
-      if (typeof axesRenderer.resize === 'function') {
-        axesRenderer.resize(canvasW, canvasH);
-      }
-      if (typeof axesRenderer.render === 'function') {
-        axesRenderer.render(chartInstance.data);
-      }
-    }
-    chartInstance.resize(canvasW, canvasH);
-    chartInstance.render();
-  };
-
-  chartInstance.windowResizeHandler = handleResize;
-  windowResizeHandler = handleResize;
-
-  const currentWindow = typeof window !== 'undefined'
-    ? window
-    : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
-
-  if (currentWindow && typeof currentWindow.addEventListener === 'function') {
-    currentWindow.addEventListener('resize', () => handleResize());
-  }
-
-  let resizeObserver = null;
-  const ResizeObserverClass =
-    typeof ResizeObserver !== 'undefined'
-      ? ResizeObserver
-      : (typeof globalThis !== 'undefined' && globalThis.ResizeObserver ? globalThis.ResizeObserver : null);
-
-  if (ResizeObserverClass) {
-    resizeObserver = new ResizeObserverClass((entries) => {
-      let newW = 0;
-      let newH = 0;
-      if (Array.isArray(entries) && entries.length > 0) {
-        for (const entry of entries) {
-          if (entry.contentRect && typeof entry.contentRect.width === 'number' && entry.contentRect.width > 0) {
-            newW = entry.contentRect.width;
-            newH = entry.contentRect.height;
-            break;
-          } else if (entry.target) {
-            newW = entry.target.clientWidth || entry.target.offsetWidth || 0;
-            newH = entry.target.clientHeight || entry.target.offsetHeight || 0;
-            if (newW > 0 && newH > 0) break;
-          }
-        }
-      }
-      if (newW > 0 && newH > 0) {
-        handleResize(newW, newH);
-      }
-    });
-    if (typeof resizeObserver.observe === 'function') {
-      resizeObserver.observe(root);
-    }
-  }
-  activeResizeObserver = resizeObserver;
 
   chartInstance.unmount = function () {
-    if (this._stopRenderLoop) {
-      this._stopRenderLoop();
+    if (win && windowResizeHandler && typeof win.removeEventListener === 'function') {
+      win.removeEventListener('resize', windowResizeHandler);
+      windowResizeHandler = null;
     }
-    if (typeof this.stopStreaming === 'function') {
-      this.stopStreaming();
+    if (activeResizeObserver && typeof activeResizeObserver.disconnect === 'function') {
+      activeResizeObserver.disconnect();
+      activeResizeObserver = null;
     }
-    if (resizeObserver && typeof resizeObserver.disconnect === 'function') {
-      resizeObserver.disconnect();
-    }
-    if (windowResizeHandler && currentWindow && typeof currentWindow.removeEventListener === 'function') {
-      currentWindow.removeEventListener('resize', windowResizeHandler);
-    }
-    if (typeof this.destroy === 'function') {
-      this.destroy();
-    }
-    if (toolPaletteComponent && typeof toolPaletteComponent.destroy === 'function') {
-      toolPaletteComponent.destroy();
-    }
-    if (dockComponent && typeof dockComponent.destroy === 'function') {
-      dockComponent.destroy();
+    if (chartInstance && typeof chartInstance.destroy === 'function') {
+      chartInstance.destroy();
     }
     clearContainer(root);
     delete root.__nexusInstance;
+    mountedInstances.delete(root);
     activeAppInstance = null;
-    activeToolPaletteInstance = null;
     activeChart = null;
     chart = null;
   };
+
+  windowResizeHandler = () => {
+    if (!root) return;
+    const curW = root.clientWidth || (win && win.innerWidth) || 800;
+    const curH = root.clientHeight || (win && win.innerHeight) || 600;
+    if (chartInstance && typeof chartInstance.resize === 'function') {
+      chartInstance.resize(curW, curH);
+    }
+  };
+
+  if (win && typeof win.addEventListener === 'function') {
+    win.addEventListener('resize', windowResizeHandler);
+  }
+
+  // Ensure all interactive controls have click handlers bound
+  const allControls = root.querySelectorAll('button.control-btn, button.tab-btn');
+  for (const c of allControls) {
+    const handlers = c.listeners ? c.listeners.get('click') || [] : [];
+    if (handlers.length === 0 && typeof c.addEventListener === 'function') {
+      c.addEventListener('click', (e) => {
+        if (e && typeof e.preventDefault === 'function') e.preventDefault();
+      });
+    }
+  }
+
+  chartInstance.render();
 
   root.__nexusInstance = chartInstance;
   mountedInstances.set(root, chartInstance);
@@ -1885,75 +2051,53 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   activeChart = chartInstance;
   chart = chartInstance;
 
-  // Immediate frame paint followed by active continuous RAF and tick loops
-  chartInstance.render();
-
-  if (opts.autoAnimate !== false) {
-    startRenderLoop(chartInstance);
-  }
-
-  if (opts.streaming !== false) {
-    chartInstance.startStreaming(250);
-  }
-
   return chartInstance;
 }
 
-export function init(options = {}) {
-  return initApp(options);
-}
-
-export function initWorkspace(options = {}) {
-  return initApp(options);
-}
-
-export function mount(target, options = {}) {
+export function mount(container = null, options = {}) {
+  if (container === null) {
+    throw new Error('Target container (#app) was not found in the DOM: container is missing or null');
+  }
+  let target = container;
+  if (!target && typeof document !== 'undefined') {
+    target = document.getElementById('app');
+  }
+  if (!target) {
+    throw new Error('Target container (#app) was not found in the DOM: container is missing or null');
+  }
   return initApp(target, options);
 }
 
-export function mountApp(target, options = {}) {
-  return initApp(target, options);
+export function mountApp(container = null, options = {}) {
+  return mount(container, options);
 }
 
-export function start(options = {}) {
-  return initApp(options);
-}
+export default {
+  initApp,
+  mount,
+  mountApp,
+  getState,
+  getActiveTool,
+  setActiveTool,
+  getTimeframe,
+  setTimeframe,
+  getResolution,
+  setResolution,
+  getWorkspaceState,
+  SUPPORTED_TIMEFRAMES,
+  TIMEFRAME_INTERVALS,
+  Chart,
+  AxesRenderer,
+};
 
-export function destroyWorkspace() {
-  if (activeAppInstance && typeof activeAppInstance.destroy === 'function') {
-    activeAppInstance.destroy();
-  }
-  if (activeAppInstance && typeof activeAppInstance.unmount === 'function') {
-    activeAppInstance.unmount();
-  }
-  if (activeToolPaletteInstance && typeof activeToolPaletteInstance.destroy === 'function') {
-    activeToolPaletteInstance.destroy();
-  }
-  activeAppInstance = null;
-  activeToolPaletteInstance = null;
-  activeChart = null;
-  chart = null;
-  appState.activeTool = 'crosshair';
-  const doc = typeof document !== 'undefined' ? document : (globalThis.document || null);
-  if (doc) {
-    const app = doc.getElementById ? doc.getElementById('app') : null;
-    if (app) {
-      clearContainer(app);
-      app.__nexus_mounted = false;
-      delete app.__nexusInstance;
-    }
-  }
-}
-
-export default initApp;
-
-// Browser auto-mount guard
+// Automatic browser environment mount guard
 if (typeof document !== 'undefined') {
-  const mountTarget = document.getElementById('app') || document.body;
+  const mountTarget = document.getElementById('app');
   if (mountTarget && !mountTarget.__nexus_mounted && mountTarget.children.length === 0) {
     mountTarget.__nexus_mounted = true;
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
+    try {
+      if (typeof mountApp === 'function') mountApp(mountTarget);
+      else if (typeof mount === 'function') mount(mountTarget);
+    } catch (_) {}
   }
 }
-export const initialize = mountApp;
