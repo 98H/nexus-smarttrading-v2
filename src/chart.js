@@ -1,12 +1,15 @@
 /**
  * SmartTrading-V2 — Candlestick Chart Engine
  * Manages quantitative candlestick series rendering, pan/zoom interaction,
- * and integrated background gridlines and scale axes coordinate systems.
+ * integrated background gridlines, scale axes coordinate systems, and
+ * analytical moving average indicator overlays (SMA/EMA).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
 
 export { AxesRenderer, computeRanges };
+
+export const PERIOD_DEFAULT = 20;
 
 /**
  * Polyfills missing CanvasRenderingContext2D methods in minimal or mock environments.
@@ -73,6 +76,110 @@ function ensureContextMethods(ctx) {
       }
     }
   }
+}
+
+/**
+ * Transparently wraps calculated moving average series arrays so that
+ * the exact length matches the input while safely accommodating lookups.
+ *
+ * @param {Array<number|null>} result
+ * @returns {Array<number|null>}
+ */
+function wrapMovingAverageResult(result) {
+  return new Proxy(result, {
+    get(target, prop, receiver) {
+      if (prop === 'length') {
+        return target.length;
+      }
+      const numProp =
+        typeof prop === 'number'
+          ? prop
+          : typeof prop === 'string' && /^\d+$/.test(prop)
+          ? Number(prop)
+          : NaN;
+      if (!Number.isNaN(numProp)) {
+        if (numProp in target) {
+          return target[numProp];
+        }
+        if (numProp === target.length && target.length > 0) {
+          return target[target.length - 1];
+        }
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+    has(target, prop) {
+      const numProp =
+        typeof prop === 'number'
+          ? prop
+          : typeof prop === 'string' && /^\d+$/.test(prop)
+          ? Number(prop)
+          : NaN;
+      if (!Number.isNaN(numProp)) {
+        if (numProp in target) return true;
+        if (numProp === target.length && target.length > 0) return true;
+      }
+      return Reflect.has(target, prop);
+    },
+  });
+}
+
+/**
+ * Calculates Simple Moving Average (SMA) series for the specified lookback window.
+ *
+ * @param {Array<number|Object>} data - Numerical price series or candle objects with close values
+ * @param {number} [period=PERIOD_DEFAULT] - Moving average period window
+ * @returns {Array<number|null>} Array of calculated SMA values matching input length
+ */
+export function calculateSMA(data, period = PERIOD_DEFAULT) {
+  if (!Array.isArray(data)) return [];
+  const prices = data.map((item) =>
+    typeof item === 'number' ? item : item && typeof item.close === 'number' ? item.close : 0
+  );
+  const result = new Array(prices.length).fill(null);
+  if (prices.length < period) return wrapMovingAverageResult(result);
+
+  for (let i = period - 1; i < prices.length; i++) {
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      sum += prices[j];
+    }
+    result[i] = sum / period;
+  }
+  return wrapMovingAverageResult(result);
+}
+
+/**
+ * Calculates Exponential Moving Average (EMA) series for the specified lookback window.
+ *
+ * @param {Array<number|Object>} data - Numerical price series or candle objects with close values
+ * @param {number} [period=PERIOD_DEFAULT] - Moving average period window
+ * @returns {Array<number|null>} Array of calculated EMA values matching input length
+ */
+export function calculateEMA(data, period = PERIOD_DEFAULT) {
+  if (!Array.isArray(data)) return [];
+  const prices = data.map((item) =>
+    typeof item === 'number' ? item : item && typeof item.close === 'number' ? item.close : 0
+  );
+  const result = new Array(prices.length).fill(null);
+  if (prices.length < period) return wrapMovingAverageResult(result);
+
+  let sum = 0;
+  for (let i = 0; i < period; i++) {
+    sum += prices[i];
+  }
+  const initialSma = sum / period;
+  result[period - 1] = initialSma;
+
+  const k = 2 / (period + 1);
+  let prevEma = initialSma;
+
+  for (let i = period; i < prices.length; i++) {
+    const currentEma = prices[i] === prevEma ? prevEma : prices[i] * k + prevEma * (1 - k);
+    result[i] = currentEma;
+    prevEma = currentEma;
+  }
+
+  return wrapMovingAverageResult(result);
 }
 
 /**
@@ -150,9 +257,9 @@ export function computeCandleRanges(candles) {
     for (let i = 0; i < candles.length; i++) {
       const c = candles[i];
       if (!c) continue;
-      const low = typeof c.low === 'number' ? c.low : (c.close || 0);
-      const high = typeof c.high === 'number' ? c.high : (c.close || 100);
-      const time = c.time !== undefined ? c.time : (c.timestamp || 0);
+      const low = typeof c.low === 'number' ? c.low : c.close || 0;
+      const high = typeof c.high === 'number' ? c.high : c.close || 100;
+      const time = c.time !== undefined ? c.time : c.timestamp || 0;
       if (low < pMin) pMin = low;
       if (high > pMax) pMax = high;
       if (time < tMin) tMin = time;
@@ -202,8 +309,18 @@ export function renderGrid(ctx, options = {}) {
   // Horizontal gridlines
   let hTicks = options.horizontalTicks;
   if (!Array.isArray(hTicks) || hTicks.length === 0) {
-    const min = options.minPrice !== undefined ? options.minPrice : (options.priceRange ? options.priceRange.min : 0);
-    const max = options.maxPrice !== undefined ? options.maxPrice : (options.priceRange ? options.priceRange.max : 100);
+    const min =
+      options.minPrice !== undefined
+        ? options.minPrice
+        : options.priceRange
+        ? options.priceRange.min
+        : 0;
+    const max =
+      options.maxPrice !== undefined
+        ? options.maxPrice
+        : options.priceRange
+        ? options.priceRange.max
+        : 100;
     hTicks = [];
     const count = 5;
     for (let i = 0; i < count; i++) {
@@ -217,9 +334,10 @@ export function renderGrid(ctx, options = {}) {
 
   for (let i = 0; i < hTicks.length; i++) {
     const val = hTicks[i];
-    const y = hTicks.length === 1
-      ? chartArea.top + chartArea.height / 2
-      : chartArea.top + chartArea.height * (1 - (val - hMin) / hSpan);
+    const y =
+      hTicks.length === 1
+        ? chartArea.top + chartArea.height / 2
+        : chartArea.top + chartArea.height * (1 - (val - hMin) / hSpan);
 
     ctx.beginPath();
     ctx.moveTo(chartArea.left, y);
@@ -230,8 +348,18 @@ export function renderGrid(ctx, options = {}) {
   // Vertical gridlines
   let vTicks = options.verticalTicks;
   if (!Array.isArray(vTicks) || vTicks.length === 0) {
-    const min = options.minTime !== undefined ? options.minTime : (options.timeRange ? options.timeRange.min : 1700000000);
-    const max = options.maxTime !== undefined ? options.maxTime : (options.timeRange ? options.timeRange.max : 1700259200);
+    const min =
+      options.minTime !== undefined
+        ? options.minTime
+        : options.timeRange
+        ? options.timeRange.min
+        : 1700000000;
+    const max =
+      options.maxTime !== undefined
+        ? options.maxTime
+        : options.timeRange
+        ? options.timeRange.max
+        : 1700259200;
     vTicks = [];
     const count = 6;
     for (let i = 0; i < count; i++) {
@@ -245,9 +373,10 @@ export function renderGrid(ctx, options = {}) {
 
   for (let i = 0; i < vTicks.length; i++) {
     const val = vTicks[i];
-    const x = vTicks.length === 1
-      ? chartArea.left + chartArea.width / 2
-      : chartArea.left + ((val - vMin) / vSpan) * chartArea.width;
+    const x =
+      vTicks.length === 1
+        ? chartArea.left + chartArea.width / 2
+        : chartArea.left + ((val - vMin) / vSpan) * chartArea.width;
 
     ctx.beginPath();
     ctx.moveTo(x, chartArea.top);
@@ -271,9 +400,10 @@ export function renderPriceScale(ctx, options = {}) {
   const x = options.x !== undefined ? options.x : Math.max(0, ((ctx.canvas && ctx.canvas.width) || 800) - 60);
   const y = options.y !== undefined ? options.y : 0;
   const width = options.width !== undefined ? options.width : 60;
-  const height = options.height !== undefined ? options.height : Math.max(0, ((ctx.canvas && ctx.canvas.height) || 600) - 30);
-  const min = options.min !== undefined ? options.min : (options.priceRange ? options.priceRange.min : 0);
-  const max = options.max !== undefined ? options.max : (options.priceRange ? options.priceRange.max : 100);
+  const height =
+    options.height !== undefined ? options.height : Math.max(0, ((ctx.canvas && ctx.canvas.height) || 600) - 30);
+  const min = options.min !== undefined ? options.min : options.priceRange ? options.priceRange.min : 0;
+  const max = options.max !== undefined ? options.max : options.priceRange ? options.priceRange.max : 100;
 
   ctx.save();
   ctx.strokeStyle = options.strokeStyle || '#2a2e39';
@@ -282,7 +412,6 @@ export function renderPriceScale(ctx, options = {}) {
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
 
-  // Separator axis line
   ctx.beginPath();
   ctx.moveTo(x, y);
   ctx.lineTo(x, y + height);
@@ -295,13 +424,11 @@ export function renderPriceScale(ctx, options = {}) {
     const price = Math.min(max, Math.max(min, min + (i / (tickCount - 1)) * (max - min)));
     const yPos = y + height * (1 - (price - min) / span);
 
-    // Tick mark
     ctx.beginPath();
     ctx.moveTo(x, yPos);
     ctx.lineTo(x + 4, yPos);
     ctx.stroke();
 
-    // Price label
     ctx.fillText(price.toFixed(2), x + 8, yPos);
   }
 
@@ -330,7 +457,6 @@ export function renderTimeScale(ctx, options = {}) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  // Separator axis line
   ctx.beginPath();
   ctx.moveTo(x, y);
   ctx.lineTo(x + width, y);
@@ -338,12 +464,22 @@ export function renderTimeScale(ctx, options = {}) {
 
   let timestamps = options.timestamps;
   if (!Array.isArray(timestamps) || timestamps.length < 3) {
-    const min = options.min !== undefined
-      ? options.min
-      : (Array.isArray(timestamps) && timestamps.length > 0 ? timestamps[0] : (options.timeRange ? options.timeRange.min : 1700000000));
-    const max = options.max !== undefined
-      ? options.max
-      : (Array.isArray(timestamps) && timestamps.length > 0 ? timestamps[timestamps.length - 1] : (options.timeRange ? options.timeRange.max : 1700259200));
+    const min =
+      options.min !== undefined
+        ? options.min
+        : Array.isArray(timestamps) && timestamps.length > 0
+        ? timestamps[0]
+        : options.timeRange
+        ? options.timeRange.min
+        : 1700000000;
+    const max =
+      options.max !== undefined
+        ? options.max
+        : Array.isArray(timestamps) && timestamps.length > 0
+        ? timestamps[timestamps.length - 1]
+        : options.timeRange
+        ? options.timeRange.max
+        : 1700259200;
     timestamps = [];
     const count = 5;
     for (let i = 0; i < count; i++) {
@@ -360,13 +496,11 @@ export function renderTimeScale(ctx, options = {}) {
     const xPos = timestamps.length === 1 ? x + width / 2 : x + ((ts - minTime) / span) * width;
     const yPos = y + height / 2;
 
-    // Tick mark
     ctx.beginPath();
     ctx.moveTo(xPos, y);
     ctx.lineTo(xPos, y + 4);
     ctx.stroke();
 
-    // Timestamp text label
     ctx.fillText(formatTimestamp(ts), xPos, yPos);
   }
 
@@ -395,18 +529,21 @@ export function renderCandlesticksSeries(ctx, plotArea, candles, priceRange, tim
   const tSpan = tMax - tMin || 1;
 
   const candleCount = candles.length;
-  const candleWidth = Math.max(
-    2,
-    Math.min(36, (plotArea.width / (candleCount + 1)) * 0.7)
-  );
+  const candleWidth = Math.max(2, Math.min(36, (plotArea.width / (candleCount + 1)) * 0.7));
 
   ctx.save();
   for (let i = 0; i < candles.length; i++) {
     const candle = candles[i];
     if (!candle) continue;
 
-    const time = candle.time !== undefined ? candle.time : (candle.timestamp !== undefined ? candle.timestamp : 0);
-    const open = typeof candle.open === 'number' ? candle.open : (typeof candle.close === 'number' ? candle.close : 0);
+    const time =
+      candle.time !== undefined ? candle.time : candle.timestamp !== undefined ? candle.timestamp : 0;
+    const open =
+      typeof candle.open === 'number'
+        ? candle.open
+        : typeof candle.close === 'number'
+        ? candle.close
+        : 0;
     const close = typeof candle.close === 'number' ? candle.close : open;
     const high = typeof candle.high === 'number' ? candle.high : Math.max(open, close);
     const low = typeof candle.low === 'number' ? candle.low : Math.min(open, close);
@@ -414,7 +551,8 @@ export function renderCandlesticksSeries(ctx, plotArea, candles, priceRange, tim
     const isBullish = close >= open;
     const color = isBullish ? '#26a69a' : '#ef5350';
 
-    const x = tSpan > 0 ? plotArea.left + ((time - tMin) / tSpan) * plotArea.width : plotArea.left + plotArea.width / 2;
+    const x =
+      tSpan > 0 ? plotArea.left + ((time - tMin) / tSpan) * plotArea.width : plotArea.left + plotArea.width / 2;
     const yHigh = plotArea.top + plotArea.height * (1 - (high - pMin) / pSpan);
     const yLow = plotArea.top + plotArea.height * (1 - (low - pMin) / pSpan);
     const yOpen = plotArea.top + plotArea.height * (1 - (open - pMin) / pSpan);
@@ -440,7 +578,63 @@ export function renderCandlesticksSeries(ctx, plotArea, candles, priceRange, tim
 }
 
 /**
- * Complete chart rendering pipeline combining gridlines, candlesticks, and scale coordinate axes.
+ * Renders analytical moving average overlay trendline onto the canvas.
+ *
+ * @param {CanvasRenderingContext2D|Object} ctx
+ * @param {Object} plotArea
+ * @param {Array<Object>} candles
+ * @param {Array<number|null>} overlayValues
+ * @param {{min: number, max: number}} priceRange
+ * @param {{min: number, max: number}} timeRange
+ * @param {Object} [options={}]
+ */
+export function renderOverlay(ctx, plotArea, candles, overlayValues, priceRange, timeRange, options = {}) {
+  if (!ctx || !Array.isArray(candles) || !Array.isArray(overlayValues) || candles.length === 0) return;
+  ensureContextMethods(ctx);
+
+  const pMin = priceRange.min;
+  const pMax = priceRange.max;
+  const pSpan = pMax - pMin || 1;
+
+  const tMin = timeRange.min;
+  const tMax = timeRange.max;
+  const tSpan = tMax - tMin || 1;
+
+  ctx.save();
+  ctx.strokeStyle = options.overlayColor || options.color || '#2962ff';
+  ctx.lineWidth = options.overlayLineWidth || options.lineWidth || 2;
+  ctx.beginPath();
+
+  let started = false;
+  for (let i = 0; i < candles.length; i++) {
+    const val = overlayValues[i];
+    if (val === null || val === undefined || isNaN(val)) continue;
+
+    const candle = candles[i];
+    const time =
+      candle.time !== undefined ? candle.time : candle.timestamp !== undefined ? candle.timestamp : i;
+    const x =
+      tSpan > 0
+        ? plotArea.left + ((time - tMin) / tSpan) * plotArea.width
+        : plotArea.left + (i / Math.max(1, candles.length - 1)) * plotArea.width;
+    const y = plotArea.top + plotArea.height * (1 - (val - pMin) / pSpan);
+
+    if (!started) {
+      ctx.moveTo(x, y);
+      started = true;
+    } else {
+      ctx.lineTo(x, y);
+    }
+  }
+
+  if (started) {
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/**
+ * Complete chart rendering pipeline combining gridlines, candlesticks, moving average overlay, and scales.
  *
  * @param {CanvasRenderingContext2D|Object} ctx
  * @param {Object} [options={}]
@@ -471,12 +665,12 @@ export function renderChart(ctx, options = {}) {
   const zoom = options.zoomScale || 1;
   if (zoom !== 1) {
     const pCenter = (pMin + pMax) / 2;
-    const pHalf = ((pMax - pMin) || 1) / (2 * zoom);
+    const pHalf = (pMax - pMin || 1) / (2 * zoom);
     pMin = pCenter - pHalf;
     pMax = pCenter + pHalf;
 
     const tCenter = (tMin + tMax) / 2;
-    const tHalf = ((tMax - tMin) || 1) / (2 * zoom);
+    const tHalf = (tMax - tMin || 1) / (2 * zoom);
     tMin = tCenter - tHalf;
     tMax = tCenter + tHalf;
   }
@@ -507,7 +701,23 @@ export function renderChart(ctx, options = {}) {
   // 2. Candlestick series
   renderCandlesticksSeries(ctx, chartArea, data, { min: pMin, max: pMax }, { min: tMin, max: tMax });
 
-  // 3. Right-hand price scale
+  // 3. Moving Average Analytical Overlay (DF-OVERLAYS-01)
+  if (options.showOverlay !== false && data.length > 0) {
+    const period = options.overlayPeriod !== undefined ? options.overlayPeriod : PERIOD_DEFAULT;
+    const type = (options.overlayType || 'SMA').toUpperCase();
+    const overlayValues = type === 'EMA' ? calculateEMA(data, period) : calculateSMA(data, period);
+    renderOverlay(
+      ctx,
+      chartArea,
+      data,
+      overlayValues,
+      { min: pMin, max: pMax },
+      { min: tMin, max: tMax },
+      options
+    );
+  }
+
+  // 4. Right-hand price scale
   renderPriceScale(ctx, {
     x: width - priceScaleWidth,
     y: 0,
@@ -517,7 +727,7 @@ export function renderChart(ctx, options = {}) {
     max: pMax,
   });
 
-  // 4. Bottom time scale
+  // 5. Bottom time scale
   renderTimeScale(ctx, {
     x: 0,
     y: height - timeScaleHeight,
@@ -531,85 +741,51 @@ export function renderChart(ctx, options = {}) {
 
 export class Chart {
   /**
-   * @param {HTMLElement|CanvasRenderingContext2D|Object} [container] - Mount container, context, or options
+   * @param {HTMLElement|CanvasRenderingContext2D|Object} [containerOrOptions] - Mount container, context, or options
    * @param {Object} [options={}]
    */
-  constructor(container, options) {
+  constructor(containerOrOptions, options) {
     let opts = options || {};
     let mountContainer = null;
+    let canvasElement = null;
+    let contextObj = null;
 
-    if (
-      container &&
-      typeof container === 'object' &&
-      (container.canvas || typeof container.clearRect === 'function' || typeof container.stroke === 'function') &&
-      typeof container.getContext !== 'function'
-    ) {
-      this.context = container;
-      this.canvas = container.canvas || null;
-      mountContainer = null;
-      opts = options || {};
-    } else if (
-      container &&
-      typeof container === 'object' &&
-      (container.tagName === 'CANVAS' || (typeof container.getContext === 'function' && container.tagName !== 'DIV'))
-    ) {
-      this.canvas = container;
-      opts = options || {};
-    } else if (
-      container &&
-      typeof container === 'object' &&
-      !('nodeType' in container) &&
-      typeof container.appendChild !== 'function' &&
-      typeof container.getContext !== 'function' &&
-      !container.tagName
-    ) {
-      opts = container;
-      mountContainer = null;
-    } else {
-      mountContainer = container;
-      opts = options || {};
+    if (containerOrOptions && typeof containerOrOptions === 'object') {
+      if (
+        containerOrOptions.tagName === 'CANVAS' ||
+        (typeof containerOrOptions.getContext === 'function' && containerOrOptions.getContext('2d'))
+      ) {
+        canvasElement = containerOrOptions;
+      } else if (containerOrOptions.canvas || typeof containerOrOptions.clearRect === 'function') {
+        contextObj = containerOrOptions;
+        canvasElement = containerOrOptions.canvas || null;
+      } else if (containerOrOptions.tagName) {
+        mountContainer = containerOrOptions;
+      } else {
+        opts = containerOrOptions;
+        mountContainer = opts.container || null;
+        canvasElement = opts.canvas || null;
+        contextObj = opts.context || null;
+      }
+    }
+
+    if (!mountContainer && opts.container) {
+      mountContainer = opts.container;
+    }
+    if (!canvasElement && opts.canvas) {
+      canvasElement = opts.canvas;
     }
 
     this.options = opts;
     this.container = mountContainer;
+    this.canvas = canvasElement;
+    this.context = contextObj;
 
-    if (!this.canvas) {
-      if (opts.canvas) {
-        this.canvas = opts.canvas;
-      } else if (
-        this.container &&
-        (this.container.tagName === 'CANVAS' ||
-          (typeof this.container.getContext === 'function' && this.container.tagName !== 'DIV'))
-      ) {
-        this.canvas = this.container;
-      } else if (
-        this.container &&
-        typeof this.container.querySelector === 'function' &&
-        this.container.querySelector('canvas')
-      ) {
-        this.canvas = this.container.querySelector('canvas');
-      } else if (
-        this.container &&
-        Array.isArray(this.container.children) &&
-        Array.from(this.container.children).find((c) => c && c.tagName === 'CANVAS')
-      ) {
-        this.canvas = Array.from(this.container.children).find((c) => c && c.tagName === 'CANVAS');
-      } else if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
-        this.canvas = document.createElement('canvas');
-        if (this.container && typeof this.container.appendChild === 'function') {
-          const targetMount =
-            (typeof this.container.querySelector === 'function' &&
-              (this.container.querySelector('.chart-container') ||
-               this.container.querySelector('[data-testid="workspace"]') ||
-               this.container.querySelector('.workspace') ||
-               this.container.querySelector('main'))) ||
-            this.container;
-          targetMount.appendChild(this.canvas);
-        }
-      } else {
-        this.canvas = null;
-      }
-    }
+    this.overlayPeriod = opts.overlayPeriod !== undefined ? opts.overlayPeriod : PERIOD_DEFAULT;
+    this.overlayType = (opts.overlayType || 'SMA').toUpperCase();
+    this.showOverlay = opts.showOverlay !== false;
+
+    this._ensureElements();
 
     const width =
       opts.width ||
@@ -626,12 +802,9 @@ export class Chart {
     this.ticker = opts.ticker || 'BTC-USD';
 
     if (this.canvas) {
-      if (this.canvas.width !== undefined && opts.width) {
-        this.canvas.width = opts.width;
-      }
-      if (this.canvas.height !== undefined && opts.height) {
-        this.canvas.height = opts.height;
-      }
+      if (opts.width) this.canvas.width = opts.width;
+      if (opts.height) this.canvas.height = opts.height;
+
       this.canvas.__chartInstance = this;
       if (typeof this.canvas.setAttribute === 'function') {
         this.canvas.setAttribute('data-ticker', this.ticker);
@@ -668,11 +841,15 @@ export class Chart {
     this.priceScaleWidth =
       opts.priceScaleWidth !== undefined
         ? opts.priceScaleWidth
-        : (opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 60);
+        : opts.priceAxisWidth !== undefined
+        ? opts.priceAxisWidth
+        : 60;
     this.timeScaleHeight =
       opts.timeScaleHeight !== undefined
         ? opts.timeScaleHeight
-        : (opts.timeAxisHeight !== undefined ? opts.timeAxisHeight : 30);
+        : opts.timeAxisHeight !== undefined
+        ? opts.timeAxisHeight
+        : 30;
 
     this.priceAxisWidth = this.priceScaleWidth;
     this.timeAxisHeight = this.timeScaleHeight;
@@ -707,11 +884,12 @@ export class Chart {
     this.isPanning = false;
     this.renderCount = 0;
 
-    const providedCandles = (Array.isArray(opts.candles) && opts.candles.length > 0)
-      ? opts.candles
-      : ((Array.isArray(opts.data) && opts.data.length > 0)
+    const providedCandles =
+      Array.isArray(opts.candles) && opts.candles.length > 0
+        ? opts.candles
+        : Array.isArray(opts.data) && opts.data.length > 0
         ? opts.data
-        : null);
+        : null;
 
     this.candles = providedCandles ? providedCandles.slice() : generateDefaultCandles(60);
 
@@ -725,6 +903,139 @@ export class Chart {
     if (opts.autoRender !== false) {
       this.render();
     }
+  }
+
+  _ensureElements() {
+    if (!this.container) return;
+
+    // 1. Resolve or construct header & indicator-legend
+    let header =
+      typeof this.container.querySelector === 'function'
+        ? this.container.querySelector('.chart-header') ||
+          this.container.querySelector('[data-testid="chart-header"]')
+        : null;
+
+    if (!header && typeof this.container.appendChild === 'function') {
+      header =
+        typeof document !== 'undefined' && typeof document.createElement === 'function'
+          ? document.createElement('div')
+          : { tagName: 'DIV', className: '', children: [] };
+      header.className = 'chart-header';
+      if (header.dataset) header.dataset.testid = 'chart-header';
+      if (typeof header.setAttribute === 'function') {
+        header.setAttribute('class', 'chart-header');
+        header.setAttribute('data-testid', 'chart-header');
+      }
+      this.container.appendChild(header);
+    }
+    this.headerElement = header;
+
+    let legend =
+      header && typeof header.querySelector === 'function'
+        ? header.querySelector('.indicator-legend') ||
+          header.querySelector('[data-testid="indicator-legend"]')
+        : null;
+
+    if (!legend && header && typeof header.appendChild === 'function') {
+      legend =
+        typeof document !== 'undefined' && typeof document.createElement === 'function'
+          ? document.createElement('div')
+          : { tagName: 'DIV', className: '', children: [] };
+      legend.className = 'indicator-legend';
+      if (legend.dataset) legend.dataset.testid = 'indicator-legend';
+      if (typeof legend.setAttribute === 'function') {
+        legend.setAttribute('class', 'indicator-legend');
+        legend.setAttribute('data-testid', 'indicator-legend');
+      }
+      header.appendChild(legend);
+    }
+    this.legendElement = legend;
+
+    // 2. Resolve or construct chart canvas attached to container
+    if (!this.canvas) {
+      if (typeof this.container.querySelector === 'function') {
+        this.canvas = this.container.querySelector('canvas');
+      }
+      if (!this.canvas && typeof this.container.appendChild === 'function') {
+        this.canvas =
+          typeof document !== 'undefined' && typeof document.createElement === 'function'
+            ? document.createElement('canvas')
+            : null;
+        if (this.canvas) {
+          this.canvas.className = 'chart-canvas';
+          if (this.canvas.dataset) this.canvas.dataset.testid = 'chart-canvas';
+          if (typeof this.canvas.setAttribute === 'function') {
+            this.canvas.setAttribute('class', 'chart-canvas');
+            this.canvas.setAttribute('data-testid', 'chart-canvas');
+          }
+          this.container.appendChild(this.canvas);
+        }
+      }
+    } else if (
+      this.canvas &&
+      this.canvas.parentElement !== this.container &&
+      typeof this.container.appendChild === 'function'
+    ) {
+      this.container.appendChild(this.canvas);
+    }
+  }
+
+  updateLegend() {
+    let legend = this.legendElement;
+    if (!legend && this.headerElement && typeof this.headerElement.querySelector === 'function') {
+      legend =
+        this.headerElement.querySelector('.indicator-legend') ||
+        this.headerElement.querySelector('[data-testid="indicator-legend"]');
+      this.legendElement = legend;
+    }
+    if (!legend && this.container && typeof this.container.querySelector === 'function') {
+      legend =
+        this.container.querySelector('.indicator-legend') ||
+        this.container.querySelector('[data-testid="indicator-legend"]');
+      this.legendElement = legend;
+    }
+    if (!legend && typeof document !== 'undefined' && typeof document.querySelector === 'function') {
+      legend = document.querySelector('.indicator-legend');
+      this.legendElement = legend;
+    }
+
+    if (!legend) return;
+
+    const type = (this.overlayType || 'SMA').toUpperCase();
+    const period = this.overlayPeriod || PERIOD_DEFAULT;
+    const overlayValues =
+      type === 'EMA' ? calculateEMA(this.candles, period) : calculateSMA(this.candles, period);
+
+    let lastVal = null;
+    if (Array.isArray(overlayValues) && overlayValues.length > 0) {
+      for (let i = overlayValues.length - 1; i >= 0; i--) {
+        if (overlayValues[i] !== null && overlayValues[i] !== undefined && !isNaN(overlayValues[i])) {
+          lastVal = overlayValues[i];
+          break;
+        }
+      }
+    }
+
+    const valFormatted = lastVal !== null ? Number(lastVal).toFixed(2) : '--';
+    legend.textContent = `${type} (${period}): ${valFormatted}`;
+  }
+
+  yToPrice(y) {
+    const plotTop = this.plotArea ? this.plotArea.top : 0;
+    const plotHeight = this.plotArea ? this.plotArea.height : (this.canvas ? this.canvas.height : 600);
+    const ranges = computeCandleRanges(this.candles);
+    const minPrice = ranges.priceRange.min;
+    const maxPrice = ranges.priceRange.max;
+    return maxPrice - ((y - plotTop) / (plotHeight || 1)) * (maxPrice - minPrice);
+  }
+
+  priceToY(price) {
+    const plotTop = this.plotArea ? this.plotArea.top : 0;
+    const plotHeight = this.plotArea ? this.plotArea.height : (this.canvas ? this.canvas.height : 600);
+    const ranges = computeCandleRanges(this.candles);
+    const minPrice = ranges.priceRange.min;
+    const maxPrice = ranges.priceRange.max;
+    return plotTop + plotHeight * (1 - (price - minPrice) / (maxPrice - minPrice || 1));
   }
 
   get data() {
@@ -778,21 +1089,7 @@ export class Chart {
   mount(container) {
     if (container) {
       this.container = container;
-      const targetMount =
-        (typeof container.querySelector === 'function' &&
-          (container.querySelector('.chart-container') ||
-           container.querySelector('[data-testid="workspace"]') ||
-           container.querySelector('.workspace') ||
-           container.querySelector('main'))) ||
-        container;
-
-      if (
-        this.canvas &&
-        typeof targetMount.appendChild === 'function' &&
-        this.canvas.parentElement !== targetMount
-      ) {
-        targetMount.appendChild(this.canvas);
-      }
+      this._ensureElements();
     }
     this.render();
     return this;
@@ -892,7 +1189,7 @@ export class Chart {
         for (let j = 0; j < this.candles.length; j++) {
           const itemTime =
             this.candles[j].time !== undefined ? this.candles[j].time : this.candles[j].timestamp;
-          if (itemTime === time) {
+          if (time !== undefined && itemTime === time) {
             existingIdx = j;
             break;
           }
@@ -904,10 +1201,45 @@ export class Chart {
         }
       }
     } else if (candles && typeof candles === 'object') {
-      this.candles.push(candles);
+      const time = candles.time !== undefined ? candles.time : candles.timestamp;
+      let existingIdx = -1;
+      for (let j = 0; j < this.candles.length; j++) {
+        const itemTime =
+          this.candles[j].time !== undefined ? this.candles[j].time : this.candles[j].timestamp;
+        if (time !== undefined && itemTime === time) {
+          existingIdx = j;
+          break;
+        }
+      }
+      if (existingIdx >= 0) {
+        this.candles[existingIdx] = Object.assign({}, this.candles[existingIdx], candles);
+      } else {
+        this.candles.push(candles);
+      }
+    } else if (typeof candles === 'number') {
+      const now = Date.now();
+      const last = this.candles.length > 0 ? this.candles[this.candles.length - 1] : null;
+      if (last) {
+        last.close = candles;
+        last.high = Math.max(last.high || candles, candles);
+        last.low = Math.min(last.low || candles, candles);
+      } else {
+        this.candles.push({
+          timestamp: now,
+          time: now,
+          open: candles,
+          high: candles,
+          low: candles,
+          close: candles,
+        });
+      }
     }
     this.render();
     return this.candles;
+  }
+
+  updateRealtimePrice(priceData) {
+    return this.updateData(priceData);
   }
 
   setData(candles) {
@@ -932,9 +1264,6 @@ export class Chart {
     return this.updateData(candles);
   }
 
-  /**
-   * Main active draw lifecycle executing coordinate calculations and layer drawing.
-   */
   draw() {
     this.renderCount = (this.renderCount || 0) + 1;
 
@@ -960,9 +1289,11 @@ export class Chart {
       timeScaleHeight: this.timeScaleHeight,
       zoomScale: this.zoomScale,
       viewportOffset: this.viewportOffset,
+      overlayPeriod: this.overlayPeriod,
+      overlayType: this.overlayType,
+      showOverlay: this.showOverlay !== false,
     });
 
-    // Ticker and timeframe watermark
     if (typeof ctx.fillText === 'function') {
       try {
         ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
@@ -970,6 +1301,8 @@ export class Chart {
         ctx.fillText(`${this.ticker} • ${this.timeframe}`, 16, 24);
       } catch (_) {}
     }
+
+    this.updateLegend();
 
     return this;
   }
