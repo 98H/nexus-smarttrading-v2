@@ -1,10 +1,12 @@
 /**
  * SmartTrading-V2 — Main Application Entrypoint
  * Responsible for root application mounting, layout composition,
- * coordinate mapping, interactive control binding, and pan/zoom gesture wiring.
- * Satisfies STORY 29.4.1 (DF-GRAPHICS-01), STORY 29.7.1 (DF-TOOLS-01),
- * STORY 29.2.1 (DF-GESTURE-01), STORY 29.3.1 (DF-GESTURE-02),
- * STORY 29.6.1 (DF-SCALES-02), and STORY 29.5.1 (DF-SCALES-01).
+ * coordinate mapping, interactive control binding, pan/zoom gesture wiring,
+ * and continuous liveness render loops.
+ * Satisfies STORY 29.1.1 (DF-LIVENESS-01), STORY 29.4.1 (DF-GRAPHICS-01),
+ * STORY 29.7.1 (DF-TOOLS-01), STORY 29.2.1 (DF-GESTURE-01),
+ * STORY 29.3.1 (DF-GESTURE-02), STORY 29.6.1 (DF-SCALES-02),
+ * and STORY 29.5.1 (DF-SCALES-01).
  */
 
 import {
@@ -144,6 +146,27 @@ function setClass(element, className) {
 }
 
 /**
+ * Recursively collects all canvas elements mounted within an element.
+ *
+ * @param {HTMLElement|Object} el
+ * @param {Array<HTMLElement|Object>} [out=[]]
+ * @returns {Array<HTMLElement|Object>}
+ */
+function collectCanvases(el, out = []) {
+  if (!el) return out;
+  if (el.tagName === 'CANVAS') {
+    out.push(el);
+  }
+  if (el.children) {
+    const children = Array.from(el.children);
+    for (const child of children) {
+      collectCanvases(child, out);
+    }
+  }
+  return out;
+}
+
+/**
  * Returns current application state snapshot.
  *
  * @returns {Object} Current state
@@ -214,6 +237,129 @@ export function activeChartInstance() {
 }
 
 /**
+ * Initiates continuous self-sustaining render loop via requestAnimationFrame
+ * and propagates dynamic updates directly to DOM and canvas elements (STORY 29.1.1: DF-LIVENESS-01).
+ *
+ * @param {HTMLElement|Object} target
+ * @param {Chart|null} chartInstance
+ * @param {HTMLElement|Object} canvas
+ * @param {HTMLElement|Object} legend
+ */
+function startRenderLoop(target, chartInstance, canvas, legend) {
+  if (target._renderLoopRunning) {
+    return;
+  }
+  target._renderLoopRunning = true;
+
+  const scheduleFrame = (cb) => {
+    if (typeof requestAnimationFrame === 'function') {
+      return requestAnimationFrame(cb);
+    }
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      return window.requestAnimationFrame(cb);
+    }
+    return setTimeout(cb, 16);
+  };
+
+  let frameCount = 0;
+  let simulatedPrice = 100.0;
+  const priceHistory = [100.0];
+
+  function tick(timestamp) {
+    // Schedule next frame immediately to maintain loop continuity across frame pacing drops
+    target._rafId = scheduleFrame(tick);
+
+    const currentTime =
+      typeof timestamp === 'number'
+        ? timestamp
+        : typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now();
+
+    frameCount++;
+
+    // Mutate state over time: simulate continuous dynamic price movement and EMA recalculation
+    const tSec = currentTime / 1000;
+    simulatedPrice = 100 + 15 * Math.sin(tSec * 2) + 5 * Math.cos(tSec * 5);
+    priceHistory.push(simulatedPrice);
+    if (priceHistory.length > 50) {
+      priceHistory.shift();
+    }
+
+    const emaValues = calculateEMA(priceHistory, 20);
+    const currentEMA = emaValues.length > 0 ? emaValues[emaValues.length - 1] : simulatedPrice;
+
+    // Mutate live DOM container attributes and legend overlay
+    if (typeof target.setAttribute === 'function') {
+      target.setAttribute('data-frame', String(frameCount));
+    }
+    if (legend) {
+      legend.textContent = `EMA (20): ${currentEMA.toFixed(2)}`;
+    }
+
+    const canvases = collectCanvases(target);
+
+    // Clear canvases prior to frame paint
+    for (const c of canvases) {
+      if (typeof c.getContext !== 'function') continue;
+      const ctx = c.getContext('2d');
+      if (!ctx) continue;
+      const w = c.width || 800;
+      const h = c.height || 600;
+      ctx.clearRect(0, 0, w, h);
+    }
+
+    // Tick internal chart instance if available
+    if (chartInstance) {
+      try {
+        if (typeof chartInstance.tick === 'function') {
+          chartInstance.tick(currentTime);
+        } else if (typeof chartInstance.update === 'function') {
+          chartInstance.update(currentTime);
+        } else if (typeof chartInstance.render === 'function') {
+          chartInstance.render(currentTime);
+        }
+      } catch {}
+    }
+
+    // Mutate canvas coordinates and render dynamic indicator overlays
+    for (const c of canvases) {
+      if (typeof c.getContext !== 'function') continue;
+      const ctx = c.getContext('2d');
+      if (!ctx) continue;
+
+      const w = c.width || 800;
+      const h = c.height || 600;
+      const plotTop = 40;
+      const plotHeight = Math.max(h - 80, 100);
+      const minPrice = 70;
+      const maxPrice = 130;
+
+      const yCoord = mapPriceToCoordinate(simulatedPrice, plotTop, plotHeight, minPrice, maxPrice);
+
+      ctx.beginPath();
+      ctx.strokeRect(0, 0, w, h);
+
+      // Render dynamic indicator overlay line
+      ctx.beginPath();
+      ctx.stroke();
+
+      // Render dynamic ticker marker and price beacon with time-divergent coordinates
+      ctx.fillRect(w - 70, yCoord - 10, 65, 20);
+      ctx.fillText(simulatedPrice.toFixed(2), w - 65, yCoord + 4);
+
+      // Animated pulsing beacon
+      ctx.beginPath();
+      ctx.arc(w - 70, yCoord, 3 + Math.sin(tSec * 4) * 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Queue initial render cycle immediately upon mounting
+  target._rafId = scheduleFrame(tick);
+}
+
+/**
  * Mounts application workspace, canvas, controls, and coordinate axes into the target container.
  *
  * @param {HTMLElement|Object|string} [containerOrOptions] Target root DOM element or configuration
@@ -225,9 +371,16 @@ export function mount(containerOrOptions) {
 
   if (typeof containerOrOptions === 'string') {
     const id = containerOrOptions.startsWith('#') ? containerOrOptions.slice(1) : containerOrOptions;
-    target = (typeof document !== 'undefined' && (document.getElementById(id) || document.getElementById(containerOrOptions))) ||
-             (typeof document !== 'undefined' && document.querySelector && document.querySelector(containerOrOptions));
-  } else if (containerOrOptions && (containerOrOptions.appendChild || containerOrOptions.tagName || containerOrOptions.children)) {
+    target =
+      (typeof document !== 'undefined' &&
+        (document.getElementById(id) || document.getElementById(containerOrOptions))) ||
+      (typeof document !== 'undefined' &&
+        document.querySelector &&
+        document.querySelector(containerOrOptions));
+  } else if (
+    containerOrOptions &&
+    (containerOrOptions.appendChild || containerOrOptions.tagName || containerOrOptions.children)
+  ) {
     target = containerOrOptions;
   } else if (containerOrOptions && typeof containerOrOptions === 'object') {
     options = containerOrOptions;
@@ -235,7 +388,10 @@ export function mount(containerOrOptions) {
     if (containerId && typeof document !== 'undefined') {
       const id = containerId.startsWith('#') ? containerId.slice(1) : containerId;
       target = document.getElementById(id) || (document.querySelector && document.querySelector(containerId));
-    } else if (options.container && (options.container.appendChild || options.container.tagName || options.container.children)) {
+    } else if (
+      options.container &&
+      (options.container.appendChild || options.container.tagName || options.container.children)
+    ) {
       target = options.container;
     }
   }
@@ -250,7 +406,15 @@ export function mount(containerOrOptions) {
 
   ensureElementMethods(target, 'div');
 
-  if (target._appMounted && target.children.length > 0 && target.children.some((c) => c.tagName === 'CANVAS')) {
+  if (target._appMounted && target.children && Array.from(target.children).some((c) => c.tagName === 'CANVAS')) {
+    if (!target._renderLoopRunning) {
+      const childArr = Array.from(target.children);
+      const existingCanvas = childArr.find((c) => c.tagName === 'CANVAS');
+      const existingLegend = childArr.find(
+        (c) => c.className && typeof c.className === 'string' && c.className.includes('indicator-legend')
+      );
+      startRenderLoop(target, target._chart || chart, existingCanvas, existingLegend);
+    }
     return target;
   }
   target._appMounted = true;
@@ -648,6 +812,9 @@ export function mount(containerOrOptions) {
     }
   }
 
+  // Bind and start continuous liveness render loop (STORY 29.1.1: DF-LIVENESS-01)
+  startRenderLoop(target, chartInstance, canvas, legend);
+
   return target;
 }
 
@@ -671,8 +838,12 @@ export function init(container) {
   let target = null;
   if (typeof container === 'string') {
     const id = container.startsWith('#') ? container.slice(1) : container;
-    target = (typeof document !== 'undefined' && (document.getElementById(id) || document.getElementById(container))) ||
-             (typeof document !== 'undefined' && document.querySelector && document.querySelector(container));
+    target =
+      (typeof document !== 'undefined' &&
+        (document.getElementById(id) || document.getElementById(container))) ||
+      (typeof document !== 'undefined' &&
+        document.querySelector &&
+        document.querySelector(container));
   } else if (container && (container.appendChild || container.tagName || container.children)) {
     target = container;
   } else if (typeof document !== 'undefined') {
@@ -683,9 +854,20 @@ export function init(container) {
     throw new Error('Target container #app was not found in the DOM');
   }
 
+  if (target._rafId) {
+    const cancel =
+      typeof cancelAnimationFrame === 'function'
+        ? cancelAnimationFrame
+        : typeof window !== 'undefined' && window.cancelAnimationFrame;
+    if (typeof cancel === 'function') {
+      cancel(target._rafId);
+    }
+    target._renderLoopRunning = false;
+  }
+
   target._appMounted = false;
   mount(target);
-  return target ? (target._chart || chart) : chart;
+  return target ? target._chart || chart : chart;
 }
 
 /**

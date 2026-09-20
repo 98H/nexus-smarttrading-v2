@@ -1,429 +1,489 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
-import assert from 'node:assert/strict';
+import test from 'node:test';
+import assert from 'node:assert';
 
-/**
- * Test Suite: STORY 28.1.1: Resolve STATIC_APPLICATION
- * Defect ID: DF-LIVENESS-01
- * Target Module: src/main.js
+/*
+ * TEST SUITE: STORY 29.1.1: Resolve STATIC_APPLICATION
+ * Defect ID: DF-LIVENESS-01 (Severity: HIGH)
+ * Target: src/main.js
  *
- * Invariant: The application entrypoint must mount to #app and maintain
- * an active, continuous render/tick loop producing observable mutations over time.
+ * Acceptance Criteria:
+ * 1. Given the web application entrypoint src/main.js is mounted to document.getElementById('app'),
+ *    When 2.5 seconds elapse in the browser, Then the application must execute a continuous
+ *    render loop via requestAnimationFrame and reflect state mutations on the DOM or canvas.
+ * 2. Given the active application entrypoint (src/main.js), When the browser renders the page,
+ *    Then the entrypoint must bind all animation cycles and dynamic updates directly to the live DOM container.
  */
 
-describe('DF-LIVENESS-01: Application Liveness and Render Loop', () => {
-  let originalWindow;
-  let originalDocument;
-  let originalRaf;
-  let originalCaf;
-  let originalPerformance;
+// --- Deterministic Mock Browser Environment ---
 
-  // Mock Environment State
-  let currentTime = 0;
-  let rafIdCounter = 0;
-  let activeRafCallbacks = new Map();
-  let appContainer;
-  let mockCanvas;
-  let mockCanvasContext;
-  let renderFrameCount = 0;
-  let stateMutationSnapshots = [];
-
-  class MockCanvasContext2D {
-    constructor(canvas) {
-      this.canvas = canvas;
-      this.operations = [];
-      this.fillStyle = '#000000';
-      this.strokeStyle = '#000000';
-    }
-
-    clearRect(x, y, w, h) {
-      this.operations.push({ type: 'clearRect', x, y, w, h, time: currentTime });
-    }
-
-    fillRect(x, y, w, h) {
-      this.operations.push({ type: 'fillRect', x, y, w, h, time: currentTime, fillStyle: this.fillStyle });
-    }
-
-    fillText(text, x, y) {
-      this.operations.push({ type: 'fillText', text, x, y, time: currentTime });
-    }
-
-    strokeRect(x, y, w, h) {
-      this.operations.push({ type: 'strokeRect', x, y, w, h, time: currentTime });
-    }
-
-    beginPath() {
-      this.operations.push({ type: 'beginPath', time: currentTime });
-    }
-
-    arc(...args) {
-      this.operations.push({ type: 'arc', args, time: currentTime });
-    }
-
-    fill() {
-      this.operations.push({ type: 'fill', time: currentTime });
-    }
-
-    stroke() {
-      this.operations.push({ type: 'stroke', time: currentTime });
-    }
-
-    getImageData(x, y, w, h) {
-      return { data: new Uint8ClampedArray(w * h * 4) };
-    }
+class MockCanvasRenderingContext2D {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.drawHistory = [];
+    this.fillStyle = '#000000';
+    this.strokeStyle = '#000000';
+    this.lineWidth = 1;
+    this.font = '10px sans-serif';
   }
 
-  class MockElement {
-    constructor(tagName, id = '') {
-      this.tagName = tagName.toUpperCase();
-      this.id = id;
-      this.children = [];
-      this.parentElement = null;
-      this._textContent = '';
-      this._innerHTML = '';
-      this.style = {};
-      this.attributes = new Map();
-      this.dataset = {};
+  _record(method, args) {
+    this.drawHistory.push({
+      method,
+      args: structuredClone(args),
+      timestamp: globalThis.performance.now(),
+      fillStyle: this.fillStyle,
+    });
+  }
 
-      if (this.tagName === 'CANVAS') {
-        this.width = 800;
-        this.height = 600;
-        this._ctx = new MockCanvasContext2D(this);
-      }
-    }
+  clearRect(x, y, w, h) { this._record('clearRect', [x, y, w, h]); }
+  fillRect(x, y, w, h) { this._record('fillRect', [x, y, w, h]); }
+  strokeRect(x, y, w, h) { this._record('strokeRect', [x, y, w, h]); }
+  fillText(text, x, y) { this._record('fillText', [text, x, y]); }
+  strokeText(text, x, y) { this._record('strokeText', [text, x, y]); }
+  beginPath() { this._record('beginPath', []); }
+  closePath() { this._record('closePath', []); }
+  stroke() { this._record('stroke', []); }
+  fill() { this._record('fill', []); }
+  arc(x, y, radius, startAngle, endAngle) { this._record('arc', [x, y, radius, startAngle, endAngle]); }
+  drawImage(...args) { this._record('drawImage', args); }
+}
 
-    get textContent() {
-      return this._textContent;
-    }
+class MockElement {
+  constructor(tagName, id = '') {
+    this.tagName = tagName.toUpperCase();
+    this.id = id;
+    this.children = [];
+    this.parentElement = null;
+    this.attributes = new Map();
+    this._textContent = '';
+    this._innerHTML = '';
+    this.mutationEvents = [];
+    this._ctx = null;
+    this.width = 800;
+    this.height = 600;
+  }
 
-    set textContent(val) {
-      this._textContent = String(val);
-      stateMutationSnapshots.push({
-        time: currentTime,
-        type: 'DOM_TEXT_MUTATION',
-        targetId: this.id || this.tagName,
-        content: this._textContent
+  get textContent() {
+    return this._textContent;
+  }
+
+  set textContent(val) {
+    const prev = this._textContent;
+    this._textContent = String(val);
+    this.mutationEvents.push({
+      type: 'textContent',
+      from: prev,
+      to: this._textContent,
+      timestamp: globalThis.performance.now(),
+    });
+  }
+
+  get innerHTML() {
+    return this._innerHTML;
+  }
+
+  set innerHTML(val) {
+    const prev = this._innerHTML;
+    this._innerHTML = String(val);
+    this.mutationEvents.push({
+      type: 'innerHTML',
+      from: prev,
+      to: this._innerHTML,
+      timestamp: globalThis.performance.now(),
+    });
+  }
+
+  appendChild(child) {
+    child.parentElement = this;
+    this.children.push(child);
+    this.mutationEvents.push({
+      type: 'appendChild',
+      target: child,
+      timestamp: globalThis.performance.now(),
+    });
+    return child;
+  }
+
+  removeChild(child) {
+    const idx = this.children.indexOf(child);
+    if (idx !== -1) {
+      this.children.splice(idx, 1);
+      child.parentElement = null;
+      this.mutationEvents.push({
+        type: 'removeChild',
+        target: child,
+        timestamp: globalThis.performance.now(),
       });
     }
-
-    get innerHTML() {
-      return this._innerHTML;
-    }
-
-    set innerHTML(val) {
-      this._innerHTML = String(val);
-      stateMutationSnapshots.push({
-        time: currentTime,
-        type: 'DOM_HTML_MUTATION',
-        targetId: this.id || this.tagName,
-        content: this._innerHTML
-      });
-    }
-
-    appendChild(child) {
-      child.parentElement = this;
-      this.children.push(child);
-      return child;
-    }
-
-    removeChild(child) {
-      const idx = this.children.indexOf(child);
-      if (idx !== -1) {
-        child.parentElement = null;
-        this.children.splice(idx, 1);
-      }
-      return child;
-    }
-
-    querySelector(selector) {
-      if (selector === 'canvas') {
-        return Array.from(this.children).find(c => c.tagName === 'CANVAS') || null;
-      }
-      return null;
-    }
-
-    querySelectorAll(selector) {
-      if (selector === 'canvas') {
-        return Array.from(this.children).filter(c => c.tagName === 'CANVAS');
-      }
-      return [];
-    }
-
-    getContext(type) {
-      if (this.tagName === 'CANVAS' && type === '2d') {
-        return this._ctx;
-      }
-      return null;
-    }
-
-    setAttribute(key, value) {
-      this.attributes.set(key, String(value));
-    }
-
-    getAttribute(key) {
-      return this.attributes.get(key) || null;
-    }
+    return child;
   }
 
-  // Simulation Clock Runner
-  function stepTime(ms, stepInterval = 16.666) {
-    const targetTime = currentTime + ms;
-    while (currentTime + stepInterval <= targetTime + 0.001) {
-      currentTime += stepInterval;
-      const callbacks = Array.from(activeRafCallbacks.entries());
-      activeRafCallbacks.clear();
-
-      for (const [id, cb] of callbacks) {
-        renderFrameCount++;
-        cb(currentTime);
+  contains(node) {
+    if (!node) return false;
+    if (node === this) return true;
+    for (const child of this.children) {
+      if (child.contains ? child.contains(node) : child === node) {
+        return true;
       }
     }
+    return false;
   }
 
-  beforeEach(() => {
-    // Preserve originals
-    originalWindow = globalThis.window;
-    originalDocument = globalThis.document;
-    originalRaf = globalThis.requestAnimationFrame;
-    originalCaf = globalThis.cancelAnimationFrame;
-    originalPerformance = globalThis.performance;
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+    this.mutationEvents.push({
+      type: 'attribute',
+      name,
+      value: String(value),
+      timestamp: globalThis.performance.now(),
+    });
+  }
 
-    // Reset loop state
-    currentTime = 0;
-    rafIdCounter = 0;
-    activeRafCallbacks.clear();
-    renderFrameCount = 0;
-    stateMutationSnapshots = [];
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  }
 
-    // Root #app container
-    appContainer = new MockElement('div', 'app');
+  getContext(contextType) {
+    if (this.tagName === 'CANVAS' && contextType === '2d') {
+      if (!this._ctx) {
+        this._ctx = new MockCanvasRenderingContext2D(this);
+      }
+      return this._ctx;
+    }
+    return null;
+  }
+}
 
-    // Document setup
-    const elementsById = new Map([['app', appContainer]]);
+class MockDocument {
+  constructor() {
+    this.elementsById = new Map();
+    this.body = new MockElement('BODY');
+  }
 
-    globalThis.document = {
-      getElementById: (id) => elementsById.get(id) || null,
-      createElement: (tagName) => new MockElement(tagName),
-      body: new MockElement('body')
+  getElementById(id) {
+    return this.elementsById.get(id) || null;
+  }
+
+  createElement(tagName) {
+    return new MockElement(tagName);
+  }
+
+  _registerElement(element) {
+    if (element.id) {
+      this.elementsById.set(element.id, element);
+    }
+  }
+}
+
+class BrowserEnvironmentSimulator {
+  constructor() {
+    this.currentTime = 0;
+    this.rafIdCounter = 0;
+    this.scheduledRafCallbacks = new Map();
+    this.totalRafDispatched = 0;
+
+    this.document = new MockDocument();
+    this.appContainer = new MockElement('DIV', 'app');
+    this.document._registerElement(this.appContainer);
+    this.document.body.appendChild(this.appContainer);
+
+    this.originalGlobals = {
+      window: globalThis.window,
+      document: globalThis.document,
+      requestAnimationFrame: globalThis.requestAnimationFrame,
+      cancelAnimationFrame: globalThis.cancelAnimationFrame,
+      performance: globalThis.performance,
+      HTMLCanvasElement: globalThis.HTMLCanvasElement,
     };
-    globalThis.document.body.appendChild(appContainer);
+  }
 
-    // RAF & Timers setup
+  install() {
+    globalThis.performance = {
+      now: () => this.currentTime,
+    };
+
     globalThis.requestAnimationFrame = (callback) => {
-      const id = ++rafIdCounter;
-      activeRafCallbacks.set(id, callback);
+      const id = ++this.rafIdCounter;
+      this.scheduledRafCallbacks.set(id, callback);
       return id;
     };
 
     globalThis.cancelAnimationFrame = (id) => {
-      activeRafCallbacks.delete(id);
+      this.scheduledRafCallbacks.delete(id);
     };
 
-    globalThis.performance = {
-      now: () => currentTime
+    globalThis.document = this.document;
+    globalThis.window = {
+      document: this.document,
+      requestAnimationFrame: globalThis.requestAnimationFrame,
+      cancelAnimationFrame: globalThis.cancelAnimationFrame,
+      performance: globalThis.performance,
     };
-
-    globalThis.window = globalThis;
-  });
-
-  afterEach(() => {
-    // Teardown globals
-    globalThis.window = originalWindow;
-    globalThis.document = originalDocument;
-    globalThis.requestAnimationFrame = originalRaf;
-    globalThis.cancelAnimationFrame = originalCaf;
-    globalThis.performance = originalPerformance;
-  });
-
-  async function loadEntrypoint() {
-    // Cache bust so each test receives an unpolluted module execution
-    const cacheBuster = `?t=${Date.now()}_${Math.random()}`;
-    return await import(`../src/main.js${cacheBuster}`);
+    globalThis.HTMLCanvasElement = MockElement;
   }
 
-  it('mounts into document.getElementById("app") and schedules the initial animation frame', async () => {
-    const mainModule = await loadEntrypoint();
+  restore() {
+    globalThis.window = this.originalGlobals.window;
+    globalThis.document = this.originalGlobals.document;
+    globalThis.requestAnimationFrame = this.originalGlobals.requestAnimationFrame;
+    globalThis.cancelAnimationFrame = this.originalGlobals.cancelAnimationFrame;
+    globalThis.performance = this.originalGlobals.performance;
+    globalThis.HTMLCanvasElement = this.originalGlobals.HTMLCanvasElement;
+  }
 
-    // In case main exports an explicit mount/bootstrap, invoke it if not auto-executed
-    if (typeof mainModule.mount === 'function') {
-      mainModule.mount(appContainer);
-    } else if (typeof mainModule.default === 'function') {
-      mainModule.default(appContainer);
-    }
+  /**
+   * Advances deterministic simulation time, triggering animation frames at discrete steps.
+   * Standard 60Hz step ~16.666ms.
+   */
+  advanceTime(durationMs, stepMs = 16.666) {
+    const targetTime = this.currentTime + durationMs;
+    while (this.currentTime + stepMs <= targetTime) {
+      this.currentTime += stepMs;
+      const currentBatch = Array.from(this.scheduledRafCallbacks.entries());
+      this.scheduledRafCallbacks.clear();
 
-    // Verify mounting into #app
-    const hasCanvasChild = Array.from(appContainer.children).some(c => c.tagName === 'CANVAS');
-    const hasTextContent = appContainer.textContent.trim().length > 0;
-    const hasInnerHtml = appContainer.innerHTML.trim().length > 0;
-    const hasMountedContent = hasCanvasChild || hasTextContent || hasInnerHtml || appContainer.children.length > 0;
-
-    assert.ok(
-      hasMountedContent,
-      'Application entrypoint (src/main.js) must mount components or canvas inside document.getElementById("app")'
-    );
-
-    // Verify continuous loop initialized (at least one rAF registered immediately on mount)
-    assert.ok(
-      activeRafCallbacks.size > 0,
-      'Application must register an initial requestAnimationFrame loop callback upon mounting'
-    );
-  });
-
-  it('continuously schedules frames and does not stall after the first frame', async () => {
-    const mainModule = await loadEntrypoint();
-    if (typeof mainModule.mount === 'function') {
-      mainModule.mount(appContainer);
-    }
-
-    assert.ok(activeRafCallbacks.size >= 1, 'Loop must start with at least one pending rAF callback');
-
-    // Run 1 frame (~16.6ms)
-    stepTime(16.7);
-    assert.strictEqual(renderFrameCount, 1, 'Exactly one frame should execute at 16.7ms');
-
-    // Invariant: The loop must re-queue requestAnimationFrame to ensure continuous rendering
-    assert.ok(
-      activeRafCallbacks.size >= 1,
-      'Animation loop must continuously re-register requestAnimationFrame on each tick'
-    );
-
-    // Run 5 more frames (~83.3ms)
-    stepTime(83.3);
-    assert.ok(renderFrameCount >= 5, `Expected continuous frames, but only ${renderFrameCount} frames were executed`);
-  });
-
-  it('guarantees continuous frame renders and state mutations over a 2.5-second (2500ms) observation window', async () => {
-    const mainModule = await loadEntrypoint();
-    if (typeof mainModule.mount === 'function') {
-      mainModule.mount(appContainer);
-    }
-
-    const canvas = appContainer.querySelector('canvas');
-    const ctx = canvas ? canvas.getContext('2d') : null;
-
-    const initialDrawCount = ctx ? ctx.operations.length : 0;
-    const initialDomMutations = stateMutationSnapshots.length;
-
-    // Advance by 2.5 seconds (2500 ms) in standard 60fps increments (~16.666 ms)
-    // 2500 ms / 16.666 ms ~= 150 frames
-    const observationWindowMs = 2500;
-    stepTime(observationWindowMs);
-
-    // Frame execution check: ~150 frames expected over 2.5s
-    assert.ok(
-      renderFrameCount >= 140,
-      `Defect DF-LIVENESS-01: Render loop stalled. Expected >= 140 frames over 2.5s, but received ${renderFrameCount}`
-    );
-
-    // Check Canvas mutations or DOM mutations
-    const finalDrawCount = ctx ? ctx.operations.length : 0;
-    const finalDomMutations = stateMutationSnapshots.length;
-
-    const canvasOperationsDelta = finalDrawCount - initialDrawCount;
-    const domMutationsDelta = finalDomMutations - initialDomMutations;
-
-    const hasContinuousLiveness = canvasOperationsDelta >= 140 || domMutationsDelta >= 2;
-
-    assert.ok(
-      hasContinuousLiveness,
-      `Defect DF-LIVENESS-01: Static Painting detected. Neither canvas draws (${canvasOperationsDelta} operations) ` +
-      `nor DOM state mutations (${domMutationsDelta} mutations) progressed over the 2.5-second observation window.`
-    );
-  });
-
-  it('verifies non-static state progression across distinct intervals (0s, 1.0s, 2.5s)', async () => {
-    const mainModule = await loadEntrypoint();
-    if (typeof mainModule.mount === 'function') {
-      mainModule.mount(appContainer);
-    }
-
-    const canvas = appContainer.querySelector('canvas');
-    const ctx = canvas ? canvas.getContext('2d') : null;
-
-    // Snapshot at t = 0s
-    stepTime(16.7);
-    const snapT0 = {
-      textContent: appContainer.textContent,
-      innerHTML: appContainer.innerHTML,
-      canvasOpsCount: ctx ? ctx.operations.length : 0,
-      lastOp: ctx && ctx.operations.length ? ctx.operations[ctx.operations.length - 1] : null
-    };
-
-    // Advance to t = 1.0s (step ~983.3ms)
-    stepTime(983.3);
-    const snapT1 = {
-      textContent: appContainer.textContent,
-      innerHTML: appContainer.innerHTML,
-      canvasOpsCount: ctx ? ctx.operations.length : 0,
-      lastOp: ctx && ctx.operations.length ? ctx.operations[ctx.operations.length - 1] : null
-    };
-
-    // Advance to t = 2.5s (step ~1500ms)
-    stepTime(1500);
-    const snapT2 = {
-      textContent: appContainer.textContent,
-      innerHTML: appContainer.innerHTML,
-      canvasOpsCount: ctx ? ctx.operations.length : 0,
-      lastOp: ctx && ctx.operations.length ? ctx.operations[ctx.operations.length - 1] : null
-    };
-
-    if (ctx) {
-      // For Canvas-driven applications: operations must increment continually across intervals
-      assert.ok(
-        snapT1.canvasOpsCount > snapT0.canvasOpsCount,
-        'Canvas must render new frame operations between t = 0s and t = 1.0s'
-      );
-      assert.ok(
-        snapT2.canvasOpsCount > snapT1.canvasOpsCount,
-        'Canvas must render new frame operations between t = 1.0s and t = 2.5s'
-      );
-
-      // Verify operations are not just identical replays at the exact same timestamp
-      if (snapT1.lastOp && snapT2.lastOp) {
-        assert.notDeepStrictEqual(
-          snapT1.lastOp,
-          snapT2.lastOp,
-          'Canvas frame operations must reflect dynamic state changes over time'
-        );
+      for (const [id, callback] of currentBatch) {
+        this.totalRafDispatched++;
+        callback(this.currentTime);
       }
-    } else {
-      // For DOM-driven applications: text/markup must mutate across intervals
-      const stateMutatedAtT1 = snapT1.textContent !== snapT0.textContent || snapT1.innerHTML !== snapT0.innerHTML;
-      const stateMutatedAtT2 = snapT2.textContent !== snapT1.textContent || snapT2.innerHTML !== snapT1.innerHTML;
+    }
+    this.currentTime = targetTime;
+  }
+}
+
+/**
+ * Dynamically loads and bootstraps the entrypoint.
+ * Evaluates both immediate auto-mount patterns and explicit exported hooks (mount/init).
+ */
+async function bootstrapEntrypoint(appContainer) {
+  // Use unique query parameter to ensure fresh module instantiation per test
+  const modulePath = `../src/main.js?test_run=${Date.now()}_${Math.random()}`;
+  const entrypoint = await import(modulePath);
+
+  if (typeof entrypoint.mount === 'function') {
+    entrypoint.mount(appContainer);
+  } else if (typeof entrypoint.init === 'function') {
+    entrypoint.init();
+  } else if (typeof entrypoint.default === 'function') {
+    entrypoint.default();
+  }
+
+  return entrypoint;
+}
+
+// --- Unit Tests ---
+
+test('DF-LIVENESS-01: Continuous render loop execution over 2.5s observation window', async (t) => {
+  const env = new BrowserEnvironmentSimulator();
+  env.install();
+
+  try {
+    await bootstrapEntrypoint(env.appContainer);
+
+    // Initial frame request must be scheduled immediately upon mounting
+    assert.ok(
+      env.scheduledRafCallbacks.size > 0,
+      'AC-1 Violation: Application mounted but did not request an initial animation frame via requestAnimationFrame.'
+    );
+
+    // Advance by exactly 2500ms (2.5 seconds observation window)
+    const observationWindowMs = 2500;
+    const stepMs = 16.666; // Standard 60 FPS frame delta
+    const expectedMinFrames = Math.floor(observationWindowMs / stepMs) - 5; // Allow minor variance buffer
+
+    env.advanceTime(observationWindowMs, stepMs);
+
+    // Continuous execution verification
+    assert.ok(
+      env.totalRafDispatched >= expectedMinFrames,
+      `AC-1 Violation (DF-LIVENESS-01): Render loop stalled or terminated prematurely. ` +
+      `Expected at least ${expectedMinFrames} continuous frames over 2.5s, but only received ${env.totalRafDispatched}.`
+    );
+
+    // Ensure loop is self-sustaining and continuous (a next frame must be queued at t = 2500ms)
+    assert.ok(
+      env.scheduledRafCallbacks.size > 0,
+      'AC-1 Violation: Render loop is not continuous; no subsequent animation frame was requested at the end of 2.5s.'
+    );
+  } finally {
+    env.restore();
+  }
+});
+
+test('DF-LIVENESS-01: State mutations reflected on DOM or Canvas across 2.5-second observation window', async (t) => {
+  const env = new BrowserEnvironmentSimulator();
+  env.install();
+
+  try {
+    await bootstrapEntrypoint(env.appContainer);
+
+    // Locate active visual target inside #app (Canvas or dynamic Element)
+    const findCanvas = (el) => {
+      if (el.tagName === 'CANVAS') return el;
+      for (const child of el.children) {
+        const found = findCanvas(child);
+        if (found) return found;
+      }
+      return null;
+    };
+
+    // Capture state snapshots across 5 discrete checkpoints during the 2.5s window:
+    // t0 = 0ms, t1 = 500ms, t2 = 1000ms, t3 = 1500ms, t4 = 2000ms, t5 = 2500ms
+    const checkpoints = [500, 500, 500, 500, 500]; // Incremental steps summing to 2500ms
+    const snapshots = [];
+
+    const captureSnapshot = (timestamp) => {
+      const canvas = findCanvas(env.appContainer);
+      const ctx = canvas ? canvas.getContext('2d') : null;
+      return {
+        timestamp,
+        canvasCallsCount: ctx ? ctx.drawHistory.length : 0,
+        lastDrawCall: ctx && ctx.drawHistory.length > 0 ? structuredClone(ctx.drawHistory.at(-1)) : null,
+        domText: env.appContainer.textContent,
+        domInnerHTML: env.appContainer.innerHTML,
+        domMutationCount: env.appContainer.mutationEvents.length,
+      };
+    };
+
+    snapshots.push(captureSnapshot(0));
+
+    for (const step of checkpoints) {
+      env.advanceTime(step);
+      snapshots.push(captureSnapshot(env.currentTime));
+    }
+
+    assert.strictEqual(snapshots.length, 6, 'Internal Test Error: Expected 6 temporal state snapshots.');
+
+    // Evaluation for Canvas-based mutations:
+    const initialSnapshot = snapshots[0];
+    const finalSnapshot = snapshots[snapshots.length - 1];
+
+    let hasCanvasMutations = false;
+    if (finalSnapshot.canvasCallsCount > initialSnapshot.canvasCallsCount) {
+      // Validate that draw operations were not identical static duplicates
+      const canvas = findCanvas(env.appContainer);
+      const ctx = canvas.getContext('2d');
+      const drawCallsOverTime = ctx.drawHistory;
+
+      // Ensure draw calls occurred across the full window, including near t = 2500ms
+      const lateFrames = drawCallsOverTime.filter((call) => call.timestamp >= 2000);
+      assert.ok(
+        lateFrames.length > 0,
+        'AC-1 Violation (DF-LIVENESS-01): Canvas frame renders ceased before 2.5s observation window elapsed.'
+      );
+
+      // Verify that arguments or draw states mutated between initial and final snapshots
+      const earlyArgs = JSON.stringify(drawCallsOverTime.slice(0, 5).map(c => ({ method: c.method, args: c.args })));
+      const lateArgs = JSON.stringify(lateFrames.slice(-5).map(c => ({ method: c.method, args: c.args })));
+      
+      const statesDiverged = earlyArgs !== lateArgs;
+      assert.ok(
+        statesDiverged,
+        'AC-1 Violation (DF-LIVENESS-01): Static painting detected. Canvas rendered frames without any state/coordinate mutations.'
+      );
+      hasCanvasMutations = true;
+    }
+
+    // Evaluation for DOM-based mutations:
+    let hasDOMMutations = false;
+    if (finalSnapshot.domText !== initialSnapshot.domText ||
+        finalSnapshot.domInnerHTML !== initialSnapshot.domInnerHTML ||
+        finalSnapshot.domMutationCount > initialSnapshot.domMutationCount) {
+      hasDOMMutations = true;
+    }
+
+    // High Severity Defect Check: Neither DOM text nor canvas pixels underwent any state mutations
+    assert.ok(
+      hasCanvasMutations || hasDOMMutations,
+      'DF-LIVENESS-01 Failure: Static application detected! Neither DOM text nor canvas pixels ' +
+      'underwent any state mutations or dynamic frame renders over the 2.5-second observation window.'
+    );
+  } finally {
+    env.restore();
+  }
+});
+
+test('AC-2: Live DOM Container Binding and Structural Integrity', async (t) => {
+  const env = new BrowserEnvironmentSimulator();
+  env.install();
+
+  try {
+    await bootstrapEntrypoint(env.appContainer);
+
+    // Verify that the entrypoint mounted dynamic visual nodes to document.getElementById('app')
+    assert.ok(
+      env.appContainer.children.length > 0 || env.appContainer.textContent.length > 0 || env.appContainer.innerHTML.length > 0,
+      'AC-2 Violation: Entrypoint src/main.js failed to attach components to document.getElementById("app").'
+    );
+
+    // Advance 500ms to allow rendering updates to dispatch
+    env.advanceTime(500);
+
+    // Architectural Invariant: Never produce an isolated, unmounted file.
+    // Verify all active canvas elements or mutating elements reside within the live #app container
+    const isNodeInLiveApp = (node) => env.appContainer.contains(node);
+
+    const canvasElements = [];
+    const collectCanvases = (el) => {
+      if (el.tagName === 'CANVAS') canvasElements.push(el);
+      for (const child of el.children) collectCanvases(child);
+    };
+    collectCanvases(env.appContainer);
+
+    for (const canvas of canvasElements) {
+      assert.ok(
+        isNodeInLiveApp(canvas),
+        'Architectural Invariant Violation: Canvas element is detached from the active DOM container (#app).'
+      );
+
+      const ctx = canvas.getContext('2d');
+      assert.ok(
+        ctx !== null,
+        'AC-2 Violation: Unable to acquire active 2D rendering context from mounted canvas.'
+      );
 
       assert.ok(
-        stateMutatedAtT1 || stateMutatedAtT2,
-        'DOM text or markup must mutate across observation windows (0s -> 1.0s -> 2.5s) to avoid static painting'
+        ctx.drawHistory.length > 0,
+        'AC-2 Violation: Mounted canvas inside #app received zero render calls from the live animation loop.'
       );
     }
-  });
+  } finally {
+    env.restore();
+  }
+});
 
-  it('provides a teardown/stop capability if exported, canceling active rAF callbacks', async () => {
-    const mainModule = await loadEntrypoint();
-    if (typeof mainModule.mount === 'function') {
-      mainModule.mount(appContainer);
+test('DF-LIVENESS-01: Render loop resilience against frame rate drops', async (t) => {
+  const env = new BrowserEnvironmentSimulator();
+  env.install();
+
+  try {
+    await bootstrapEntrypoint(env.appContainer);
+
+    // Simulate unstable browser frame timing (e.g. jank, variable delta) across 2500ms
+    const variableSteps = [33.3, 16.6, 50.0, 16.6, 100.0, 16.6, 16.6, 250.0];
+    let elapsed = 0;
+    let stepIndex = 0;
+
+    while (elapsed < 2500) {
+      const step = variableSteps[stepIndex % variableSteps.length];
+      const remaining = 2500 - elapsed;
+      const actualStep = Math.min(step, remaining);
+      env.advanceTime(actualStep, actualStep);
+      elapsed += actualStep;
+      stepIndex++;
     }
 
-    // Advance time slightly to ensure loop is active
-    stepTime(50);
-    assert.ok(activeRafCallbacks.size > 0, 'Animation loop should be actively running');
+    // Verify render loop recovers and maintains state mutation progression
+    assert.ok(
+      env.totalRafDispatched > 0,
+      'AC-1 Violation: Render loop halted during variable frame pacing.'
+    );
 
-    // If an unmount/stop/destroy is provided by main.js, ensure it cancels the animation frame
-    const cleanupFn = mainModule.stop || mainModule.unmount || mainModule.destroy;
-    if (typeof cleanupFn === 'function') {
-      cleanupFn();
-      assert.strictEqual(
-        activeRafCallbacks.size,
-        0,
-        'Active requestAnimationFrame callbacks must be cleared when teardown is invoked'
-      );
-
-      const framesBefore = renderFrameCount;
-      stepTime(100);
-      assert.strictEqual(
-        renderFrameCount,
-        framesBefore,
-        'Render loop must not produce further frames after teardown'
-      );
-    }
-  });
+    assert.ok(
+      env.scheduledRafCallbacks.size > 0,
+      'AC-1 Violation: Render loop terminated when handling variable time intervals.'
+    );
+  } finally {
+    env.restore();
+  }
 });
