@@ -4,7 +4,7 @@
  * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02), analytical indicator
  * overlays (DF-OVERLAYS-01), live legend components, and the auxiliary dock
  * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1).
- * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 32.1.1).
+ * Resolves UNRESPONSIVE_CANVAS_PAN (STORY 33.1.1).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -101,7 +101,6 @@ export function createElement(tag, attrs = {}, children = []) {
     } catch (_) {}
   }
 
-  // Ensure mock elements have tagName without directly assigning in native DOM
   if (typeof el.tagName !== 'string') {
     try {
       Object.defineProperty(el, 'tagName', {
@@ -221,7 +220,6 @@ export function createElement(tag, attrs = {}, children = []) {
 
 /**
  * Generates sequential mock price candles spanning across horizontal viewport sectors.
- * Defaults to 75 data points.
  */
 export function generateDefaultData(count = 75, startPrice = 100, step = 1) {
   return Array.from({ length: count }, (_, i) => {
@@ -398,10 +396,9 @@ export function startRenderLoop(instance) {
 
 /**
  * Initializes and mounts the financial chart application into the specified DOM target.
- * Satisfies STORY 2.3.1, STORY 30.2.1, STORY 31.1.1, STORY 31.2.1, STORY 31.3.1, STORY 31.4.1, and STORY 32.1.1.
  *
  * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
- * @returns {Object} Chart workspace instance
+ * @returns {Chart} Chart workspace instance
  */
 export function initApp(options = {}) {
   let root = null;
@@ -432,7 +429,7 @@ export function initApp(options = {}) {
   }
 
   if (!root) {
-    throw new Error("Target container was not found in the DOM");
+    throw new Error('Target container was not found in the DOM');
   }
 
   // Viewport & Layout (DF-LAYOUT-02): 100vh responsive flex layout with overflow hidden
@@ -502,10 +499,10 @@ export function initApp(options = {}) {
   initControls(header, {
     overlayType,
     onOverlayChange: (newType) => {
-      instance.overlayType = newType;
+      chartInstance.overlayType = newType;
       appState.overlayType = newType;
-      legend._label = `${newType} (${instance.period})`;
-      instance.render();
+      legend._label = `${newType} (${chartInstance.period})`;
+      chartInstance.render();
     },
   });
 
@@ -602,7 +599,7 @@ export function initApp(options = {}) {
     root.appendChild(workspace);
     // In mock environments where root.querySelector only inspects direct children of appContainer,
     // ensure canvas is also present in root's child list
-    if (Array.isArray(root.children) && !root.children.includes(canvas)) {
+    if (typeof root.querySelector === 'function' && !root.querySelector('canvas')) {
       root.appendChild(canvas);
     }
   }
@@ -621,100 +618,51 @@ export function initApp(options = {}) {
 
   canvas._chartInstance = chartInstance;
 
-  const instance = {
-    root,
-    header,
-    legend,
-    canvas,
-    chartContainer,
-    workspace,
-    toolPalette,
-    dock: dockComponent,
-    dockElement,
-    chart: chartInstance,
-    axesRenderer,
-    activateWorkflow: (workflow, widget) => {
-      return dockComponent.activateWorkflow(workflow, widget);
-    },
-    mountWorkflow: (workflow, widget) => {
-      return dockComponent.mountWorkflow(workflow, widget);
-    },
-    toggleDockCollapse: () => {
-      return dockComponent.toggleCollapse();
-    },
-    getZoom: () => chartInstance.getZoom(),
-    setZoom: (z) => chartInstance.setZoom(z),
-    getAxesRenderer: () => axesRenderer,
-    getDataSeries: () => chartInstance.getDataSeries(),
-    get data() {
-      return chartInstance.data;
-    },
-    set data(val) {
-      chartInstance.data = val;
-    },
-    get overlayType() {
-      return chartInstance.overlayType;
-    },
-    set overlayType(val) {
-      chartInstance.overlayType = val;
-    },
-    get period() {
-      return chartInstance.period;
-    },
-    set period(val) {
-      chartInstance.period = val;
-    },
-    get color() {
-      return chartInstance.color;
-    },
-    set color(val) {
-      chartInstance.color = val;
-    },
-    get indicatorValues() {
-      return chartInstance.indicatorValues;
-    },
-    set indicatorValues(val) {
-      chartInstance.indicatorValues = val;
-    },
-    render() {
-      if (axesRenderer) {
-        axesRenderer.context = canvas.getContext ? canvas.getContext('2d') : ctx;
-        axesRenderer.render(this.data);
-      }
-      chartInstance.render();
-      this.indicatorValues = chartInstance.indicatorValues;
-    },
-    updateData(newCandles) {
-      const batch = Array.isArray(newCandles) ? [...newCandles] : [];
-      let updated;
-      if (batch.length < 50 && Array.isArray(this.data) && this.data.length >= 50) {
-        updated = [...this.data, ...batch];
-      } else {
-        updated = batch;
-      }
-      this.data = updated;
-      appState.data = updated;
-      if (chartInstance) {
-        chartInstance.setData(updated);
-      }
-      if (axesRenderer) {
-        axesRenderer.render(updated);
-      }
-      return Promise.resolve(this);
-    },
+  chartInstance.root = root;
+  chartInstance.header = header;
+  chartInstance.legend = legend;
+  chartInstance.canvas = canvas;
+  chartInstance.chartContainer = chartContainer;
+  chartInstance.workspace = workspace;
+  chartInstance.toolPalette = toolPalette;
+  chartInstance.dock = dockComponent;
+  chartInstance.dockElement = dockElement;
+  chartInstance.chart = chartInstance;
+  chartInstance.axesRenderer = axesRenderer;
+
+  chartInstance.activateWorkflow = (workflow, widget) => dockComponent.activateWorkflow(workflow, widget);
+  chartInstance.mountWorkflow = (workflow, widget) => dockComponent.mountWorkflow(workflow, widget);
+  chartInstance.toggleDockCollapse = () => dockComponent.toggleCollapse();
+
+  chartInstance.updateData = function (newCandles) {
+    const batch = Array.isArray(newCandles) ? [...newCandles] : [];
+    let updated;
+    if (batch.length < 50 && Array.isArray(this.data) && this.data.length >= 50) {
+      updated = [...this.data, ...batch];
+    } else {
+      updated = batch;
+    }
+    this.data = updated;
+    appState.data = updated;
+    this.setData(updated);
+    if (axesRenderer) {
+      axesRenderer.render(updated);
+    }
+    return Promise.resolve(this);
   };
+
+  chartInstance.onDataUpdate = chartInstance.updateData;
 
   if (typeof root.addEventListener === 'function') {
     root.addEventListener('workflow:change', (e) => {
       const wf = e?.detail?.workflow;
       if (wf) {
-        instance.activateWorkflow(wf, e?.detail?.widget);
+        chartInstance.activateWorkflow(wf, e?.detail?.widget);
       }
     });
   }
 
-  instance.onDataUpdate = instance.updateData;
-  activeAppInstance = instance;
+  activeAppInstance = chartInstance;
   activeChart = chartInstance;
   chart = chartInstance;
 
@@ -725,11 +673,9 @@ export function initApp(options = {}) {
     canvas.height = h;
     if (axesRenderer) {
       axesRenderer.resize(w, h);
-      axesRenderer.render(instance.data);
+      axesRenderer.render(chartInstance.data);
     }
-    if (chartInstance) {
-      chartInstance.resize(w, h);
-    }
+    chartInstance.resize(w, h);
   };
 
   windowResizeHandler = handleResize;
@@ -738,17 +684,10 @@ export function initApp(options = {}) {
     window.addEventListener('resize', handleResize);
   }
 
-  instance.render();
-  instance.stopRenderLoop = startRenderLoop(instance);
+  chartInstance.render();
+  chartInstance.stopRenderLoop = startRenderLoop(chartInstance);
 
-  if (canvas && typeof canvas.addEventListener === 'function') {
-    let isDragging = false;
-    canvas.addEventListener('mousedown', () => { isDragging = true; });
-    canvas.addEventListener('mousemove', () => {});
-    canvas.addEventListener('mouseup', () => { isDragging = false; });
-  }
-
-  return instance;
+  return chartInstance;
 }
 
 /**
@@ -766,8 +705,8 @@ export function teardown() {
     if (activeAppInstance.realtimeTimer && typeof clearInterval === 'function') {
       clearInterval(activeAppInstance.realtimeTimer);
     }
-    if (activeAppInstance.chart && typeof activeAppInstance.chart.destroy === 'function') {
-      activeAppInstance.chart.destroy();
+    if (typeof activeAppInstance.destroy === 'function') {
+      activeAppInstance.destroy();
     }
     activeAppInstance = null;
   }
@@ -806,8 +745,8 @@ export function updatePriceSeries(chartInstance, updatedData) {
   const newData = Array.isArray(updatedData) ? [...updatedData] : [];
   chartInstance.data = newData;
   appState.data = newData;
-  if (chartInstance.chart) {
-    chartInstance.chart.setData(newData);
+  if (typeof chartInstance.setData === 'function') {
+    chartInstance.setData(newData);
   }
   if (chartInstance.axesRenderer) {
     chartInstance.axesRenderer.render(newData);
@@ -856,13 +795,9 @@ export function mountApp(mountTarget, options = {}) {
     ? typeof document !== 'undefined' ? document.getElementById(mountTarget.replace(/^#/, '')) : null
     : mountTarget;
 
-  if (target && target.__nexus_instance) {
-    return target.__nexus_instance;
-  }
-
   const rootOption = target || 'app';
   const instance = initApp({
-    rootId: rootOption,
+    root: rootOption,
     initialData: options.initialData || generateDefaultData(75),
     overlayType: options.overlayType || 'EMA',
     period: options.period || 20,
@@ -871,11 +806,6 @@ export function mountApp(mountTarget, options = {}) {
 
   if (typeof window !== 'undefined' && options.realtime !== false) {
     instance.realtimeTimer = startRealtimeUpdates(instance, options.interval || 1000);
-  }
-
-  if (instance.root) {
-    instance.root.__nexus_instance = instance;
-    instance.root.__nexus_mounted = true;
   }
 
   return instance;
@@ -893,14 +823,7 @@ export function init(mountTarget, options = {}) {
     : (mountTarget || (typeof document !== 'undefined' ? (document.getElementById('app') || document.body) : null));
 
   if (!target) return null;
-  if (target.__nexus_mounted && target.__nexus_instance) {
-    return target.__nexus_instance;
-  }
-
-  target.__nexus_mounted = true;
-  const instance = mountApp(target, options);
-  target.__nexus_instance = instance;
-  return instance;
+  return mountApp(target, options);
 }
 
 export const start = init;

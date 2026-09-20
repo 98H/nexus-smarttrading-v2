@@ -59,6 +59,7 @@ export class ChartCanvas {
     this.dragStartY = 0;
     this.dragStartOffsetX = 0;
     this.dragStartOffsetY = 0;
+    this.renderCount = 0;
 
     this.toolMode = (options && (options.toolMode || options.mode)) || 'crosshair';
     this.activeMode = this.toolMode;
@@ -245,6 +246,35 @@ export class ChartCanvas {
     if (this.options.autoAnimate !== false) {
       this.startAnimationLoop();
     }
+  }
+
+  get viewport() {
+    return {
+      x: this.offsetX,
+      y: this.offsetY,
+    };
+  }
+
+  set viewport(val) {
+    if (val && typeof val === 'object') {
+      if (typeof val.x === 'number') this.offsetX = val.x;
+      if (typeof val.y === 'number') this.offsetY = val.y;
+    }
+  }
+
+  getViewportOffset() {
+    return {
+      x: this.offsetX,
+      y: this.offsetY,
+    };
+  }
+
+  pan(dx = 0, dy = 0) {
+    const deltaX = typeof dx === 'number' && Number.isFinite(dx) ? dx : 0;
+    const deltaY = typeof dy === 'number' && Number.isFinite(dy) ? dy : 0;
+    this.offsetX += deltaX;
+    this.offsetY += deltaY;
+    this.render();
   }
 
   /**
@@ -625,6 +655,7 @@ export class ChartCanvas {
   }
 
   render(timestamp) {
+    this.renderCount = (this.renderCount || 0) + 1;
     const time =
       timestamp ?? (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
 
@@ -640,7 +671,11 @@ export class ChartCanvas {
     }
 
     if (this.innerChart) {
-      if (typeof this.innerChart.setViewport === 'function') {
+      if (typeof this.innerChart.setViewportOffset === 'function') {
+        try {
+          this.innerChart.setViewportOffset(this.offsetX, this.offsetY);
+        } catch (_) {}
+      } else if (typeof this.innerChart.setViewport === 'function') {
         try {
           this.innerChart.setViewport(this.offsetX, this.offsetY, this.scaleX, this.scaleY);
         } catch (_) {}
@@ -651,6 +686,10 @@ export class ChartCanvas {
       }
       if ('offsetX' in this.innerChart) this.innerChart.offsetX = this.offsetX;
       if ('offsetY' in this.innerChart) this.innerChart.offsetY = this.offsetY;
+      if (this.innerChart.viewport) {
+        this.innerChart.viewport.x = this.offsetX;
+        this.innerChart.viewport.y = this.offsetY;
+      }
       if (typeof this.innerChart.render === 'function') {
         try {
           this.innerChart.render();
