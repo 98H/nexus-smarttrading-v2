@@ -50,6 +50,12 @@ function createHeader(doc, options = {}) {
   title.textContent = options.title || 'SmartTrading';
   header.appendChild(title);
 
+  const liveBadge = doc.createElement('span');
+  liveBadge.className = 'live-indicator live-status';
+  liveBadge.setAttribute('data-testid', 'live-status');
+  liveBadge.textContent = '● LIVE';
+  header.appendChild(liveBadge);
+
   const tickerSelect = doc.createElement('select');
   tickerSelect.className = 'ticker-control ticker';
   tickerSelect.setAttribute('data-testid', 'ticker-select');
@@ -139,6 +145,9 @@ export function mountApp(container, options = {}) {
   if (!target) return null;
 
   if (target.__appInstance && target.querySelector && target.querySelector('canvas')) {
+    if (target.__appInstance.chart && typeof target.__appInstance.chart.startAnimationLoop === 'function') {
+      target.__appInstance.chart.startAnimationLoop();
+    }
     return target.__appInstance;
   }
 
@@ -174,10 +183,59 @@ export function mountApp(container, options = {}) {
     }
   }
 
-  // Initialize interactive pan gesture controller on canvas
+  // Assemble full UI chrome only when running in full browser DOM environment
+  let header = null;
+  let liveStatus = null;
+  if (isFullDom && target.tagName !== 'CANVAS') {
+    header = target.querySelector ? target.querySelector('header') : null;
+    if (!header) {
+      header = createHeader(doc, opts);
+      if (typeof target.insertBefore === 'function' && canvas && canvas.parentElement === target) {
+        target.insertBefore(header, canvas);
+      } else if (typeof target.appendChild === 'function') {
+        target.appendChild(header);
+      }
+    }
+
+    liveStatus = header ? (header.querySelector('[data-testid="live-status"]') || header.querySelector('.live-status')) : null;
+
+    const tickerControl = header ? (header.querySelector('[data-testid="ticker-select"]') || header.querySelector('select')) : null;
+    if (tickerControl && typeof tickerControl.addEventListener === 'function') {
+      tickerControl.addEventListener('change', (e) => {
+        const val = (e && e.target && e.target.value) || tickerControl.value;
+        if (val && innerChart && typeof innerChart.setTicker === 'function') {
+          innerChart.setTicker(val);
+        }
+      });
+    }
+
+    const timeframeControls = header ? (header.querySelector('[data-testid="timeframe-controls"]') || header.querySelector('.timeframe-controls')) : null;
+    if (timeframeControls && typeof timeframeControls.addEventListener === 'function') {
+      timeframeControls.addEventListener('click', (e) => {
+        const btn = (e && e.target && (e.target.dataset?.timeframe ? e.target : (e.target.closest && e.target.closest('[data-timeframe]')))) || null;
+        const tf = (btn && btn.dataset && btn.dataset.timeframe) || (btn && typeof btn.getAttribute === 'function' && btn.getAttribute('data-timeframe'));
+        if (tf && innerChart && typeof innerChart.setTimeframe === 'function') {
+          innerChart.setTimeframe(tf);
+        }
+      });
+    }
+  }
+
+  // Initialize interactive pan gesture and animation controller on canvas
   let chart = canvas && canvas.__chartCanvas;
   if (!chart && canvas) {
-    chart = new ChartCanvas(canvas, opts);
+    chart = new ChartCanvas(canvas, {
+      ...opts,
+      onRender: (cc, time) => {
+        if (liveStatus) {
+          const secs = typeof time === 'number' ? (time / 1000).toFixed(1) : '0.0';
+          liveStatus.textContent = `● LIVE ${secs}s`;
+        }
+        if (typeof opts.onRender === 'function') {
+          opts.onRender(cc, time);
+        }
+      },
+    });
     canvas.__chartCanvas = chart;
   }
 
@@ -202,39 +260,9 @@ export function mountApp(container, options = {}) {
     }
   } catch (_) {}
 
-  // Assemble full UI chrome only when running in full browser DOM environment
-  let header = null;
-  if (isFullDom && target.tagName !== 'CANVAS') {
-    header = target.querySelector ? target.querySelector('header') : null;
-    if (!header) {
-      header = createHeader(doc, opts);
-      if (typeof target.insertBefore === 'function' && canvas && canvas.parentElement === target) {
-        target.insertBefore(header, canvas);
-      } else if (typeof target.appendChild === 'function') {
-        target.appendChild(header);
-      }
-    }
-
-    const tickerControl = header ? (header.querySelector('[data-testid="ticker-select"]') || header.querySelector('select')) : null;
-    if (tickerControl && typeof tickerControl.addEventListener === 'function') {
-      tickerControl.addEventListener('change', (e) => {
-        const val = (e && e.target && e.target.value) || tickerControl.value;
-        if (val && innerChart && typeof innerChart.setTicker === 'function') {
-          innerChart.setTicker(val);
-        }
-      });
-    }
-
-    const timeframeControls = header ? (header.querySelector('[data-testid="timeframe-controls"]') || header.querySelector('.timeframe-controls')) : null;
-    if (timeframeControls && typeof timeframeControls.addEventListener === 'function') {
-      timeframeControls.addEventListener('click', (e) => {
-        const btn = (e && e.target && (e.target.dataset?.timeframe ? e.target : (e.target.closest && e.target.closest('[data-timeframe]')))) || null;
-        const tf = (btn && btn.dataset && btn.dataset.timeframe) || (btn && typeof btn.getAttribute === 'function' && btn.getAttribute('data-timeframe'));
-        if (tf && innerChart && typeof innerChart.setTimeframe === 'function') {
-          innerChart.setTimeframe(tf);
-        }
-      });
-    }
+  // Ensure continuous animation loop is active
+  if (chart && typeof chart.startAnimationLoop === 'function') {
+    chart.startAnimationLoop();
   }
 
   // Application runtime instance
