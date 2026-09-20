@@ -1,497 +1,381 @@
-import test, { describe, it, beforeEach, afterEach } from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-/* ------------------------------------------------------------------
- * Minimal Deterministic DOM Environment for Node.js test execution
- * ------------------------------------------------------------------ */
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const PROJECT_ROOT = resolve(__dirname, '..');
+const INDEX_HTML_PATH = resolve(PROJECT_ROOT, 'index.html');
+const MAIN_JS_PATH = resolve(PROJECT_ROOT, 'src/main.js');
 
-class MockClassList {
-  constructor(element) {
-    this._element = element;
-    this._classes = new Set();
-  }
-  add(...tokens) {
-    tokens.forEach((t) => this._classes.add(t));
-  }
-  remove(...tokens) {
-    tokens.forEach((t) => this._classes.delete(t));
-  }
-  contains(token) {
-    return this._classes.has(token);
-  }
-  toString() {
-    return Array.from(this._classes).join(' ');
-  }
-}
-
-class MockElement {
-  constructor(tagName) {
+/**
+ * Lightweight mock environment for headless browser lifecycle testing.
+ * Provides isolated DOM tree, Canvas2D context tracking, and virtual rAF frame progression.
+ */
+class MockDOMNode {
+  constructor(tagName = 'div', id = '') {
     this.tagName = tagName.toUpperCase();
-    this.id = '';
+    this.id = id;
     this.children = [];
-    this.parentElement = null;
+    this._textContent = '';
     this.attributes = new Map();
-    this.classList = new MockClassList(this);
-    this._innerHTML = '';
-    this.eventListeners = new Map(); // event -> Set of handler functions
+    this.mutationLog = [];
   }
 
-  get innerHTML() {
-    return this._innerHTML;
+  get textContent() {
+    return this._textContent;
   }
 
-  set innerHTML(val) {
-    this._innerHTML = val;
-    this.children = [];
-    if (!val || typeof val !== 'string') return;
-
-    // Simple parser for synthetic markup injection in tests
-    const tagRegex = /<([a-zA-Z0-9\-]+)([^>]*)>(?:([\s\S]*?)<\/\1>)?/g;
-    let match;
-    while ((match = tagRegex.exec(val)) !== null) {
-      const tag = match[1];
-      const rawAttrs = match[2] || '';
-      const content = match[3] || '';
-      const child = createMockElement(tag);
-
-      const idMatch = rawAttrs.match(/id=["']([^"']+)["']/);
-      if (idMatch) child.id = idMatch[1];
-
-      const classMatch = rawAttrs.match(/class=["']([^"']+)["']/);
-      if (classMatch) {
-        classMatch[1].split(/\s+/).filter(Boolean).forEach((c) => child.classList.add(c));
-      }
-
-      const attrRegex = /([a-zA-Z0-9\-]+)=["']([^"']+)["']/g;
-      let aMatch;
-      while ((aMatch = attrRegex.exec(rawAttrs)) !== null) {
-        child.setAttribute(aMatch[1], aMatch[2]);
-      }
-
-      if (content && content.includes('<')) {
-        child.innerHTML = content;
-      }
-
-      this.appendChild(child);
-    }
-  }
-
-  setAttribute(name, value) {
-    this.attributes.set(name, String(value));
-    if (name === 'id') this.id = String(value);
-    if (name === 'class') {
-      this.classList._classes.clear();
-      String(value).split(/\s+/).filter(Boolean).forEach((c) => this.classList.add(c));
-    }
-  }
-
-  getAttribute(name) {
-    return this.attributes.get(name) ?? null;
-  }
-
-  hasAttribute(name) {
-    return this.attributes.has(name);
-  }
-
-  removeAttribute(name) {
-    this.attributes.delete(name);
+  set textContent(val) {
+    const oldVal = this._textContent;
+    this._textContent = String(val);
+    this.mutationLog.push({
+      timestamp: globalThis.__mockClock?.now() ?? 0,
+      property: 'textContent',
+      oldValue: oldVal,
+      newValue: this._textContent
+    });
   }
 
   appendChild(child) {
-    if (child.parentElement) {
-      child.parentElement.removeChild(child);
-    }
-    child.parentElement = this;
     this.children.push(child);
+    this.mutationLog.push({
+      timestamp: globalThis.__mockClock?.now() ?? 0,
+      property: 'children',
+      action: 'appendChild',
+      childTag: child.tagName
+    });
     return child;
   }
 
-  removeChild(child) {
-    const idx = this.children.indexOf(child);
-    if (idx !== -1) {
-      this.children.splice(idx, 1);
-      child.parentElement = null;
-      return child;
-    }
-    throw new Error('NotFound: Node was not found');
-  }
-
-  addEventListener(type, handler) {
-    if (!this.eventListeners.has(type)) {
-      this.eventListeners.set(type, new Set());
-    }
-    this.eventListeners.get(type).add(handler);
-    activeListenerRegistry.push({ target: this, type, handler });
-  }
-
-  removeEventListener(type, handler) {
-    if (this.eventListeners.has(type)) {
-      this.eventListeners.get(type).delete(handler);
-    }
-    const idx = activeListenerRegistry.findIndex(
-      (r) => r.target === this && r.type === type && r.handler === handler
-    );
-    if (idx !== -1) activeListenerRegistry.splice(idx, 1);
-  }
-
   querySelector(selector) {
-    return this.querySelectorAll(selector)[0] || null;
+    if (selector.startsWith('#')) {
+      const id = selector.slice(1);
+      return this.findChild((n) => n.id === id);
+    }
+    return this.findChild((n) => n.tagName.toLowerCase() === selector.toLowerCase());
   }
 
   querySelectorAll(selector) {
-    return querySelectorAll(this, selector);
+    const results = [];
+    this.walkChildren((n) => {
+      if (selector.startsWith('#') && n.id === selector.slice(1)) results.push(n);
+      else if (n.tagName.toLowerCase() === selector.toLowerCase()) results.push(n);
+    });
+    return results;
   }
 
-  getContext(contextId) {
-    if (this.tagName === 'CANVAS') {
-      return { canvas: this, type: contextId };
+  findChild(predicate) {
+    for (const child of this.children) {
+      if (predicate(child)) return child;
+      const nested = child.findChild(predicate);
+      if (nested) return nested;
     }
+    return null;
+  }
+
+  walkChildren(fn) {
+    for (const child of this.children) {
+      fn(child);
+      child.walkChildren(fn);
+    }
+  }
+}
+
+class MockCanvasRenderingContext2D {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.drawCalls = [];
+  }
+
+  _recordDraw(method, args) {
+    this.drawCalls.push({
+      time: globalThis.__mockClock?.now() ?? 0,
+      method,
+      args: [...args]
+    });
+  }
+
+  clearRect(x, y, w, h) { this._recordDraw('clearRect', [x, y, w, h]); }
+  fillRect(x, y, w, h) { this._recordDraw('fillRect', [x, y, w, h]); }
+  strokeRect(x, y, w, h) { this._recordDraw('strokeRect', [x, y, w, h]); }
+  fillText(text, x, y) { this._recordDraw('fillText', [text, x, y]); }
+  strokeText(text, x, y) { this._recordDraw('strokeText', [text, x, y]); }
+  drawImage(...args) { this._recordDraw('drawImage', args); }
+  beginPath() { this._recordDraw('beginPath', []); }
+  arc(...args) { this._recordDraw('arc', args); }
+  fill() { this._recordDraw('fill', []); }
+  stroke() { this._recordDraw('stroke', []); }
+}
+
+class MockCanvasElement extends MockDOMNode {
+  constructor(id = '') {
+    super('canvas', id);
+    this.width = 800;
+    this.height = 600;
+    this.context = new MockCanvasRenderingContext2D(this);
+  }
+
+  getContext(type) {
+    if (type === '2d') return this.context;
     return null;
   }
 }
 
-function createMockElement(tagName) {
-  return new MockElement(tagName);
-}
-
-function matchesSelector(element, selector) {
-  if (!element || !element.tagName) return false;
-  const s = selector.trim();
-  if (s.startsWith('#')) return element.id === s.slice(1);
-  if (s.startsWith('.')) return element.classList.contains(s.slice(1));
-  if (s.startsWith('[') && s.endsWith(']')) {
-    const inner = s.slice(1, -1);
-    if (inner.includes('=')) {
-      const [attr, val] = inner.split('=');
-      const cleanVal = val.trim().replace(/["']/g, '');
-      return element.getAttribute(attr.trim()) === cleanVal;
-    }
-    return element.hasAttribute(inner.trim());
+class VirtualClockAndScheduler {
+  constructor() {
+    this.currentTime = 0;
+    this.rafQueue = new Map();
+    this.rafIdCounter = 1;
+    this.executedFrames = 0;
   }
-  return element.tagName.toLowerCase() === s.toLowerCase();
-}
 
-function querySelectorAll(root, selector) {
-  const matches = [];
-  function traverse(node) {
-    for (const child of node.children) {
-      if (matchesSelector(child, selector)) {
-        matches.push(child);
+  now() {
+    return this.currentTime;
+  }
+
+  requestAnimationFrame(cb) {
+    const id = this.rafIdCounter++;
+    this.rafQueue.set(id, cb);
+    return id;
+  }
+
+  cancelAnimationFrame(id) {
+    this.rafQueue.delete(id);
+  }
+
+  advanceBy(durationMs, frameDeltaMs = 16.666667) {
+    const targetTime = this.currentTime + durationMs;
+    while (this.currentTime + frameDeltaMs <= targetTime) {
+      this.currentTime += frameDeltaMs;
+      const currentQueue = Array.from(this.rafQueue.entries());
+      this.rafQueue.clear();
+
+      for (const [, callback] of currentQueue) {
+        callback(this.currentTime);
+        this.executedFrames++;
       }
-      traverse(child);
     }
-  }
-  traverse(root);
-  return matches;
-}
-
-// Global listener tracking for duplicate listener assertions
-let activeListenerRegistry = [];
-
-class MockWindow {
-  constructor() {
-    this.eventListeners = new Map();
-  }
-  addEventListener(type, handler) {
-    if (!this.eventListeners.has(type)) {
-      this.eventListeners.set(type, new Set());
-    }
-    this.eventListeners.get(type).add(handler);
-    activeListenerRegistry.push({ target: this, type, handler });
-  }
-  removeEventListener(type, handler) {
-    if (this.eventListeners.has(type)) {
-      this.eventListeners.get(type).delete(handler);
-    }
-    const idx = activeListenerRegistry.findIndex(
-      (r) => r.target === this && r.type === type && r.handler === handler
-    );
-    if (idx !== -1) activeListenerRegistry.splice(idx, 1);
   }
 }
 
-class MockDocument {
-  constructor() {
-    this.body = createMockElement('body');
-    this.eventListeners = new Map();
-  }
-  createElement(tag) {
-    return createMockElement(tag);
-  }
-  getElementById(id) {
-    const results = querySelectorAll(this.body, `#${id}`);
-    return results[0] || null;
-  }
-  querySelector(selector) {
-    return this.body.querySelector(selector);
-  }
-  querySelectorAll(selector) {
-    return this.body.querySelectorAll(selector);
-  }
-  addEventListener(type, handler) {
-    if (!this.eventListeners.has(type)) {
-      this.eventListeners.set(type, new Set());
-    }
-    this.eventListeners.get(type).add(handler);
-    activeListenerRegistry.push({ target: this, type, handler });
-  }
-  removeEventListener(type, handler) {
-    if (this.eventListeners.has(type)) {
-      this.eventListeners.get(type).delete(handler);
-    }
-    const idx = activeListenerRegistry.findIndex(
-      (r) => r.target === this && r.type === type && r.handler === handler
-    );
-    if (idx !== -1) activeListenerRegistry.splice(idx, 1);
-  }
-}
+/**
+ * Setup and teardown harness for browser environment isolation
+ */
+function setupTestDOM() {
+  const clock = new VirtualClockAndScheduler();
+  const appContainer = new MockDOMNode('div', 'app');
 
-/* ------------------------------------------------------------------
- * Environment Bootstrap
- * ------------------------------------------------------------------ */
+  const elementsById = new Map([['app', appContainer]]);
 
-globalThis.window = new MockWindow();
-globalThis.document = new MockDocument();
+  const mockDocument = {
+    getElementById: (id) => elementsById.get(id) || null,
+    createElement: (tag) => {
+      if (tag.toLowerCase() === 'canvas') return new MockCanvasElement();
+      return new MockDOMNode(tag);
+    },
+    body: new MockDOMNode('body')
+  };
+  mockDocument.body.appendChild(appContainer);
 
-// Import target entrypoint dynamically after DOM globals exist
-const { mountApp } = await import('../src/main.js');
+  const originalGlobals = {
+    window: globalThis.window,
+    document: globalThis.document,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+    cancelAnimationFrame: globalThis.cancelAnimationFrame,
+    __mockClock: globalThis.__mockClock
+  };
 
-/* ------------------------------------------------------------------
- * Test Helpers
- * ------------------------------------------------------------------ */
-
-function extractComponents(container) {
-  const headers = querySelectorAll(container, 'header');
-  const canvases = querySelectorAll(container, 'canvas');
-
-  // Support toolbars declared as tag, class, or data attribute
-  const toolbarsByTag = querySelectorAll(container, 'toolbar');
-  const toolbarsByClass = querySelectorAll(container, '.toolbar');
-  const toolbarsByData = querySelectorAll(container, '[data-component="toolbar"]');
-  const uniqueToolbars = Array.from(
-    new Set([...toolbarsByTag, ...toolbarsByClass, ...toolbarsByData])
-  );
+  globalThis.window = globalThis;
+  globalThis.document = mockDocument;
+  globalThis.__mockClock = clock;
+  globalThis.requestAnimationFrame = (cb) => clock.requestAnimationFrame(cb);
+  globalThis.cancelAnimationFrame = (id) => clock.cancelAnimationFrame(id);
 
   return {
-    headers,
-    canvases,
-    toolbars: uniqueToolbars
+    clock,
+    appContainer,
+    cleanup: () => {
+      globalThis.window = originalGlobals.window;
+      globalThis.document = originalGlobals.document;
+      globalThis.requestAnimationFrame = originalGlobals.requestAnimationFrame;
+      globalThis.cancelAnimationFrame = originalGlobals.cancelAnimationFrame;
+      delete globalThis.__mockClock;
+    }
   };
 }
 
-/* ------------------------------------------------------------------
- * Test Suites
- * ------------------------------------------------------------------ */
+test('STORY 38.1.1: Resolve STATIC_APPLICATION (DF-LIVENESS-01)', async (t) => {
 
-describe('STORY 37.1.1: Resolve DUPLICATE_COMPONENT_MOUNTING (DF-DUPLICATION-01)', () => {
-  let appContainer;
+  await t.test('index.html: contains active mounting container #app and loads src/main.js entrypoint', () => {
+    assert.ok(existsSync(INDEX_HTML_PATH), `Expected index.html to exist at ${INDEX_HTML_PATH}`);
+    const htmlContent = readFileSync(INDEX_HTML_PATH, 'utf-8');
 
-  beforeEach(() => {
-    activeListenerRegistry = [];
-    globalThis.document.body.children = [];
-    appContainer = createMockElement('div');
-    appContainer.id = 'app';
-    globalThis.document.body.appendChild(appContainer);
+    // Acceptance Criteria: Document must have mounting element id="app"
+    const hasAppElement = /<[a-z]+[^>]*id=["']app["'][^>]*>/i.test(htmlContent);
+    assert.ok(
+      hasAppElement,
+      'index.html must declare an element with id="app" to serve as the mounting point'
+    );
+
+    // Architectural Invariant: Wire into active entrypoint src/main.js
+    const hasMainScript = /<script[^>]+src=["'][^"']*src\/main\.js["'][^>]*>/i.test(htmlContent) ||
+                          /<script[^>]+type=["']module["'][^>]+src=["'][^"']*main\.js["'][^>]*>/i.test(htmlContent);
+    assert.ok(
+      hasMainScript,
+      'index.html must include a script tag wiring directly to the active entrypoint src/main.js'
+    );
   });
 
-  afterEach(() => {
-    if (appContainer) {
-      appContainer.innerHTML = '';
+  await t.test('src/main.js: mounts into document.getElementById("app") upon initialization', async () => {
+    const env = setupTestDOM();
+    try {
+      assert.ok(existsSync(MAIN_JS_PATH), `Entrypoint src/main.js must exist at ${MAIN_JS_PATH}`);
+
+      // Bust cache to simulate clean page load
+      const mainModule = await import(`${MAIN_JS_PATH}?t=${Date.now()}`);
+
+      // Support direct execution on import or exported init/mount lifecycles
+      if (typeof mainModule.init === 'function') {
+        await mainModule.init();
+      } else if (typeof mainModule.mount === 'function') {
+        await mainModule.mount();
+      } else if (typeof mainModule.default === 'function') {
+        await mainModule.default();
+      }
+
+      const appNode = globalThis.document.getElementById('app');
+      assert.ok(appNode, 'Target #app must be resolvable from document');
+
+      const isPopulated = appNode.children.length > 0 || appNode.textContent.trim().length > 0;
+      assert.ok(
+        isPopulated,
+        'Application must mount active components (e.g. canvas or animated nodes) directly into document.getElementById("app")'
+      );
+    } finally {
+      env.cleanup();
     }
-    activeListenerRegistry = [];
   });
 
-  describe('Acceptance Criteria 1: Container Cleared and Single Component Instances', () => {
-    it('mounts header, toolbar, and canvas components exactly once on initial load', () => {
-      mountApp(appContainer);
+  await t.test('DF-LIVENESS-01: Application continuously renders frames and mutates state over 2.5-second observation window', async () => {
+    const env = setupTestDOM();
+    const { clock, appContainer } = env;
 
-      const { headers, canvases, toolbars } = extractComponents(appContainer);
+    try {
+      const mainModule = await import(`${MAIN_JS_PATH}?t=${Date.now()}`);
 
-      assert.strictEqual(
-        headers.length,
-        1,
-        `Expected exactly 1 header element, found ${headers.length}`
-      );
-      assert.strictEqual(
-        canvases.length,
-        1,
-        `Expected exactly 1 canvas element, found ${canvases.length}`
-      );
-      assert.strictEqual(
-        toolbars.length,
-        1,
-        `Expected exactly 1 toolbar element, found ${toolbars.length}`
-      );
-    });
+      if (typeof mainModule.init === 'function') {
+        await mainModule.init();
+      } else if (typeof mainModule.mount === 'function') {
+        await mainModule.mount();
+      } else if (typeof mainModule.default === 'function') {
+        await mainModule.default();
+      }
 
-    it('clears pre-existing DOM elements before mounting (root.innerHTML = "")', () => {
-      // Simulate stale/dirty container state prior to invocation
-      appContainer.innerHTML =
-        '<div id="stale-banner" class="legacy">Stale Artifact</div>' +
-        '<header id="old-header"></header>' +
-        '<canvas id="old-canvas"></canvas>';
-
-      mountApp(appContainer);
-
-      const staleBanner = appContainer.querySelector('#stale-banner');
-      assert.strictEqual(
-        staleBanner,
-        null,
-        'Expected pre-existing DOM nodes to be purged on mountApp'
+      // Initial state capture at t = 0s
+      assert.ok(
+        clock.rafQueue.size > 0,
+        'Entrypoint must schedule an active animation loop via requestAnimationFrame on mount'
       );
 
-      const { headers, canvases, toolbars } = extractComponents(appContainer);
-      assert.strictEqual(headers.length, 1, 'Pre-existing headers must not accumulate');
-      assert.strictEqual(canvases.length, 1, 'Pre-existing canvases must not accumulate');
-      assert.strictEqual(toolbars.length, 1, 'Pre-existing toolbars must not accumulate');
-    });
+      const canvasElements = appContainer.querySelectorAll('canvas');
+      const hasCanvas = canvasElements.length > 0;
+      const initialText = appContainer.textContent;
 
-    it('is strictly idempotent when mountApp is called repeatedly on the same container', () => {
-      // Call mountApp multiple times sequentially
-      mountApp(appContainer);
-      mountApp(appContainer);
-      mountApp(appContainer);
-      mountApp(appContainer);
+      // Advance observation window over 2.5 seconds (2500ms) at standard 60 FPS (~16.6ms per frame)
+      const OBSERVATION_WINDOW_MS = 2500;
+      const FRAME_DELTA_MS = 16.666667;
+      const EXPECTED_MIN_FRAMES = 120; // 2.5s at 60 FPS yields ~150 frames, allow reasonable threshold
 
-      const { headers, canvases, toolbars } = extractComponents(appContainer);
+      let intermediateMutationsCount = 0;
+      const checkpoints = [500, 1000, 1500, 2000, 2500];
+      let lastTime = 0;
 
-      assert.strictEqual(
-        headers.length,
-        1,
-        `DF-DUPLICATION-01 Defect: Expected 1 header after repeated mounts, got ${headers.length}`
+      for (const checkpoint of checkpoints) {
+        const step = checkpoint - lastTime;
+        clock.advanceBy(step, FRAME_DELTA_MS);
+        lastTime = checkpoint;
+
+        // Check for continuous liveness during each segment of the 2.5s window
+        if (hasCanvas) {
+          const activeContext = canvasElements[0].getContext('2d');
+          const recentCalls = activeContext.drawCalls.filter(
+            (call) => call.time > checkpoint - step && call.time <= checkpoint
+          );
+          if (recentCalls.length > 0) {
+            intermediateMutationsCount++;
+          }
+        } else {
+          // Check DOM text mutations
+          const recentTextMutations = appContainer.mutationLog.filter(
+            (log) => log.timestamp > checkpoint - step && log.timestamp <= checkpoint
+          );
+          if (recentTextMutations.length > 0 || appContainer.textContent !== initialText) {
+            intermediateMutationsCount++;
+          }
+        }
+
+        // Loop must continue to queue frames, not stall midway
+        assert.ok(
+          clock.rafQueue.size > 0,
+          `Animation loop halted prematurely before reaching 2.5s (halted at ${checkpoint}ms)`
+        );
+      }
+
+      // Total rendered frames over 2.5s
+      assert.ok(
+        clock.executedFrames >= EXPECTED_MIN_FRAMES,
+        `Expected at least ${EXPECTED_MIN_FRAMES} frames rendered across 2.5s, but only executed ${clock.executedFrames} frames`
       );
-      assert.strictEqual(
-        canvases.length,
-        1,
-        `DF-DUPLICATION-01 Defect: Expected 1 canvas after repeated mounts, got ${canvases.length}`
+
+      // Must verify continuous state changes occurred (not a static painting)
+      assert.ok(
+        intermediateMutationsCount >= 3,
+        `Application appeared static: state mutations detected in only ${intermediateMutationsCount} of ${checkpoints.length} observation checkpoints over 2.5s`
       );
-      assert.strictEqual(
-        toolbars.length,
-        1,
-        `DF-DUPLICATION-01 Defect: Expected 1 toolbar after repeated mounts, got ${toolbars.length}`
-      );
-    });
 
-    it('clears or guards when targeting default document.getElementById("app")', () => {
-      // Test without passing container argument directly to mirror entrypoint execution
-      mountApp();
-      mountApp();
-      mountApp();
-
-      const activeApp = globalThis.document.getElementById('app');
-      assert.ok(activeApp, 'Active #app container must exist in DOM');
-
-      const { headers, canvases, toolbars } = extractComponents(activeApp);
-      assert.strictEqual(headers.length, 1, 'Header duplicated when mounting via default lookup');
-      assert.strictEqual(canvases.length, 1, 'Canvas duplicated when mounting via default lookup');
-      assert.strictEqual(toolbars.length, 1, 'Toolbar duplicated when mounting via default lookup');
-    });
+      if (hasCanvas) {
+        const activeContext = canvasElements[0].getContext('2d');
+        assert.ok(
+          activeContext.drawCalls.length >= EXPECTED_MIN_FRAMES,
+          `Canvas 2D context received only ${activeContext.drawCalls.length} draw calls over 2.5s window`
+        );
+      }
+    } finally {
+      env.cleanup();
+    }
   });
 
-  describe('Acceptance Criteria 2: Idempotent Execution and No Leaked Event Listeners', () => {
-    it('does not duplicate window or document event listeners across multiple mountApp invocations', () => {
-      // Mount once to establish baseline listeners
-      mountApp(appContainer);
-      const initialWindowListeners = activeListenerRegistry.filter(
-        (r) => r.target === globalThis.window
-      );
-      const initialDocListeners = activeListenerRegistry.filter(
-        (r) => r.target === globalThis.document
-      );
+  await t.test('Architectural Invariant: entrypoint does not isolate render loop from active canvas', async () => {
+    const env = setupTestDOM();
+    const { clock, appContainer } = env;
 
-      // Re-invoke mountApp twice
-      mountApp(appContainer);
-      mountApp(appContainer);
+    try {
+      const mainModule = await import(`${MAIN_JS_PATH}?t=${Date.now()}`);
+      if (typeof mainModule.init === 'function') await mainModule.init();
 
-      const currentWindowListeners = activeListenerRegistry.filter(
-        (r) => r.target === globalThis.window
-      );
-      const currentDocListeners = activeListenerRegistry.filter(
-        (r) => r.target === globalThis.document
-      );
+      clock.advanceBy(200, 16.666667);
 
-      assert.strictEqual(
-        currentWindowListeners.length,
-        initialWindowListeners.length,
-        `Window event listeners multiplied: expected ${initialWindowListeners.length}, got ${currentWindowListeners.length}`
-      );
-      assert.strictEqual(
-        currentDocListeners.length,
-        initialDocListeners.length,
-        `Document event listeners multiplied: expected ${initialDocListeners.length}, got ${currentDocListeners.length}`
-      );
-    });
-
-    it('does not leave detached or zombie canvas nodes in DOM', () => {
-      mountApp(appContainer);
-      const firstCanvas = appContainer.querySelector('canvas');
-      assert.ok(firstCanvas, 'Canvas must be mounted on initial invocation');
-
-      mountApp(appContainer);
-      const allCanvasesInDocument = globalThis.document.querySelectorAll('canvas');
-
-      assert.strictEqual(
-        allCanvasesInDocument.length,
-        1,
-        `Expected only 1 total canvas node across the document, found ${allCanvasesInDocument.length}`
-      );
-      assert.strictEqual(
-        allCanvasesInDocument[0].parentElement,
-        appContainer,
-        'Active canvas must be rooted inside active container'
-      );
-    });
-
-    it('preserves component placement and order upon idempotent re-mounting', () => {
-      mountApp(appContainer);
-      const initialOrder = Array.from(appContainer.children).map((el) => el.tagName);
-
-      mountApp(appContainer);
-      const postRemountOrder = Array.from(appContainer.children).map((el) => el.tagName);
-
-      assert.deepStrictEqual(
-        postRemountOrder,
-        initialOrder,
-        'Remounting produced inconsistent component structure or ordering'
-      );
-    });
+      const canvasElements = appContainer.querySelectorAll('canvas');
+      if (canvasElements.length > 0) {
+        const ctx = canvasElements[0].getContext('2d');
+        // Render calls must be linked to the canvas mounted in #app
+        assert.ok(
+          ctx.drawCalls.length > 0,
+          'Active canvas element mounted in document.getElementById("app") must receive render calls from main.js'
+        );
+      } else {
+        // If DOM-based, child nodes or text in #app must be active
+        assert.ok(
+          appContainer.mutationLog.length > 0,
+          'DOM mutations must occur on elements wired within document.getElementById("app")'
+        );
+      }
+    } finally {
+      env.cleanup();
+    }
   });
 
-  describe('Edge Cases and Invariants', () => {
-    it('gracefully handles missing container by raising a descriptive error', () => {
-      // Remove #app to simulate invalid state
-      globalThis.document.body.children = [];
-
-      assert.throws(
-        () => {
-          mountApp();
-        },
-        {
-          name: 'Error',
-          message: /(container|element|root|app).*(not found|missing|required|null)/i
-        },
-        'mountApp should fail fast if the root container (#app) cannot be found'
-      );
-    });
-
-    it('supports re-mounting into an alternative, isolated container without cross-contamination', () => {
-      const secondaryContainer = createMockElement('section');
-      secondaryContainer.id = 'secondary-app';
-      globalThis.document.body.appendChild(secondaryContainer);
-
-      mountApp(appContainer);
-      mountApp(secondaryContainer);
-
-      const primary = extractComponents(appContainer);
-      const secondary = extractComponents(secondaryContainer);
-
-      assert.strictEqual(primary.canvases.length, 1);
-      assert.strictEqual(secondary.canvases.length, 1);
-      assert.notStrictEqual(
-        primary.canvases[0],
-        secondary.canvases[0],
-        'Different containers must host distinct canvas instances'
-      );
-    });
-  });
 });

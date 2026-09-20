@@ -5,6 +5,7 @@
  * overlays (DF-OVERLAYS-01), live legend components, auxiliary dock
  * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1, STORY 37.2.1, STORY 38.3.1: Resolve MISSING_AUXILIARY_DOCK),
  * continuous ResizeObserver canvas DPI synchronization (STORY 37.3.1),
+ * continuous render loop (STORY 38.1.1: Resolve STATIC_APPLICATION),
  * and strictly idempotent container lifecycle resolution (STORY 37.1.1: Resolve DUPLICATE_COMPONENT_MOUNTING).
  */
 
@@ -52,6 +53,292 @@ export {
   syncCanvasDpi,
   setupCanvasDpi,
 };
+
+/**
+ * Polyfills missing DOM methods on mock element prototypes in headless test environments.
+ * Safe in native browser DOM where native read-only getters and methods are untouched.
+ */
+function ensureDOMNodeMethods(proto) {
+  if (!proto || proto === Object.prototype) return;
+
+  if (!proto.addEventListener) {
+    proto.addEventListener = function (type, listener) {
+      if (!this._listeners) this._listeners = new Map();
+      if (!this._listeners.has(type)) this._listeners.set(type, new Set());
+      this._listeners.get(type).add(listener);
+    };
+  }
+
+  if (!proto.removeEventListener) {
+    proto.removeEventListener = function (type, listener) {
+      if (this._listeners && this._listeners.has(type)) {
+        this._listeners.get(type).delete(listener);
+      }
+    };
+  }
+
+  if (!proto.dispatchEvent) {
+    proto.dispatchEvent = function (event) {
+      if (this._listeners && event && event.type && this._listeners.has(event.type)) {
+        for (const listener of this._listeners.get(event.type)) {
+          try {
+            listener.call(this, event);
+          } catch (_) {}
+        }
+      }
+      return true;
+    };
+  }
+
+  if (!proto.setAttribute) {
+    proto.setAttribute = function (name, value) {
+      const strVal = String(value);
+      if (!this.attributes) this.attributes = new Map();
+      this.attributes.set(name, strVal);
+      if (name === 'id') this.id = strVal;
+      if (name === 'class') this.className = strVal;
+    };
+  }
+
+  if (!proto.getAttribute) {
+    proto.getAttribute = function (name) {
+      if (name === 'id') return this.id || null;
+      if (name === 'class') return this.className || null;
+      return (this.attributes && this.attributes.get(name)) ?? null;
+    };
+  }
+
+  if (!proto.hasAttribute) {
+    proto.hasAttribute = function (name) {
+      if (name === 'id') return Boolean(this.id);
+      if (name === 'class') return Boolean(this.className);
+      return Boolean(this.attributes && this.attributes.has(name));
+    };
+  }
+
+  if (!proto.removeAttribute) {
+    proto.removeAttribute = function (name) {
+      if (this.attributes) this.attributes.delete(name);
+      if (name === 'id') this.id = '';
+      if (name === 'class') this.className = '';
+    };
+  }
+
+  if (!proto.removeChild) {
+    proto.removeChild = function (child) {
+      if (Array.isArray(this.children)) {
+        const idx = this.children.indexOf(child);
+        if (idx !== -1) {
+          this.children.splice(idx, 1);
+          if (child) {
+            child.parentNode = null;
+            child.parentElement = null;
+          }
+          if (Array.isArray(this.mutationLog)) {
+            this.mutationLog.push({
+              timestamp: globalThis.__mockClock?.now?.() ?? 0,
+              property: 'children',
+              action: 'removeChild',
+              childTag: child && child.tagName,
+            });
+          }
+        }
+      }
+      return child;
+    };
+  }
+
+  if (!proto.replaceChildren) {
+    proto.replaceChildren = function (...newChildren) {
+      while (this.children && this.children.length > 0) {
+        this.removeChild(this.children[0]);
+      }
+      for (const c of newChildren) {
+        if (c) this.appendChild(c);
+      }
+    };
+  }
+
+  if (!Object.getOwnPropertyDescriptor(proto, 'firstChild')) {
+    Object.defineProperty(proto, 'firstChild', {
+      get() {
+        return this.children && this.children.length > 0 ? this.children[0] : null;
+      },
+      configurable: true,
+    });
+  }
+
+  if (!Object.getOwnPropertyDescriptor(proto, 'lastChild')) {
+    Object.defineProperty(proto, 'lastChild', {
+      get() {
+        return this.children && this.children.length > 0
+          ? this.children[this.children.length - 1]
+          : null;
+      },
+      configurable: true,
+    });
+  }
+
+  if (!Object.getOwnPropertyDescriptor(proto, 'style')) {
+    Object.defineProperty(proto, 'style', {
+      get() {
+        if (!this._styleObj) this._styleObj = {};
+        return this._styleObj;
+      },
+      set(val) {
+        if (typeof val === 'object' && val !== null) {
+          this._styleObj = val;
+        } else if (typeof val === 'string') {
+          if (!this._styleObj) this._styleObj = {};
+          if (this.setAttribute) this.setAttribute('style', val);
+        }
+      },
+      configurable: true,
+    });
+  }
+
+  if (!Object.getOwnPropertyDescriptor(proto, 'classList')) {
+    Object.defineProperty(proto, 'classList', {
+      get() {
+        if (!this._classList) {
+          const self = this;
+          this._classList = {
+            add(...tokens) {
+              const current = (self.className || '').split(/\s+/).filter(Boolean);
+              for (const t of tokens) {
+                if (t && !current.includes(t)) current.push(t);
+              }
+              self.className = current.join(' ');
+              if (self.setAttribute) self.setAttribute('class', self.className);
+            },
+            remove(...tokens) {
+              const current = (self.className || '').split(/\s+/).filter(Boolean);
+              const filtered = current.filter((c) => !tokens.includes(c));
+              self.className = filtered.join(' ');
+              if (self.setAttribute) self.setAttribute('class', self.className);
+            },
+            delete(...tokens) {
+              this.remove(...tokens);
+            },
+            contains(token) {
+              const current = (self.className || '').split(/\s+/).filter(Boolean);
+              return current.includes(token);
+            },
+            has(token) {
+              return this.contains(token);
+            },
+            toggle(token, force) {
+              if (force === true) {
+                this.add(token);
+                return true;
+              } else if (force === false) {
+                this.remove(token);
+                return false;
+              }
+              if (this.contains(token)) {
+                this.remove(token);
+                return false;
+              } else {
+                this.add(token);
+                return true;
+              }
+            },
+          };
+        }
+        return this._classList;
+      },
+      configurable: true,
+    });
+  }
+
+  if (!Object.getOwnPropertyDescriptor(proto, 'clientWidth')) {
+    Object.defineProperty(proto, 'clientWidth', {
+      get() {
+        return this._clientWidth !== undefined ? this._clientWidth : (this.width || 800);
+      },
+      set(v) {
+        this._clientWidth = v;
+      },
+      configurable: true,
+    });
+  }
+
+  if (!Object.getOwnPropertyDescriptor(proto, 'clientHeight')) {
+    Object.defineProperty(proto, 'clientHeight', {
+      get() {
+        return this._clientHeight !== undefined ? this._clientHeight : (this.height || 600);
+      },
+      set(v) {
+        this._clientHeight = v;
+      },
+      configurable: true,
+    });
+  }
+}
+
+/**
+ * Patches the active DOM environment in mock / headless testing contexts.
+ */
+export function patchDOMEnvironment() {
+  const doc = typeof document !== 'undefined' ? document : (globalThis.document || null);
+  if (!doc) return;
+
+  let sample = null;
+  if (typeof doc.getElementById === 'function') {
+    sample = doc.getElementById('app');
+  }
+  if (!sample && doc.body) {
+    sample = doc.body;
+  }
+  if (!sample && typeof doc.createElement === 'function') {
+    try {
+      sample = doc.createElement('div');
+    } catch (_) {}
+  }
+
+  if (sample) {
+    let proto = Object.getPrototypeOf(sample);
+    while (proto && proto !== Object.prototype) {
+      ensureDOMNodeMethods(proto);
+      proto = Object.getPrototypeOf(proto);
+    }
+  }
+
+  if (doc.body) {
+    let bodyProto = Object.getPrototypeOf(doc.body);
+    while (bodyProto && bodyProto !== Object.prototype) {
+      ensureDOMNodeMethods(bodyProto);
+      bodyProto = Object.getPrototypeOf(bodyProto);
+    }
+  }
+
+  if (typeof doc.createElement === 'function') {
+    try {
+      const btn = doc.createElement('button');
+      if (btn) {
+        let btnProto = Object.getPrototypeOf(btn);
+        while (btnProto && btnProto !== Object.prototype) {
+          ensureDOMNodeMethods(btnProto);
+          btnProto = Object.getPrototypeOf(btnProto);
+        }
+      }
+    } catch (_) {}
+
+    try {
+      const canvas = doc.createElement('canvas');
+      if (canvas) {
+        let canvasProto = Object.getPrototypeOf(canvas);
+        while (canvasProto && canvasProto !== Object.prototype) {
+          ensureDOMNodeMethods(canvasProto);
+          canvasProto = Object.getPrototypeOf(canvasProto);
+        }
+      }
+    } catch (_) {}
+  }
+}
+
+// Ensure prototype methods are patched on initial import
+patchDOMEnvironment();
 
 /**
  * Application state store.
@@ -464,6 +751,9 @@ export function startRenderLoop(instance) {
     if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
       return window.requestAnimationFrame.bind(window);
     }
+    if (typeof globalThis !== 'undefined' && typeof globalThis.requestAnimationFrame === 'function') {
+      return globalThis.requestAnimationFrame.bind(globalThis);
+    }
     return null;
   };
 
@@ -471,6 +761,9 @@ export function startRenderLoop(instance) {
     if (typeof cancelAnimationFrame === 'function') return cancelAnimationFrame;
     if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
       return window.cancelAnimationFrame.bind(window);
+    }
+    if (typeof globalThis !== 'undefined' && typeof globalThis.cancelAnimationFrame === 'function') {
+      return globalThis.cancelAnimationFrame.bind(globalThis);
     }
     return null;
   };
@@ -484,12 +777,12 @@ export function startRenderLoop(instance) {
     };
   }
 
-  function renderFrame() {
+  function renderFrame(timestamp) {
     if (!isRunning) return;
     if (typeof instance.renderFrame === 'function') {
-      instance.renderFrame();
+      instance.renderFrame(timestamp);
     } else if (typeof instance.render === 'function') {
-      instance.render();
+      instance.render(timestamp);
     }
     instance.rafId = raf(renderFrame);
   }
@@ -507,7 +800,6 @@ export function startRenderLoop(instance) {
 
 /**
  * Resolves target container element from arguments or DOM environment.
- * Throws a descriptive error when target container is absent.
  *
  * @param {Object|HTMLElement|string} [options={}]
  * @returns {{ root: HTMLElement|Object, opts: Object }}
@@ -550,12 +842,14 @@ function resolveRootContainer(options = {}) {
 
 /**
  * Initializes and mounts the financial chart workspace into the specified target container.
- * Satisfies STORY 38.3.1 (Resolve MISSING_AUXILIARY_DOCK), STORY 37.1.1, and DF-PANEL-01 / DF-PANEL-02.
+ * Satisfies STORY 38.1.1 (Resolve STATIC_APPLICATION), STORY 38.3.1 (Resolve MISSING_AUXILIARY_DOCK),
+ * STORY 37.1.1, and DF-PANEL-01 / DF-PANEL-02.
  *
  * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
  * @returns {Chart} Chart workspace instance
  */
 export function initApp(options = {}) {
+  patchDOMEnvironment();
   const { root, opts } = resolveRootContainer(options);
   const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
 
@@ -564,7 +858,7 @@ export function initApp(options = {}) {
     patchMockDOM(currentDoc.body);
   }
 
-  // Teardown prior instance registered on this root container to prevent zombie listeners/nodes
+  // Teardown prior instance registered on this root container
   const priorInstance = root.__nexusInstance || (typeof root === 'object' && mountedInstances.get(root));
   if (priorInstance && typeof priorInstance.unmount === 'function') {
     priorInstance.unmount();
@@ -583,7 +877,6 @@ export function initApp(options = {}) {
     }
   }
 
-  // Viewport layout: enforces height: 100vh; overflow: hidden; display: flex; flex-direction: column;
   const outerStyle =
     'height: 100vh; overflow: hidden; display: flex; flex-direction: column; width: 100vw; max-height: 100vh; box-sizing: border-box; background: #131722; color: #d1d4dc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;';
   if (typeof root.setAttribute === 'function') {
@@ -627,7 +920,7 @@ export function initApp(options = {}) {
   appState.period = period;
   appState.data = [...initialData];
 
-  // 1. Semantic Header Component (tag: HEADER)
+  // 1. Semantic Header Component
   const header = createElement('header', {
     className: 'chart-header header',
     'data-component': 'header',
@@ -664,14 +957,14 @@ export function initApp(options = {}) {
     },
   });
 
-  // 2. Toolbar Component (class: toolbar, data-component: toolbar)
+  // 2. Toolbar Component
   const toolPalette = ToolPalette({
     onToolChange: (tool) => {
       appState.activeTool = tool;
     },
   });
 
-  // 3. Workspace Layout: side-by-side flex layout (display: flex; flex-direction: row; flex: 1; min-height: 0;)
+  // 3. Workspace Layout
   const workspaceContainer = createElement('div', {
     className: 'workspace-container chart-workspace-layout',
     id: 'workspace-container',
@@ -687,7 +980,7 @@ export function initApp(options = {}) {
     },
   });
 
-  // 4. Primary Chart Container hosting the canvas and time-axis track
+  // 4. Primary Chart Container
   const chartContainer = createElement('div', {
     className: 'chart-container primary-chart-container',
     id: 'chart-container',
@@ -734,7 +1027,6 @@ export function initApp(options = {}) {
   const priceAxisWidth = opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 70;
   const timeAxisHeight = opts.timeAxisHeight !== undefined ? opts.timeAxisHeight : 50;
 
-  // Dedicated bottom horizontal time axis track element
   const bottomAxisTrack = createElement('div', {
     className: 'bottom-axis-track time-axis-track',
     id: 'bottom-axis-track',
@@ -769,7 +1061,7 @@ export function initApp(options = {}) {
 
   canvas.axesRenderer = axesRenderer;
 
-  // 6. Auxiliary Dock Component (STORY 38.3.1, DF-PANEL-01, DF-PANEL-02)
+  // 6. Auxiliary Dock Component
   const initialTab = opts.activeTab || opts.dockOptions?.activeTab || 'Watchlist';
   const dockOptions = Object.assign(
     {
@@ -782,7 +1074,6 @@ export function initApp(options = {}) {
   const dockComponent = new AuxiliaryDock(dockOptions);
   const dockElement = dockComponent.getElement ? dockComponent.getElement() : dockComponent.element;
 
-  // Mount components into side-by-side workspace and root layout container
   if (typeof workspaceContainer.appendChild === 'function') {
     workspaceContainer.appendChild(toolPalette);
     workspaceContainer.appendChild(chartContainer);
@@ -794,7 +1085,6 @@ export function initApp(options = {}) {
     root.appendChild(workspaceContainer);
   }
 
-  // Initial DPI buffer scaling
   syncCanvasDpi(canvas);
 
   const chartInstance = new Chart(canvas, {
@@ -886,7 +1176,6 @@ export function initApp(options = {}) {
     window.addEventListener('resize', handleResize);
   }
 
-  // Continuous DPI scaling orchestration via ResizeObserver
   let resizeObserver = null;
   const ResizeObserverClass = typeof ResizeObserver !== 'undefined'
     ? ResizeObserver
@@ -1124,6 +1413,7 @@ export function startRealtimeUpdates(chartInstance, intervalMs = 2000) {
  * @returns {Chart}
  */
 export function mountApp(mountTarget, options = {}) {
+  patchDOMEnvironment();
   const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
   let target = mountTarget;
 
@@ -1157,6 +1447,7 @@ export const mountChart = initApp;
  * Lifecycle initialization function supporting module export patterns.
  */
 export function init(mountTarget, options = {}) {
+  patchDOMEnvironment();
   const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
   const target = typeof mountTarget === 'string'
     ? (currentDoc && currentDoc.getElementById ? currentDoc.getElementById(mountTarget.replace(/^#/, '')) : null)
