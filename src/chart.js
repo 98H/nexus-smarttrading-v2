@@ -1,7 +1,8 @@
 /**
  * SmartTrading-V2 — Chart Engine & Candlestick/Axes Orchestrator
  * Integrates Candlestick rendering, AxesRenderer (DF-SCALES-01, DF-SCALES-02, STORY 36.1.1),
- * pan gestures (DF-GESTURE-01), analytical overlays (DF-OVERLAYS-01),
+ * pan gestures (DF-GESTURE-01), analytical indicator overlays (SMA/EMA) (DF-OVERLAYS-01, STORY 49.3.1),
+ * indicator legends with 2-decimal formatting and fallback indicators,
  * and real-time streaming data updates (STORY 39.1.1: Resolve STATIC_APPLICATION).
  */
 
@@ -10,12 +11,22 @@ import {
   calculateSMA,
   calculateEMA,
   renderOverlay,
+  createIndicatorLegend,
   updateIndicatorLegend,
   getClosePrice,
 } from './indicators.js';
 import { createCandleStream } from './data_generator.js';
 
-export { AxesRenderer, computeRanges };
+export {
+  calculateSMA,
+  calculateEMA,
+  renderOverlay,
+  createIndicatorLegend,
+  updateIndicatorLegend,
+  getClosePrice,
+  AxesRenderer,
+  computeRanges,
+};
 
 /**
  * Polyfills missing CanvasRenderingContext2D methods in mock/headless environments.
@@ -48,13 +59,17 @@ export function polyfillCanvasContext(ctx) {
     'measureText',
     'fillText',
     'strokeText',
+    'setTransform',
+    'resetTransform',
+    'scale',
+    'translate',
   ];
 
   for (const target of targets) {
     for (const m of methods) {
       if (typeof target[m] !== 'function') {
         if (m === 'measureText') {
-          target[m] = () => ({ width: 0 });
+          target[m] = () => ({ width: 40 });
         } else if (m === 'getLineDash') {
           target[m] = () => [];
         } else {
@@ -100,17 +115,22 @@ export class Chart {
    * @param {Object} [maybeOptions={}]
    */
   constructor(canvasOrOptions, maybeOptions = {}) {
-    let canvas = canvasOrOptions;
-    let options = maybeOptions || {};
+    let canvas = null;
+    let options = {};
 
-    if (canvasOrOptions && typeof canvasOrOptions.getContext !== 'function' && canvasOrOptions.canvas) {
-      canvas = canvasOrOptions.canvas;
+    if (canvasOrOptions && typeof canvasOrOptions.getContext === 'function') {
+      canvas = canvasOrOptions;
+      options = maybeOptions || {};
+    } else if (canvasOrOptions && typeof canvasOrOptions === 'object') {
+      canvas = canvasOrOptions.canvas || null;
       options = canvasOrOptions;
     }
 
     this.canvas = canvas;
     this.ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
     polyfillCanvasContext(this.ctx);
+
+    this.container = options.container || options.root || (this.canvas ? this.canvas.parentElement : null) || null;
 
     this.minZoom = typeof options.minZoom === 'number' && Number.isFinite(options.minZoom)
       ? options.minZoom
@@ -138,9 +158,32 @@ export class Chart {
     this._stream = null;
 
     this.data = Array.isArray(options.data) ? [...options.data] : [];
-    this.overlayType = options.overlayType || 'EMA';
-    this.period = Number(options.period) || 20;
-    this.color = options.color || '#FF9800';
+
+    // Parse indicator overlay configuration
+    if (Array.isArray(options.overlays) && options.overlays.length > 0) {
+      this.overlays = options.overlays.map((ov) => ({
+        type: ov.type || 'EMA',
+        period: Number(ov.period) || 20,
+        color: ov.color || '#FF9800',
+        lineWidth: ov.lineWidth || 2,
+      }));
+      this.overlayType = this.overlays[0].type;
+      this.period = this.overlays[0].period;
+      this.color = this.overlays[0].color;
+    } else {
+      this.overlayType = options.overlayType || 'EMA';
+      this.period = Number(options.period) || 20;
+      this.color = options.color || '#FF9800';
+      this.overlays = [
+        {
+          type: this.overlayType,
+          period: this.period,
+          color: this.color,
+          lineWidth: 2,
+        },
+      ];
+    }
+
     this.legend = options.legend || null;
     this.indicatorValues = [];
 
@@ -159,6 +202,8 @@ export class Chart {
       this.canvas.axesRenderer = this.axesRenderer;
       this.bindEvents();
     }
+
+    this._ensureLegend();
   }
 
   get viewport() {
@@ -479,9 +524,22 @@ export class Chart {
     }
   }
 
-  setOverlay(type, period = 20) {
+  setOverlay(type, period = 20, color = null) {
     this.overlayType = type;
-    this.period = period;
+    this.period = Number(period) || 20;
+    if (color) this.color = color;
+    this.overlays = [
+      {
+        type: this.overlayType,
+        period: this.period,
+        color: this.color,
+        lineWidth: 2,
+      },
+    ];
+    if (this.legend) {
+      this.legend._label = `${this.overlayType} (${this.period})`;
+      if (this.legend.style) this.legend.style.color = this.color;
+    }
     this.render();
   }
 
@@ -514,6 +572,36 @@ export class Chart {
     this.render();
   }
 
+  _ensureLegend() {
+    if (this.legend) return this.legend;
+
+    const container =
+      this.container ||
+      (this.canvas ? this.canvas.parentElement || this.canvas.parentNode : null) ||
+      (typeof document !== 'undefined' ? document.getElementById('app') : null);
+
+    if (!container) return null;
+
+    let existing = null;
+    if (typeof container.querySelector === 'function') {
+      existing = container.querySelector('.indicator-legend');
+    }
+
+    if (existing) {
+      this.legend = existing;
+      return existing;
+    }
+
+    const label = `${this.overlayType} (${this.period})`;
+    const legendEl = createIndicatorLegend(container, {
+      id: `${this.overlayType.toLowerCase()}-${this.period}`,
+      label,
+      color: this.color,
+    });
+    this.legend = legendEl;
+    return legendEl;
+  }
+
   render() {
     if (!this.canvas) return;
     if (!this.ctx && typeof this.canvas.getContext === 'function') {
@@ -532,7 +620,7 @@ export class Chart {
       ctx.clearRect(0, 0, width, height);
     }
 
-    // Ensure coordinate scales and time axis are rendered in untransformed screen space
+    // Ensure coordinate scales and axes are rendered in untransformed screen space
     if (typeof ctx.setTransform === 'function') {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
     }
@@ -547,33 +635,65 @@ export class Chart {
       this.axesRenderer.render(data);
     }
 
-    if (!Array.isArray(data) || data.length === 0) return;
+    this._ensureLegend();
 
-    const values = this.overlayType === 'SMA'
-      ? calculateSMA(data, this.period)
-      : calculateEMA(data, this.period);
-
-    this.indicatorValues = values;
-
-    if (this.legend) {
-      let latestVal = null;
-      if (Array.isArray(values) && values.length > 0) {
-        latestVal = values[values.length - 1];
-        if (latestVal === null && data.length > 0) {
-          latestVal = getClosePrice(data[data.length - 1]);
-        }
-      } else if (data.length > 0) {
-        latestVal = getClosePrice(data[data.length - 1]);
-      }
-      updateIndicatorLegend(this.legend, latestVal);
+    // Synchronize primary overlay configuration
+    if (Array.isArray(this.overlays) && this.overlays.length > 0) {
+      this.overlays[0].type = this.overlayType || this.overlays[0].type || 'EMA';
+      this.overlays[0].period = this.period || this.overlays[0].period || 20;
+      this.overlays[0].color = this.color || this.overlays[0].color || '#FF9800';
+    } else {
+      this.overlays = [
+        {
+          type: this.overlayType || 'EMA',
+          period: this.period || 20,
+          color: this.color || '#FF9800',
+          lineWidth: 2,
+        },
+      ];
     }
 
-    const plotArea = (this.axesRenderer && this.axesRenderer.plotArea) ? this.axesRenderer.plotArea : {
-      top: 0,
-      left: 0,
-      width: Math.max(0, width - 70),
-      height: Math.max(0, height - 50),
-    };
+    const primaryOverlay = this.overlays[0];
+    const primaryType = primaryOverlay.type;
+    const primaryPeriod = primaryOverlay.period;
+
+    const primaryValues = primaryType === 'SMA'
+      ? calculateSMA(data, primaryPeriod)
+      : calculateEMA(data, primaryPeriod);
+
+    this.indicatorValues = primaryValues;
+
+    // Update indicator legend display with 2-decimal formatting or non-computable fallback
+    if (this.legend) {
+      const activeLabel = `${primaryType} (${primaryPeriod})`;
+      this.legend._label = activeLabel;
+      if (this.legend.style && primaryOverlay.color) {
+        this.legend.style.color = primaryOverlay.color;
+      }
+
+      let latestVal = null;
+      if (Array.isArray(primaryValues) && primaryValues.length > 0) {
+        latestVal = primaryValues[primaryValues.length - 1];
+      }
+
+      if (latestVal !== null && latestVal !== undefined && !Number.isNaN(latestVal)) {
+        const formatted = typeof latestVal === 'number' ? latestVal.toFixed(2) : String(latestVal);
+        this.legend.textContent = `${activeLabel}: ${formatted}`;
+      } else {
+        this.legend.textContent = `${activeLabel}: --`;
+      }
+    }
+
+    if (!Array.isArray(data) || data.length === 0) return;
+
+    const plotArea = (this.axesRenderer && this.axesRenderer.plotArea)
+      ? this.axesRenderer.plotArea
+      : {
+          top: 0,
+          left: 0,
+          width: Math.max(0, width - 70),
+          height: Math.max(0, height - 50),
+        };
 
     const ranges = computeRanges(data);
     const priceMin = ranges.priceRange.min;
@@ -590,23 +710,36 @@ export class Chart {
       ctx.setTransform(1, 0, 0, 1, this._viewport.x, this._viewport.y);
     }
 
-    // Draw candlestick bars reflecting active zoom scale across viewport sectors
+    // Draw candlestick bars reflecting active zoom scale across viewport
     this.drawCandles(ctx, data, plotArea, priceMin, priceMax);
 
-    // Analytical indicator overlay mapping
-    const coordinates = values.map((val, idx) => {
-      const x = plotArea.left + (data.length > 1 ? (idx / (data.length - 1)) * plotArea.width : plotArea.width / 2);
-      if (val === null || val === undefined || Number.isNaN(val)) {
-        return { x, y: 0 };
-      }
-      const y = mapPriceToY(val, plotArea.top, plotArea.height, priceMin, priceMax);
-      return { x, y };
-    });
+    // Render active analytical overlays onto the canvas context
+    const n = data.length;
+    for (let i = 0; i < this.overlays.length; i++) {
+      const ov = this.overlays[i];
+      const ovType = ov.type || 'EMA';
+      const ovPeriod = Number(ov.period) || 20;
+      const ovColor = ov.color || '#FF9800';
+      const ovLineWidth = ov.lineWidth || 2;
 
-    renderOverlay(ctx, values, coordinates, {
-      color: this.color,
-      lineWidth: 2,
-    });
+      const values = ovType === 'SMA'
+        ? calculateSMA(data, ovPeriod)
+        : calculateEMA(data, ovPeriod);
+
+      const coordinates = values.map((val, idx) => {
+        const x = plotArea.left + (n > 1 ? (idx / (n - 1)) * plotArea.width : plotArea.width / 2);
+        if (val === null || val === undefined || Number.isNaN(val)) {
+          return { x, y: 0 };
+        }
+        const y = mapPriceToY(val, plotArea.top, plotArea.height, priceMin, priceMax);
+        return { x, y };
+      });
+
+      renderOverlay(ctx, values, coordinates, {
+        color: ovColor,
+        lineWidth: ovLineWidth,
+      });
+    }
 
     ctx.restore?.();
   }
@@ -622,7 +755,9 @@ export class Chart {
     for (let i = 0; i < n; i++) {
       const c = data[i];
       if (!c) continue;
-      const open = typeof c.open === 'number' && Number.isFinite(c.open) ? c.open : (typeof c.close === 'number' && Number.isFinite(c.close) ? c.close : 0);
+      const open = typeof c.open === 'number' && Number.isFinite(c.open)
+        ? c.open
+        : (typeof c.close === 'number' && Number.isFinite(c.close) ? c.close : 0);
       const close = typeof c.close === 'number' && Number.isFinite(c.close) ? c.close : open;
       const high = typeof c.high === 'number' && Number.isFinite(c.high) ? c.high : Math.max(open, close);
       const low = typeof c.low === 'number' && Number.isFinite(c.low) ? c.low : Math.min(open, close);
@@ -660,5 +795,7 @@ export class Chart {
 Chart.AxesRenderer = AxesRenderer;
 Chart.computeRanges = computeRanges;
 Chart.Chart = Chart;
+Chart.calculateSMA = calculateSMA;
+Chart.calculateEMA = calculateEMA;
 
 export default Chart;
