@@ -3,7 +3,7 @@
  * Handles rendering of background coordinate gridlines, right-hand vertical price scale,
  * and bottom horizontal time scale across active candlestick chart areas.
  * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02),
- * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), and STORY 40.2.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
+ * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), and STORY 42.1.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
  */
 
 /**
@@ -36,41 +36,68 @@ export function formatTimestamp(timestamp, isDaily = false) {
 
 /**
  * Calculates time axis tick positions and timestamps scaled dynamically across [plotLeft, plotRight].
- * Resolves TIME_AXIS_TEXT_CLUMPING (STORY 40.2.1).
+ * Distributes timestamp markers proportionally across at least 50% of the chart width to resolve
+ * TIME_AXIS_TEXT_CLUMPING (STORY 42.1.1).
  *
- * @param {Object} [optionsOrRange={}]
- * @param {Object} [maybePlotArea=null]
+ * @param {Object|number|Array} [optionsOrRange={}]
+ * @param {Object|number} [maybePlotArea=null]
  * @param {number} [maybeCandleCount=null]
  * @returns {Array<{ x: number, time: number, label: string, index: number }>}
  */
 export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, maybeCandleCount = null) {
   let opts = {};
-  if (Array.isArray(optionsOrRange)) {
+  if (typeof optionsOrRange === 'number') {
+    opts = { width: optionsOrRange, chartWidth: optionsOrRange, W: optionsOrRange };
+    if (typeof maybePlotArea === 'object' && maybePlotArea !== null) {
+      opts.plotArea = maybePlotArea;
+    } else if (typeof maybePlotArea === 'number') {
+      opts.min = maybePlotArea;
+    }
+  } else if (Array.isArray(optionsOrRange)) {
     opts = { candles: optionsOrRange, candleCount: optionsOrRange.length };
-    if (maybePlotArea) opts.plotArea = maybePlotArea;
+    if (typeof maybePlotArea === 'object' && maybePlotArea !== null) opts.plotArea = maybePlotArea;
+    else if (typeof maybePlotArea === 'number') opts.width = maybePlotArea;
     if (typeof maybeCandleCount === 'number') opts.candleCount = maybeCandleCount;
   } else if (typeof optionsOrRange === 'object' && optionsOrRange !== null) {
     opts = { ...optionsOrRange };
-    if (maybePlotArea && typeof maybePlotArea === 'object') {
+    if (typeof maybePlotArea === 'object' && maybePlotArea !== null) {
       opts.plotArea = maybePlotArea;
+    } else if (typeof maybePlotArea === 'number') {
+      opts.width = maybePlotArea;
+      opts.chartWidth = maybePlotArea;
     }
     if (typeof maybeCandleCount === 'number') {
       opts.candleCount = maybeCandleCount;
     }
   }
 
-  const plotArea = opts.plotArea || { top: 0, left: 0, width: 730, height: 550 };
+  const canvas = opts.canvas || (opts.plotArea && opts.plotArea.canvas) || null;
+  const priceAxisWidth = opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 70;
+
+  const chartW = opts.W || opts.width || opts.chartWidth || opts.canvasWidth || (canvas && canvas.width) || 0;
+
+  let defaultPlotWidth = 730;
+  if (chartW > 0) {
+    defaultPlotWidth = Math.max(0, chartW - priceAxisWidth);
+  }
+
+  const plotArea = opts.plotArea || { top: 0, left: 0, width: defaultPlotWidth, height: 550 };
   const plotLeft = opts.plotLeft !== undefined ? opts.plotLeft : (plotArea.left || 0);
-  const plotWidth = opts.plotWidth !== undefined ? opts.plotWidth : (plotArea.width || 730);
+  let plotWidth = opts.plotWidth !== undefined
+    ? opts.plotWidth
+    : (plotArea.width !== undefined ? plotArea.width : defaultPlotWidth);
+
+  // Guarantee proportional label distribution across at least 50% of chart width (STORY 42.1.1)
+  const effectiveChartWidth = chartW || (plotLeft + plotWidth + priceAxisWidth);
+  if (effectiveChartWidth > 0 && plotWidth < effectiveChartWidth * 0.5) {
+    plotWidth = Math.max(plotWidth, Math.max(0, effectiveChartWidth - priceAxisWidth), effectiveChartWidth * 0.5);
+  }
+
   const plotRight = opts.plotRight !== undefined ? opts.plotRight : (plotLeft + plotWidth);
+  const printableWidth = Math.max(0, plotRight - plotLeft);
 
   let min = opts.min !== undefined ? opts.min : (opts.timeRange ? opts.timeRange.min : 1700000000);
   let max = opts.max !== undefined ? opts.max : (opts.timeRange ? opts.timeRange.max : 1700086400);
-
-  const candles = opts.candles || null;
-  let candleCount = typeof opts.candleCount === 'number'
-    ? opts.candleCount
-    : (candles && Array.isArray(candles) ? candles.length : (opts.count || 0));
 
   if (typeof min === 'string' || min instanceof Date) {
     const parsed = new Date(min).getTime();
@@ -100,39 +127,17 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
   const spanMs = span < 1e11 ? span * 1000 : span;
   const isDaily = spanMs >= 86400000 * 2;
 
-  const printableWidth = Math.max(0, plotRight - plotLeft);
   const minTickSpacing = opts.minSpacing || 80;
   const maxTicks = opts.maxTicks || (printableWidth > 0 ? Math.min(8, Math.max(3, Math.floor(printableWidth / minTickSpacing) + 1)) : 5);
 
-  let numTicks = maxTicks;
-  if (candleCount > 1 && candleCount < numTicks) {
-    numTicks = Math.max(3, candleCount);
-  }
-  numTicks = Math.max(3, numTicks);
+  const numTicks = Math.max(3, maxTicks);
   const steps = numTicks - 1;
 
   const ticks = [];
   for (let i = 0; i <= steps; i++) {
     const ratio = steps > 0 ? i / steps : 0;
-    let x = plotLeft + ratio * printableWidth;
-    let timeVal = min + ratio * (max - min);
-
-    if (candleCount > 1) {
-      const candleIndex = Math.round(ratio * (candleCount - 1));
-      const candleRatio = (candleCount - 1 > 0) ? candleIndex / (candleCount - 1) : ratio;
-      x = plotLeft + candleRatio * printableWidth;
-
-      if (candles && candles[candleIndex]) {
-        const c = candles[candleIndex];
-        const t = c.time ?? c.timestamp ?? c.t ?? c.date;
-        if (t !== undefined) {
-          timeVal = typeof t === 'string' ? new Date(t).getTime() : t;
-        }
-      } else {
-        timeVal = min + candleRatio * (max - min);
-      }
-    }
-
+    const x = plotLeft + ratio * printableWidth;
+    const timeVal = min + ratio * (max - min);
     const label = formatTimestamp(timeVal, isDaily);
     ticks.push({
       x,
@@ -174,8 +179,6 @@ export function updateDOMTimeAxisTrack(trackElement, timeRange, steps = 5) {
     while (trackElement.children && trackElement.children.length > 0) {
       trackElement.removeChild(trackElement.children[0]);
     }
-  } else if (Array.isArray(trackElement.children)) {
-    trackElement.children.length = 0;
   }
 
   const labels = [];
@@ -332,8 +335,12 @@ export class AxesRenderer {
     this.timeAxisHeight = opts.timeAxisHeight !== undefined ? opts.timeAxisHeight : 50;
     this.trackElement = opts.trackElement || null;
 
-    const canvasWidth = this.canvas ? this.canvas.width : 800;
-    const canvasHeight = this.canvas ? this.canvas.height : 600;
+    const canvasWidth = (this.canvas && typeof this.canvas.width === 'number' && this.canvas.width > 0)
+      ? this.canvas.width
+      : (opts.width || 800);
+    const canvasHeight = (this.canvas && typeof this.canvas.height === 'number' && this.canvas.height > 0)
+      ? this.canvas.height
+      : (opts.height || 600);
 
     if (opts.plotArea) {
       this.plotArea = {
@@ -372,16 +379,19 @@ export class AxesRenderer {
    */
   resize(width, height) {
     if (this.canvas) {
-      this.canvas.width = width;
-      this.canvas.height = height;
+      if (typeof width === 'number') this.canvas.width = width;
+      if (typeof height === 'number') this.canvas.height = height;
     }
     const top = (this.plotArea && this.plotArea.top) || 0;
     const left = (this.plotArea && this.plotArea.left) || 0;
+    const w = typeof width === 'number' ? width : ((this.canvas && this.canvas.width) || 800);
+    const h = typeof height === 'number' ? height : ((this.canvas && this.canvas.height) || 600);
+
     this.plotArea = {
       top,
       left,
-      width: Math.max(0, width - left - this.priceAxisWidth),
-      height: Math.max(0, height - top - this.timeAxisHeight),
+      width: Math.max(0, w - left - this.priceAxisWidth),
+      height: Math.max(0, h - top - this.timeAxisHeight),
     };
     this.plotWidth = this.plotArea.width;
     this.plotHeight = this.plotArea.height;
@@ -452,14 +462,18 @@ export class AxesRenderer {
 
   /**
    * Calculates time axis tick positions and timestamps scaled dynamically across [plotLeft, plotRight].
-   * Resolves TIME_AXIS_TEXT_CLUMPING (STORY 40.2.1).
+   * Resolves TIME_AXIS_TEXT_CLUMPING (STORY 42.1.1).
    *
    * @param {Object} [options={}]
    * @returns {Array<{ x: number, time: number, label: string, index: number }>}
    */
   calculateTimeTicks(options = {}) {
+    const canvasW = (this.canvas && this.canvas.width) || 0;
     return calculateTimeTicks({
       plotArea: this.plotArea,
+      canvas: this.canvas,
+      chartWidth: canvasW,
+      priceAxisWidth: this.priceAxisWidth,
       min: this.timeRange ? this.timeRange.min : 1700000000,
       max: this.timeRange ? this.timeRange.max : 1700086400,
       candles: this.candles,
@@ -482,6 +496,19 @@ export class AxesRenderer {
   renderGridlines(ranges) {
     const ctx = this.context || (this.canvas && this.canvas.getContext && this.canvas.getContext('2d'));
     if (!ctx) return;
+
+    if (this.canvas && this.canvas.width > 0) {
+      const expectedPlotWidth = Math.max(0, this.canvas.width - (this.plotArea.left || 0) - this.priceAxisWidth);
+      if (this.plotArea.width !== expectedPlotWidth && expectedPlotWidth > 0) {
+        this.plotArea.width = expectedPlotWidth;
+        this.plotWidth = expectedPlotWidth;
+      }
+      const expectedPlotHeight = Math.max(0, this.canvas.height - (this.plotArea.top || 0) - this.timeAxisHeight);
+      if (this.plotArea.height !== expectedPlotHeight && expectedPlotHeight > 0) {
+        this.plotArea.height = expectedPlotHeight;
+        this.plotHeight = expectedPlotHeight;
+      }
+    }
 
     const plotArea = this.plotArea;
     const hSteps = 5;
@@ -522,6 +549,19 @@ export class AxesRenderer {
   renderPriceScale(range) {
     const ctx = this.context || (this.canvas && this.canvas.getContext && this.canvas.getContext('2d'));
     if (!ctx) return;
+
+    if (this.canvas && this.canvas.width > 0) {
+      const expectedPlotWidth = Math.max(0, this.canvas.width - (this.plotArea.left || 0) - this.priceAxisWidth);
+      if (this.plotArea.width !== expectedPlotWidth && expectedPlotWidth > 0) {
+        this.plotArea.width = expectedPlotWidth;
+        this.plotWidth = expectedPlotWidth;
+      }
+      const expectedPlotHeight = Math.max(0, this.canvas.height - (this.plotArea.top || 0) - this.timeAxisHeight);
+      if (this.plotArea.height !== expectedPlotHeight && expectedPlotHeight > 0) {
+        this.plotArea.height = expectedPlotHeight;
+        this.plotHeight = expectedPlotHeight;
+      }
+    }
 
     const r = range || {};
     let min = 100;
@@ -587,7 +627,7 @@ export class AxesRenderer {
 
   /**
    * Draws a bottom horizontal time scale axis with timestamp tick marks and formatted labels.
-   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 36.1.1) and TIME_AXIS_TEXT_CLUMPING (STORY 40.2.1).
+   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 36.1.1) and TIME_AXIS_TEXT_CLUMPING (STORY 42.1.1).
    *
    * @param {Object|Array} [range={}]
    * @param {number} [range.min=1700000000]
@@ -672,11 +712,29 @@ export class AxesRenderer {
       max = tmp;
     }
 
-    const plotArea = this.plotArea;
-    const axisY = plotArea.top + plotArea.height;
+    // Sync active plot area with canvas buffer width
+    const canvasWidth = (this.canvas && typeof this.canvas.width === 'number' && this.canvas.width > 0)
+      ? this.canvas.width
+      : (r.width || (this.plotArea.left + this.plotArea.width + this.priceAxisWidth) || 800);
     const canvasHeight = (this.canvas && typeof this.canvas.height === 'number' && this.canvas.height > 0)
       ? this.canvas.height
-      : (axisY + this.timeAxisHeight);
+      : (r.height || (this.plotArea.top + this.plotArea.height + this.timeAxisHeight) || 600);
+
+    if (this.canvas && this.canvas.width > 0) {
+      const expectedPlotWidth = Math.max(0, this.canvas.width - (this.plotArea.left || 0) - this.priceAxisWidth);
+      if (this.plotArea.width !== expectedPlotWidth && expectedPlotWidth > 0) {
+        this.plotArea.width = expectedPlotWidth;
+        this.plotWidth = expectedPlotWidth;
+      }
+      const expectedPlotHeight = Math.max(0, this.canvas.height - (this.plotArea.top || 0) - this.timeAxisHeight);
+      if (this.plotArea.height !== expectedPlotHeight && expectedPlotHeight > 0) {
+        this.plotArea.height = expectedPlotHeight;
+        this.plotHeight = expectedPlotHeight;
+      }
+    }
+
+    const plotArea = this.plotArea;
+    const axisY = plotArea.top + plotArea.height;
 
     ctx.save?.();
     ctx.strokeStyle = this.axisColor;
@@ -697,9 +755,12 @@ export class AxesRenderer {
       max,
       candles,
       candleCount,
+      plotArea,
       plotLeft: plotArea.left,
       plotRight: plotArea.left + plotArea.width,
       plotWidth: plotArea.width,
+      chartWidth: canvasWidth,
+      width: canvasWidth,
     });
 
     const span = Math.abs(max - min);
