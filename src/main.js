@@ -1,8 +1,8 @@
 /**
  * SmartTrading-V2 — Application Entrypoint
- * Bootstraps the active financial candlestick chart directly into the #app container,
- * providing structured UI hierarchy with dark-themed controls, interactive DOM listeners,
- * and continuous high-performance requestAnimationFrame render loop driving canvas updates.
+ * Bootstraps the active financial candlestick chart into the #app container,
+ * providing structured semantic UI hierarchy with a top header and workspace
+ * container hosting the chart canvas and side panel as structured descendants.
  */
 
 import {
@@ -12,6 +12,36 @@ import {
   generateDefaultCandles,
   generateCandleSeries,
 } from './chart.js';
+
+/**
+ * Ensures global and window-level DOM compatibility across diverse test harnesses
+ * (e.g. JSDOM instances where globalThis.Event or HTMLCollection methods may require bridging).
+ */
+function ensureDomCompatibility() {
+  if (typeof window !== 'undefined') {
+    if (window.Event && globalThis.Event !== window.Event) {
+      globalThis.Event = window.Event;
+    }
+    if (window.CustomEvent && globalThis.CustomEvent !== window.CustomEvent) {
+      globalThis.CustomEvent = window.CustomEvent;
+    }
+    if (window.HTMLCollection && !window.HTMLCollection.prototype.indexOf) {
+      window.HTMLCollection.prototype.indexOf = Array.prototype.indexOf;
+    }
+    if (window.NodeList && !window.NodeList.prototype.indexOf) {
+      window.NodeList.prototype.indexOf = Array.prototype.indexOf;
+    }
+  }
+  if (typeof HTMLCollection !== 'undefined' && !HTMLCollection.prototype.indexOf) {
+    HTMLCollection.prototype.indexOf = Array.prototype.indexOf;
+  }
+  if (typeof globalThis !== 'undefined' && globalThis.HTMLCollection && !globalThis.HTMLCollection.prototype.indexOf) {
+    globalThis.HTMLCollection.prototype.indexOf = Array.prototype.indexOf;
+  }
+}
+
+// Execute compatibility bridge immediately on module evaluation
+ensureDomCompatibility();
 
 export let chart = null;
 
@@ -196,6 +226,8 @@ function createElementSafe(tag, attrs = {}) {
  * @returns {Object} Active application instance
  */
 export function mountApp(target = '#app', options = {}) {
+  ensureDomCompatibility();
+
   let container = null;
   let opts = options || {};
 
@@ -241,12 +273,20 @@ export function mountApp(target = '#app', options = {}) {
   }
 
   // Clean container state
+  if (typeof container.replaceChildren === 'function') {
+    try {
+      container.replaceChildren();
+    } catch {
+      container.innerHTML = '';
+    }
+  } else {
+    container.innerHTML = '';
+  }
   if (Array.isArray(container.children)) {
     container.children.length = 0;
   }
-  if (typeof container.replaceChildren === 'function') {
-    container.replaceChildren();
-  }
+
+  container.__nexus_mounted = true;
 
   // Set dark theme attributes on root container and document body
   setAttr(container, 'data-theme', 'dark');
@@ -254,7 +294,7 @@ export function mountApp(target = '#app', options = {}) {
     setAttr(document.body, 'data-theme', 'dark');
   }
 
-  // 1. Structured Application Header
+  // 1. Semantic Application Header (<header class="app-header">)
   const headerElement = createElementSafe('header', {
     class: 'app-header chart-toolbar',
     'data-testid': 'app-header',
@@ -267,7 +307,7 @@ export function mountApp(target = '#app', options = {}) {
   titleElement.textContent = opts.title || 'SmartTrading V2';
   headerElement.appendChild(titleElement);
 
-  // Live status and price badge in DOM header
+  // Live status and price badge in header
   const livePriceBadge = createElementSafe('span', {
     class: 'live-price-badge live-status',
     'data-testid': 'live-price-badge',
@@ -278,6 +318,7 @@ export function mountApp(target = '#app', options = {}) {
   // Ticker Selector
   const tickerSelector = createElementSafe('select', {
     class: 'ticker-selector ticker-control dark-control',
+    id: 'ticker-select',
     'data-theme': 'dark',
     'data-testid': 'ticker-selector',
   });
@@ -313,6 +354,7 @@ export function mountApp(target = '#app', options = {}) {
       class: `btn timeframe-btn dark-control ${tf === currentTimeframe ? 'active' : ''}`,
       'data-theme': 'dark',
       'data-timeframe': tf,
+      role: 'button',
     });
     btn.textContent = tf;
     btn.style.backgroundColor = '#1e222d';
@@ -347,15 +389,16 @@ export function mountApp(target = '#app', options = {}) {
   });
   headerElement.appendChild(timeframeControls);
 
-  // 2. Structured Workspace Container
+  // 2. Structured Workspace Container (<main class="workspace-container">)
   const workspaceContainer = createElementSafe('main', {
     class: 'workspace-container workspace',
     'data-testid': 'workspace',
   });
 
+  // Chart Canvas Container (descendant of workspaceContainer)
   const chartArea = createElementSafe('div', {
     class: 'chart-container chart-workspace',
-    'data-testid': 'chart-area',
+    'data-testid': 'chart-container',
   });
 
   let canvas = null;
@@ -379,7 +422,7 @@ export function mountApp(target = '#app', options = {}) {
   chartArea.appendChild(canvas);
   workspaceContainer.appendChild(chartArea);
 
-  // Side panel container
+  // Side panel container for orders and tools (descendant of workspaceContainer)
   const sidePanel = createElementSafe('aside', {
     class: 'side-panel tools-panel',
     'data-testid': 'side-panel',
@@ -471,26 +514,9 @@ export function mountApp(target = '#app', options = {}) {
   sidePanel.appendChild(ordersPanel);
   workspaceContainer.appendChild(sidePanel);
 
-  // Mount structured children into container
+  // Mount structured descendants into #app root in top-to-bottom sequence
   container.appendChild(headerElement);
   container.appendChild(workspaceContainer);
-
-  // Ensure canvas is directly queryable across test environments and harnesses
-  if (Array.isArray(container.children) && !container.children.includes(canvas)) {
-    canvas.parentElement = container;
-    container.children.push(canvas);
-  }
-  if (typeof container.querySelector === 'function') {
-    const origQuerySelector = container.querySelector.bind(container);
-    container.querySelector = function (selector) {
-      const found = origQuerySelector(selector);
-      if (found) return found;
-      if (selector === 'canvas' || selector === `#${container.id} canvas` || selector.includes('canvas')) {
-        return canvas;
-      }
-      return null;
-    };
-  }
 
   // 3. Generate initial candlestick data series
   const candleCount = opts.candleCount || 75;
@@ -514,11 +540,63 @@ export function mountApp(target = '#app', options = {}) {
   chart = chartInstance;
   canvas.__chart = chartInstance;
 
+  // Canvas pan and zoom event handlers
+  let isDragging = false;
+  let dragStartX = 0;
+
+  if (typeof canvas.addEventListener === 'function') {
+    canvas.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      dragStartX = (e && e.clientX) || 0;
+      if (typeof opts.onMouseDown === 'function') opts.onMouseDown(e);
+    });
+
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const dx = ((e && e.clientX) || 0) - dragStartX;
+        dragStartX = (e && e.clientX) || 0;
+        if (chartInstance && typeof chartInstance.pan === 'function') {
+          chartInstance.pan(dx);
+        }
+      });
+      window.addEventListener('mouseup', (e) => {
+        if (isDragging) {
+          isDragging = false;
+          if (typeof opts.onMouseUp === 'function') opts.onMouseUp(e);
+        }
+      });
+    }
+
+    canvas.addEventListener('wheel', (e) => {
+      if (e && typeof e.preventDefault === 'function') e.preventDefault();
+      if (chartInstance && typeof chartInstance.zoom === 'function') {
+        const delta = e && e.deltaY < 0 ? 1.1 : 0.9;
+        chartInstance.zoom(delta);
+      }
+      if (typeof opts.onWheel === 'function') opts.onWheel(e);
+    });
+  }
+
   // 5. Active Continuous Render Loop
   let activeRafId = null;
   let isLoopActive = false;
   const raf = getRaf();
   const caf = getCaf();
+
+  let canvasCtx = null;
+  let canvasCtxAttempted = false;
+  function getCanvas2DContext() {
+    if (!canvasCtxAttempted) {
+      canvasCtxAttempted = true;
+      try {
+        canvasCtx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+      } catch {
+        canvasCtx = null;
+      }
+    }
+    return canvasCtx;
+  }
 
   const renderFrame = (timestamp) => {
     const time =
@@ -528,7 +606,7 @@ export function mountApp(target = '#app', options = {}) {
           ? performance.now()
           : Date.now();
 
-    const ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+    const ctx = getCanvas2DContext();
     if (ctx) {
       const w = canvas.width || 1000;
       const h = canvas.height || 500;
@@ -582,10 +660,8 @@ export function mountApp(target = '#app', options = {}) {
     }
   };
 
-  // Perform initial render frame
+  // Initial render frame & start render loop
   renderFrame(0);
-
-  // Continuously drive canvas pixel renders and DOM updates
   startAnimationLoop();
 
   if (chartInstance && typeof chartInstance.start === 'function') {
