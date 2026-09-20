@@ -74,9 +74,9 @@ export class ChartCanvas {
     this._rafId = null;
 
     this._onMouseDown = (e) => {
-      if (e.button !== undefined && e.button !== 0) return;
-      const clientX = e.clientX ?? 0;
-      const clientY = e.clientY ?? 0;
+      if (e && e.button !== undefined && e.button !== 0) return;
+      const clientX = e?.clientX ?? 0;
+      const clientY = e?.clientY ?? 0;
       const mode = normalizeToolName(this.toolMode);
 
       if (mode === 'trendline') {
@@ -126,8 +126,8 @@ export class ChartCanvas {
     };
 
     this._onMouseMove = (e) => {
-      const clientX = e.clientX ?? 0;
-      const clientY = e.clientY ?? 0;
+      const clientX = e?.clientX ?? 0;
+      const clientY = e?.clientY ?? 0;
       const mode = normalizeToolName(this.toolMode);
 
       if (mode === 'crosshair') {
@@ -162,8 +162,8 @@ export class ChartCanvas {
     };
 
     this._onMouseUp = (e) => {
-      const clientX = e.clientX ?? 0;
-      const clientY = e.clientY ?? 0;
+      const clientX = e?.clientX ?? 0;
+      const clientY = e?.clientY ?? 0;
 
       if (this._isDrawing && this.currentDrawing) {
         const currentPrice = this.canvasToPrice(clientY);
@@ -191,8 +191,8 @@ export class ChartCanvas {
     };
 
     this._onClick = (e) => {
-      const clientX = e.clientX ?? 0;
-      const clientY = e.clientY ?? 0;
+      const clientX = e?.clientX ?? 0;
+      const clientY = e?.clientY ?? 0;
       const mode = normalizeToolName(this.toolMode);
 
       if (mode === 'horizontal-level') {
@@ -225,7 +225,7 @@ export class ChartCanvas {
       if (e && typeof e.preventDefault === 'function') {
         e.preventDefault();
       }
-      const delta = (e.deltaY || 0) < 0 ? 1.1 : 0.9;
+      const delta = (e?.deltaY || 0) < 0 ? 1.1 : 0.9;
       this.scaleX = Math.max(0.2, Math.min(10, this.scaleX * delta));
       this.scaleY = Math.max(0.2, Math.min(10, this.scaleY * delta));
       this.render();
@@ -438,6 +438,20 @@ export class ChartCanvas {
     this.render();
   }
 
+  resize(width, height) {
+    if (this.canvas) {
+      if (typeof width === 'number') this.canvas.width = width;
+      if (typeof height === 'number') this.canvas.height = height;
+    }
+    if (this.innerChart && typeof this.innerChart.resize === 'function') {
+      try {
+        this.innerChart.resize(width, height);
+      } catch (_) {}
+    }
+    this.render();
+    return this;
+  }
+
   _renderDynamicTick(timestamp) {
     if (!this.ctx) return;
     const w = (this.canvas && this.canvas.width) || 800;
@@ -472,7 +486,7 @@ export class ChartCanvas {
 
   _renderIndicatorOverlay() {
     if (!this.ctx) return;
-    const candles = (this.innerChart && this.innerChart.candles) || [];
+    const candles = (this.innerChart && (this.innerChart.candles || this.innerChart.data)) || [];
     if (!candles || candles.length === 0) return;
 
     const period = 20;
@@ -625,10 +639,23 @@ export class ChartCanvas {
       }
     }
 
-    if (this.innerChart && typeof this.innerChart.render === 'function') {
-      try {
-        this.innerChart.render();
-      } catch (_) {}
+    if (this.innerChart) {
+      if (typeof this.innerChart.setViewport === 'function') {
+        try {
+          this.innerChart.setViewport(this.offsetX, this.offsetY, this.scaleX, this.scaleY);
+        } catch (_) {}
+      } else if (typeof this.innerChart.setPan === 'function') {
+        try {
+          this.innerChart.setPan(this.offsetX, this.offsetY);
+        } catch (_) {}
+      }
+      if ('offsetX' in this.innerChart) this.innerChart.offsetX = this.offsetX;
+      if ('offsetY' in this.innerChart) this.innerChart.offsetY = this.offsetY;
+      if (typeof this.innerChart.render === 'function') {
+        try {
+          this.innerChart.render();
+        } catch (_) {}
+      }
     }
 
     if (this.ctx) {
