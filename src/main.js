@@ -1,10 +1,10 @@
 /**
  * SmartTrading-V2 — Main Application Entrypoint
  * Mounts the financial chart workspace, active canvas rendering context,
- * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02, STORY 33.2.1), analytical indicator
+ * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02, STORY 34.1.1), analytical indicator
  * overlays (DF-OVERLAYS-01), live legend components, and the auxiliary dock
  * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1).
- * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 33.2.1).
+ * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 34.1.1).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -67,8 +67,55 @@ export function getState() {
 }
 
 /**
- * DOM Element creation utility helper that safely supports mock DOM environments
- * without mutating native read-only DOM getters.
+ * Matches a mock or real DOM element against simple CSS selectors.
+ */
+function matchSelector(node, selector) {
+  if (!node || typeof selector !== 'string') return false;
+  const sel = selector.trim();
+  if (sel.startsWith('#')) {
+    const id = sel.slice(1);
+    return node.id === id || (typeof node.getAttribute === 'function' && node.getAttribute('id') === id);
+  }
+  if (sel.startsWith('.')) {
+    const cls = sel.slice(1);
+    const classStr = (typeof node.getAttribute === 'function' ? node.getAttribute('class') : null) || node.className || '';
+    return classStr.split(/\s+/).includes(cls);
+  }
+  if (sel.startsWith('[') && sel.endsWith(']')) {
+    const inner = sel.slice(1, -1);
+    const eqIdx = inner.indexOf('=');
+    if (eqIdx !== -1) {
+      const attr = inner.slice(0, eqIdx).trim();
+      let val = inner.slice(eqIdx + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      const actual = typeof node.getAttribute === 'function' ? node.getAttribute(attr) : node[attr];
+      return String(actual) === val;
+    }
+    return typeof node.hasAttribute === 'function' ? node.hasAttribute(inner) : (node[inner] !== undefined && node[inner] !== null);
+  }
+  const tag = (node.tagName || node.nodeName || '').toLowerCase();
+  return tag === sel.toLowerCase();
+}
+
+/**
+ * Traverses element tree to locate first matching descendant.
+ */
+function queryElement(node, selector) {
+  if (!node) return null;
+  const children = Array.isArray(node.children) ? node.children : (node.children ? Array.from(node.children) : []);
+  for (const child of children) {
+    if (matchSelector(child, selector)) return child;
+    const found = queryElement(child, selector);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * DOM Element creation utility helper that safely supports mock and real DOM environments
+ * without mutating native read-only DOM getters (e.g. tagName, nodeName, children).
  *
  * @param {string} tag
  * @param {Object} [attrs={}]
@@ -77,92 +124,98 @@ export function getState() {
  */
 export function createElement(tag, attrs = {}, children = []) {
   let el;
-  if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+  const isBrowser = typeof document !== 'undefined' && typeof document.createElement === 'function';
+
+  if (isBrowser) {
     el = document.createElement(tag);
   } else {
     el = {
+      tagName: tag.toUpperCase(),
+      nodeName: tag.toUpperCase(),
       className: '',
       id: '',
       style: {},
       children: [],
       textContent: '',
     };
-    try {
-      Object.defineProperty(el, 'tagName', {
-        value: tag.toUpperCase(),
-        writable: true,
-        configurable: true,
-      });
-      Object.defineProperty(el, 'nodeName', {
-        value: tag.toUpperCase(),
-        writable: true,
-        configurable: true,
-      });
-    } catch (_) {}
   }
 
-  if (typeof el.tagName !== 'string') {
-    try {
-      Object.defineProperty(el, 'tagName', {
-        value: tag.toUpperCase(),
-        writable: true,
-        configurable: true,
-      });
-    } catch (_) {}
-  }
-  if (typeof el.nodeName !== 'string') {
-    try {
-      Object.defineProperty(el, 'nodeName', {
-        value: tag.toUpperCase(),
-        writable: true,
-        configurable: true,
-      });
-    } catch (_) {}
-  }
+  const isRealElement = typeof Element !== 'undefined' && el instanceof Element;
 
-  if (typeof el.appendChild !== 'function') {
-    const childList = [];
-    try {
-      Object.defineProperty(el, 'children', {
-        get() { return childList; },
-        configurable: true,
-      });
-    } catch (_) {}
-    el.appendChild = function (child) {
-      if (child) {
-        child.parentNode = this;
-        childList.push(child);
+  if (!isRealElement) {
+    if (typeof el.appendChild !== 'function') {
+      const childList = Array.isArray(el.children) ? el.children : [];
+      if (!el.children) {
+        el.children = childList;
       }
-      return child;
-    };
-  }
-  if (typeof el.removeChild !== 'function') {
-    el.removeChild = function (child) {
-      if (Array.isArray(this.children)) {
-        const idx = this.children.indexOf(child);
+      el.appendChild = function (child) {
+        if (child) {
+          child.parentNode = this;
+          childList.push(child);
+        }
+        return child;
+      };
+    }
+
+    if (typeof el.removeChild !== 'function') {
+      el.removeChild = function (child) {
+        const childList = Array.isArray(this.children) ? this.children : [];
+        const idx = childList.indexOf(child);
         if (idx !== -1) {
           child.parentNode = null;
-          this.children.splice(idx, 1);
+          childList.splice(idx, 1);
         }
-      }
-      return child;
-    };
-  }
-  if (typeof el.addEventListener !== 'function') {
-    el.addEventListener = function () {};
-  }
-  if (typeof el.removeEventListener !== 'function') {
-    el.removeEventListener = function () {};
-  }
-  if (typeof el.setAttribute !== 'function') {
-    el.setAttribute = function (name, value) {
-      this[name] = value;
-    };
-  }
-  if (typeof el.getAttribute !== 'function') {
-    el.getAttribute = function (name) {
-      return this[name] !== undefined ? this[name] : null;
-    };
+        return child;
+      };
+    }
+
+    if (typeof el.querySelector !== 'function') {
+      el.querySelector = function (selector) {
+        return queryElement(this, selector);
+      };
+    }
+
+    if (typeof el.querySelectorAll !== 'function') {
+      el.querySelectorAll = function (selector) {
+        const results = [];
+        const traverse = (n) => {
+          const kids = Array.isArray(n.children) ? n.children : (n.children ? Array.from(n.children) : []);
+          for (const c of kids) {
+            if (matchSelector(c, selector)) results.push(c);
+            traverse(c);
+          }
+        };
+        traverse(this);
+        return results;
+      };
+    }
+
+    if (typeof el.addEventListener !== 'function') {
+      el.addEventListener = function () {};
+    }
+    if (typeof el.removeEventListener !== 'function') {
+      el.removeEventListener = function () {};
+    }
+
+    if (typeof el.setAttribute !== 'function') {
+      el.setAttribute = function (name, value) {
+        this[name] = String(value);
+        if (name === 'id') this.id = String(value);
+        if (name === 'class') this.className = String(value);
+      };
+    }
+
+    if (typeof el.getAttribute !== 'function') {
+      el.getAttribute = function (name) {
+        return this[name] !== undefined ? String(this[name]) : null;
+      };
+    }
+
+    if (typeof el.hasAttribute !== 'function') {
+      el.hasAttribute = function (name) {
+        return this[name] !== undefined && this[name] !== null;
+      };
+    }
   }
 
   if (attrs) {
@@ -363,7 +416,7 @@ export function initControls(header, options = {}) {
 
 /**
  * Starts an active render loop via requestAnimationFrame
- * to continuously re-render the canvas.
+ * to continuously re-render the canvas and time scale markers on each frame.
  *
  * @param {Object} instance Application/chart instance
  * @returns {Function} Stop/cleanup function
@@ -371,7 +424,26 @@ export function initControls(header, options = {}) {
 export function startRenderLoop(instance) {
   let isRunning = true;
 
-  if (typeof requestAnimationFrame !== 'function') {
+  const getRaf = () => {
+    if (typeof requestAnimationFrame === 'function') return requestAnimationFrame;
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      return window.requestAnimationFrame.bind(window);
+    }
+    return null;
+  };
+
+  const getCaf = () => {
+    if (typeof cancelAnimationFrame === 'function') return cancelAnimationFrame;
+    if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+      return window.cancelAnimationFrame.bind(window);
+    }
+    return null;
+  };
+
+  const raf = getRaf();
+  const caf = getCaf();
+
+  if (!raf) {
     return () => {
       isRunning = false;
     };
@@ -379,18 +451,20 @@ export function startRenderLoop(instance) {
 
   function renderFrame() {
     if (!isRunning) return;
-    if (typeof instance.render === 'function') {
+    if (typeof instance.renderFrame === 'function') {
+      instance.renderFrame();
+    } else if (typeof instance.render === 'function') {
       instance.render();
     }
-    instance.rafId = requestAnimationFrame(renderFrame);
+    instance.rafId = raf(renderFrame);
   }
 
-  instance.rafId = requestAnimationFrame(renderFrame);
+  instance.rafId = raf(renderFrame);
 
   return () => {
     isRunning = false;
-    if (instance.rafId && typeof cancelAnimationFrame === 'function') {
-      cancelAnimationFrame(instance.rafId);
+    if (instance.rafId && caf) {
+      caf(instance.rafId);
       instance.rafId = null;
     }
   };
@@ -434,7 +508,7 @@ export function initApp(options = {}) {
     throw new Error('Target container was not found in the DOM');
   }
 
-  // Viewport & Layout (DF-LAYOUT-02): 100vh responsive flex layout reserving full screen
+  // Viewport & Layout (DF-LAYOUT-02): 100vh responsive flex layout preserving full screen
   if (root.style) {
     root.style.display = 'flex';
     root.style.flexDirection = 'column';
@@ -531,11 +605,15 @@ export function initApp(options = {}) {
     },
   });
 
-  // Primary Canvas Container reserving bottom margin for horizontal time axis (STORY 33.2.1)
+  const priceAxisWidth = opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 70;
+  const timeAxisHeight = opts.timeAxisHeight !== undefined ? opts.timeAxisHeight : 50;
+
+  // Primary Canvas Container preserving dedicated bottom axis track within 100vh layout (STORY 34.1.1)
   const chartContainer = createElement('div', {
     className: 'chart-container',
     id: 'canvas-container',
     'data-testid': 'primary-canvas',
+    'data-track': 'bottom-axis-track',
     style: {
       flex: '1 1 0%',
       minHeight: '0',
@@ -576,14 +654,35 @@ export function initApp(options = {}) {
   const axesRenderer = new AxesRenderer({
     canvas,
     context: ctx,
-    priceAxisWidth: opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 70,
-    timeAxisHeight: opts.timeAxisHeight !== undefined ? opts.timeAxisHeight : 50,
+    priceAxisWidth,
+    timeAxisHeight,
   });
 
   canvas.axesRenderer = axesRenderer;
 
+  // Dedicated bottom horizontal time axis track element
+  const bottomAxisTrack = createElement('div', {
+    className: 'bottom-axis-track time-axis-track',
+    id: 'bottom-axis-track',
+    'data-track': 'bottom-axis',
+    'data-testid': 'bottom-axis-track',
+    'aria-label': 'Time Axis Track',
+    style: {
+      position: 'absolute',
+      bottom: '0',
+      left: '0',
+      right: `${priceAxisWidth}px`,
+      height: `${timeAxisHeight}px`,
+      pointerEvents: 'none',
+      boxSizing: 'border-box',
+      display: 'flex',
+      alignItems: 'center',
+    },
+  });
+
   if (typeof chartContainer.appendChild === 'function') {
     chartContainer.appendChild(canvas);
+    chartContainer.appendChild(bottomAxisTrack);
   }
 
   // Auxiliary Dock (DF-PANEL-01, STORY 31.4.1)
@@ -613,6 +712,8 @@ export function initApp(options = {}) {
     color: overlayColor,
     legend,
     axesRenderer,
+    priceAxisWidth,
+    timeAxisHeight,
     initialZoom: opts.initialZoom || opts.zoom || 1.0,
     minZoom: opts.minZoom !== undefined ? opts.minZoom : 0.2,
     maxZoom: opts.maxZoom !== undefined ? opts.maxZoom : 5.0,
@@ -625,6 +726,7 @@ export function initApp(options = {}) {
   chartInstance.legend = legend;
   chartInstance.canvas = canvas;
   chartInstance.chartContainer = chartContainer;
+  chartInstance.bottomAxisTrack = bottomAxisTrack;
   chartInstance.workspace = workspace;
   chartInstance.toolPalette = toolPalette;
   chartInstance.dock = dockComponent;
@@ -637,29 +739,28 @@ export function initApp(options = {}) {
   chartInstance.toggleDockCollapse = () => dockComponent.toggleCollapse();
 
   chartInstance.updateData = function (newCandles) {
-    const batch = Array.isArray(newCandles) ? [...newCandles] : (newCandles ? [newCandles] : []);
+    if (!newCandles) return Promise.resolve(this);
+    const batch = Array.isArray(newCandles) ? [...newCandles] : [newCandles];
     if (batch.length === 0) return Promise.resolve(this);
 
     let updated;
-    if (Array.isArray(this.data) && this.data.length > 0 && batch.length < this.data.length) {
+    if (Array.isArray(this.data) && this.data.length > 0) {
       const map = new Map();
       this.data.forEach((c) => {
+        if (!c) return;
         const k = c.time ?? c.timestamp ?? c.t ?? c.date;
         if (k !== undefined) map.set(k, c);
       });
       batch.forEach((c) => {
+        if (!c) return;
         const k = c.time ?? c.timestamp ?? c.t ?? c.date;
         if (k !== undefined) map.set(k, c);
       });
-      if (map.size >= this.data.length) {
-        updated = Array.from(map.values()).sort((a, b) => {
-          const tA = a.time ?? a.timestamp ?? a.t ?? a.date ?? 0;
-          const tB = b.time ?? b.timestamp ?? b.t ?? b.date ?? 0;
-          return tA - tB;
-        });
-      } else {
-        updated = [...this.data, ...batch];
-      }
+      updated = Array.from(map.values()).sort((a, b) => {
+        const tA = a.time ?? a.timestamp ?? a.t ?? a.date ?? 0;
+        const tB = b.time ?? b.timestamp ?? b.t ?? b.date ?? 0;
+        return tA - tB;
+      });
     } else {
       updated = batch;
     }
@@ -667,9 +768,6 @@ export function initApp(options = {}) {
     this.data = updated;
     appState.data = updated;
     this.setData(updated);
-    if (axesRenderer) {
-      axesRenderer.render(updated);
-    }
     return Promise.resolve(this);
   };
 
@@ -695,7 +793,6 @@ export function initApp(options = {}) {
     canvas.height = h;
     if (axesRenderer) {
       axesRenderer.resize(w, h);
-      axesRenderer.render(chartInstance.data);
     }
     chartInstance.resize(w, h);
   };
@@ -769,11 +866,7 @@ export function updatePriceSeries(chartInstance, updatedData) {
   appState.data = newData;
   if (typeof chartInstance.setData === 'function') {
     chartInstance.setData(newData);
-  }
-  if (chartInstance.axesRenderer) {
-    chartInstance.axesRenderer.render(newData);
-  }
-  if (typeof chartInstance.render === 'function') {
+  } else if (typeof chartInstance.render === 'function') {
     chartInstance.render();
   }
 }
