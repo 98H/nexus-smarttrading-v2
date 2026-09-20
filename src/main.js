@@ -2,9 +2,9 @@
  * SmartTrading-V2 — Main Application Entrypoint
  * Mounts the financial chart workspace, active canvas rendering context,
  * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02, STORY 36.1.1), analytical indicator
- * overlays (DF-OVERLAYS-01), live legend components, and the auxiliary dock
- * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1).
- * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 36.1.1).
+ * overlays (DF-OVERLAYS-01), live legend components, auxiliary dock
+ * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1), and attaches continuous
+ * ResizeObserver canvas DPI synchronization (STORY 37.3.1: CANVAS_DPI_RESOLUTION_MISMATCH).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -23,6 +23,7 @@ import {
   getClosePrice,
 } from './indicators.js';
 import { AuxiliaryDock } from './components/dock.js';
+import { syncCanvasDpi, setupCanvasDpi } from './canvas.js';
 
 export {
   AxesRenderer,
@@ -38,6 +39,8 @@ export {
   updateIndicatorLegend,
   getClosePrice,
   AuxiliaryDock,
+  syncCanvasDpi,
+  setupCanvasDpi,
 };
 
 /**
@@ -53,6 +56,7 @@ const appState = {
 };
 
 let activeAppInstance = null;
+let activeResizeObserver = null;
 let windowResizeHandler = null;
 export let activeChart = null;
 export let chart = null;
@@ -641,10 +645,12 @@ export function initApp(options = {}) {
     },
   });
 
-  const canvasWidth = opts.width || (canvas && canvas.width) || 800;
-  const canvasHeight = opts.height || (canvas && canvas.height) || 600;
-  canvas.width = canvasWidth;
-  canvas.height = canvasHeight;
+  if (opts.width && typeof canvas.clientWidth !== 'number') {
+    try { canvas.clientWidth = opts.width; } catch (_) {}
+  }
+  if (opts.height && typeof canvas.clientHeight !== 'number') {
+    try { canvas.clientHeight = opts.height; } catch (_) {}
+  }
 
   let ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
   if (ctx) {
@@ -699,8 +705,6 @@ export function initApp(options = {}) {
   if (typeof root.appendChild === 'function') {
     root.appendChild(header);
     root.appendChild(workspace);
-    // In mock environments where root.querySelector only inspects direct children of appContainer,
-    // ensure canvas is also accessible directly inside root's child list
     if (typeof root.querySelector === 'function') {
       const foundCanvas = root.querySelector('canvas');
       if (!foundCanvas) {
@@ -708,6 +712,9 @@ export function initApp(options = {}) {
       }
     }
   }
+
+  // Initial DPI synchronization matching container layout and window.devicePixelRatio (STORY 37.3.1)
+  syncCanvasDpi(canvas);
 
   const chartInstance = new Chart(canvas, {
     data: initialData,
@@ -793,21 +800,92 @@ export function initApp(options = {}) {
   chart = chartInstance;
 
   const handleResize = () => {
-    const w = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : (canvas.width || 800);
-    const h = (typeof window !== 'undefined' && window.innerHeight) ? window.innerHeight : (canvas.height || 600);
-    canvas.width = w;
-    canvas.height = h;
+    syncCanvasDpi(canvas);
+    const w = (canvas && canvas.width) || 800;
+    const h = (canvas && canvas.height) || 600;
     if (axesRenderer) {
       axesRenderer.resize(w, h);
     }
     chartInstance.resize(w, h);
+    chartInstance.render();
   };
 
-  windowResizeHandler = handleResize;
+  // Continuous DPI scaling & chart redraw orchestration via ResizeObserver (STORY 37.3.1)
+  let resizeObserver = null;
+  const ResizeObserverClass = typeof ResizeObserver !== 'undefined'
+    ? ResizeObserver
+    : (typeof window !== 'undefined' && window.ResizeObserver
+      ? window.ResizeObserver
+      : (typeof globalThis !== 'undefined' ? globalThis.ResizeObserver : null));
 
+  if (ResizeObserverClass) {
+    resizeObserver = new ResizeObserverClass((entries) => {
+      if (Array.isArray(entries)) {
+        for (const entry of entries) {
+          if (!entry) continue;
+          const cr = entry.contentRect;
+          if (cr) {
+            const w = typeof cr.width === 'number' && cr.width > 0 ? cr.width : (entry.target && entry.target.clientWidth);
+            const h = typeof cr.height === 'number' && cr.height > 0 ? cr.height : (entry.target && entry.target.clientHeight);
+            if (typeof w === 'number' && w > 0) {
+              try { canvas.clientWidth = w; } catch (_) {}
+            }
+            if (typeof h === 'number' && h > 0) {
+              try { canvas.clientHeight = h; } catch (_) {}
+            }
+          }
+        }
+      }
+      handleResize();
+    });
+
+    resizeObserver.observe(root);
+    if (canvas && canvas !== root) {
+      resizeObserver.observe(canvas);
+    }
+  }
+
+  activeResizeObserver = resizeObserver;
+  chartInstance.resizeObserver = resizeObserver;
+
+  windowResizeHandler = handleResize;
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('resize', handleResize);
   }
+
+  chartInstance.unmount = function () {
+    if (this.resizeObserver) {
+      this.resizeObserver.disconnect();
+      this.resizeObserver = null;
+    }
+    if (resizeObserver) {
+      resizeObserver.disconnect();
+      resizeObserver = null;
+    }
+    if (activeResizeObserver) {
+      activeResizeObserver.disconnect();
+      activeResizeObserver = null;
+    }
+    if (windowResizeHandler && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('resize', windowResizeHandler);
+      windowResizeHandler = null;
+    }
+    if (typeof this.stopRenderLoop === 'function') {
+      this.stopRenderLoop();
+    }
+    if (this.realtimeTimer && typeof clearInterval === 'function') {
+      clearInterval(this.realtimeTimer);
+      this.realtimeTimer = null;
+    }
+    if (typeof this.destroy === 'function') {
+      this.destroy();
+    }
+    if (activeAppInstance === this) {
+      activeAppInstance = null;
+      activeChart = null;
+      chart = null;
+    }
+  };
 
   chartInstance.render();
   chartInstance.stopRenderLoop = startRenderLoop(chartInstance);
@@ -819,24 +897,45 @@ export function initApp(options = {}) {
  * Teardown and cleanup function for test suites and application unmounting.
  */
 export function teardown() {
+  if (activeResizeObserver) {
+    activeResizeObserver.disconnect();
+    activeResizeObserver = null;
+  }
   if (windowResizeHandler && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
     window.removeEventListener('resize', windowResizeHandler);
     windowResizeHandler = null;
   }
   if (activeAppInstance) {
-    if (typeof activeAppInstance.stopRenderLoop === 'function') {
-      activeAppInstance.stopRenderLoop();
-    }
-    if (activeAppInstance.realtimeTimer && typeof clearInterval === 'function') {
-      clearInterval(activeAppInstance.realtimeTimer);
-    }
-    if (typeof activeAppInstance.destroy === 'function') {
-      activeAppInstance.destroy();
+    if (typeof activeAppInstance.unmount === 'function') {
+      activeAppInstance.unmount();
+    } else {
+      if (typeof activeAppInstance.stopRenderLoop === 'function') {
+        activeAppInstance.stopRenderLoop();
+      }
+      if (activeAppInstance.realtimeTimer && typeof clearInterval === 'function') {
+        clearInterval(activeAppInstance.realtimeTimer);
+      }
+      if (typeof activeAppInstance.destroy === 'function') {
+        activeAppInstance.destroy();
+      }
     }
     activeAppInstance = null;
   }
   activeChart = null;
   chart = null;
+}
+
+/**
+ * Unmount helper function supporting test suites and lifecycle management.
+ *
+ * @param {HTMLElement|Object} [target]
+ */
+export function unmount(target) {
+  if (activeAppInstance && typeof activeAppInstance.unmount === 'function') {
+    activeAppInstance.unmount();
+  } else {
+    teardown();
+  }
 }
 
 /**

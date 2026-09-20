@@ -3,8 +3,99 @@
  * Manages 2D transformation matrix, pan gestures, tool drawing lifecycle
  * (crosshair, trendline, horizontal-level, measurement), animation loops,
  * indicator overlays (DF-OVERLAYS-01), coordinate price mapping (DF-TOOLS-03),
- * and annotation state.
+ * annotation state, and high-DPI canvas buffer resolution scaling (STORY 37.3.1).
  */
+
+/**
+ * Synchronizes canvas pixel buffer dimensions with CSS layout and devicePixelRatio.
+ * Ensures crisp rendering on high-DPI displays (Retina, 4K) without interpolation blur.
+ *
+ * @param {HTMLCanvasElement|Object} canvas
+ * @param {number} [overrideDpr]
+ * @returns {{ dpr: number, width: number, height: number, clientWidth: number, clientHeight: number } | null}
+ */
+export function syncCanvasDpi(canvas, overrideDpr) {
+  if (!canvas) return null;
+
+  const win = typeof window !== 'undefined'
+    ? window
+    : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
+
+  let dpr = 1;
+  if (typeof overrideDpr === 'number' && overrideDpr > 0) {
+    dpr = overrideDpr;
+  } else if (win && typeof win.devicePixelRatio === 'number' && win.devicePixelRatio > 0) {
+    dpr = win.devicePixelRatio;
+  } else if (typeof globalThis !== 'undefined' && typeof globalThis.devicePixelRatio === 'number' && globalThis.devicePixelRatio > 0) {
+    dpr = globalThis.devicePixelRatio;
+  }
+
+  let clientWidth = typeof canvas.clientWidth === 'number' ? canvas.clientWidth : 0;
+  let clientHeight = typeof canvas.clientHeight === 'number' ? canvas.clientHeight : 0;
+
+  // If client dimensions are 0 (e.g. initial mount in mock DOM before layout engine runs),
+  // walk up the parent hierarchy to locate layout container bounds
+  if ((clientWidth === 0 || clientHeight === 0) && canvas.parentNode) {
+    let p = canvas.parentNode;
+    while (p && (clientWidth === 0 || clientHeight === 0)) {
+      if (clientWidth === 0 && typeof p.clientWidth === 'number' && p.clientWidth > 0) {
+        clientWidth = p.clientWidth;
+      }
+      if (clientHeight === 0 && typeof p.clientHeight === 'number' && p.clientHeight > 0) {
+        clientHeight = p.clientHeight;
+      }
+      p = p.parentNode;
+    }
+  }
+
+  // Ensure non-negative integers
+  clientWidth = Math.max(0, clientWidth);
+  clientHeight = Math.max(0, clientHeight);
+
+  // In mock DOM environments, keep canvas.clientWidth/clientHeight in sync if they were 0
+  try {
+    if (canvas.clientWidth === 0 && clientWidth > 0) {
+      canvas.clientWidth = clientWidth;
+    }
+    if (canvas.clientHeight === 0 && clientHeight > 0) {
+      canvas.clientHeight = clientHeight;
+    }
+  } catch (_) {}
+
+  const bufferWidth = Math.round(clientWidth * dpr);
+  const bufferHeight = Math.round(clientHeight * dpr);
+
+  canvas.width = bufferWidth;
+  canvas.height = bufferHeight;
+
+  if (!canvas.style) {
+    canvas.style = {};
+  }
+  canvas.style.width = `${clientWidth}px`;
+  canvas.style.height = `${clientHeight}px`;
+
+  const ctx = canvas.getContext ? canvas.getContext('2d') : null;
+  if (ctx) {
+    if (typeof ctx.setTransform === 'function') {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+    } else if (typeof ctx.resetTransform === 'function') {
+      ctx.resetTransform();
+    }
+    if (typeof ctx.scale === 'function') {
+      ctx.scale(dpr, dpr);
+    }
+  }
+
+  return {
+    dpr,
+    width: bufferWidth,
+    height: bufferHeight,
+    clientWidth,
+    clientHeight,
+  };
+}
+
+export const setupCanvasDpi = syncCanvasDpi;
 
 /**
  * Normalizes tool mode identifier to lowercase kebab-case.
@@ -48,6 +139,10 @@ export class ChartCanvas {
     this.canvas = canvas || canvasOrContainer;
     this.options = options || {};
     this.ctx = this.canvas && typeof this.canvas.getContext === 'function' ? this.canvas.getContext('2d') : null;
+
+    if (this.canvas && (this.canvas.clientWidth > 0 || (this.container && this.container.clientWidth > 0))) {
+      syncCanvasDpi(this.canvas);
+    }
 
     this.offsetX = 0;
     this.offsetY = 0;
@@ -277,9 +372,15 @@ export class ChartCanvas {
     this.render();
   }
 
+  syncDpi(dpr) {
+    if (this.canvas) {
+      return syncCanvasDpi(this.canvas, dpr);
+    }
+    return null;
+  }
+
   /**
    * Maps canvas Y coordinate to financial price (DF-TOOLS-03).
-   * price = maxPrice - ((y - plotTop) / plotHeight) * (maxPrice - minPrice)
    *
    * @param {number} y
    * @returns {number}
@@ -346,12 +447,6 @@ export class ChartCanvas {
     return plotTop + ((maxPrice - price) / range) * plotHeight;
   }
 
-  /**
-   * Sets active tool mode and updates canvas cursor / interaction behavior.
-   *
-   * @param {string} mode
-   * @returns {ChartCanvas}
-   */
   setToolMode(mode) {
     this.toolMode = mode;
     this.activeMode = mode;
@@ -470,12 +565,17 @@ export class ChartCanvas {
 
   resize(width, height) {
     if (this.canvas) {
-      if (typeof width === 'number') this.canvas.width = width;
-      if (typeof height === 'number') this.canvas.height = height;
+      if (typeof width === 'number') {
+        try { this.canvas.clientWidth = width; } catch (_) {}
+      }
+      if (typeof height === 'number') {
+        try { this.canvas.clientHeight = height; } catch (_) {}
+      }
+      syncCanvasDpi(this.canvas);
     }
     if (this.innerChart && typeof this.innerChart.resize === 'function') {
       try {
-        this.innerChart.resize(width, height);
+        this.innerChart.resize(this.canvas ? this.canvas.width : width, this.canvas ? this.canvas.height : height);
       } catch (_) {}
     }
     this.render();
