@@ -101,14 +101,14 @@ class MockElement {
 
   querySelector(selector) {
     if (selector.toLowerCase() === 'canvas') {
-      return this.children.find(c => c.tagName === 'CANVAS') || null;
+      return Array.from(this.children).find(c => c.tagName === 'CANVAS') || null;
     }
     return null;
   }
 
   querySelectorAll(selector) {
     if (selector.toLowerCase() === 'canvas') {
-      return this.children.filter(c => c.tagName === 'CANVAS');
+      return Array.from(this.children).filter(c => c.tagName === 'CANVAS');
     }
     return [];
   }
