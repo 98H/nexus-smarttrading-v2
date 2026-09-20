@@ -256,15 +256,6 @@ export function resetApp() {
 }
 
 // Browser auto-mount guard
-if (typeof document !== 'undefined') {
-  const mountTarget = document.getElementById('app') || document.body;
-  if (mountTarget && !mountTarget.__nexus_mounted) {
-    mountTarget.__nexus_mounted = true;
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
-  }
-}
-
 export default {
   initApp,
   updateRealtimePrice,
@@ -277,3 +268,15 @@ export default {
   calculateEMA,
   PERIOD_DEFAULT,
 };
+
+// Browser Auto-Mount Bootstrap Guard
+if (typeof document !== 'undefined') {
+  const mountTarget = document.getElementById('app') || document.body;
+  if (mountTarget && !mountTarget.__nexus_mounted) {
+    mountTarget.__nexus_mounted = true;
+    if (typeof mountApp === 'function') mountApp(mountTarget);
+    else if (typeof mount === 'function') mount(mountTarget);
+    else if (typeof initApp === 'function') initApp(mountTarget);
+    else if (typeof init === 'function') init(mountTarget);
+  }
+}
