@@ -60,7 +60,6 @@ body, html {
   background: var(--bg-primary);
 }
 
-/* Header */
 .header-bar {
   grid-column: 1 / -1;
   display: flex;
@@ -189,7 +188,6 @@ body, html {
   color: #c4b5fd;
 }
 
-/* Left Tools Bar */
 .left-toolbar {
   grid-column: 1 / 2;
   background: var(--bg-secondary);
@@ -227,7 +225,6 @@ body, html {
   border-left: 2px solid var(--accent-blue);
 }
 
-/* Main Workspace */
 .chart-workspace {
   grid-column: 2 / 3;
   display: flex;
@@ -252,7 +249,6 @@ body, html {
   height: 100%;
 }
 
-/* Floating Chart Legend HUD */
 .chart-hud {
   position: absolute;
   top: 12px;
@@ -318,7 +314,6 @@ body, html {
   border: 1px solid rgba(0, 245, 160, 0.3);
 }
 
-/* Bottom Pine Script Dock */
 .dock-panel {
   background: var(--bg-surface);
   border-top: 1px solid var(--border-subtle);
@@ -426,7 +421,6 @@ body, html {
 .console-entry.warn { color: var(--accent-gold); }
 .console-entry.error { color: var(--bear-red); }
 
-/* Right Panel (Orderbook / Screener / Execution) */
 .right-sidebar {
   grid-column: 3 / 4;
   background: var(--bg-secondary);
@@ -469,7 +463,6 @@ body, html {
   flex-direction: column;
 }
 
-/* Order Book Component */
 .orderbook-box {
   display: flex;
   flex-direction: column;
@@ -540,7 +533,6 @@ body, html {
   margin: 4px 0;
 }
 
-/* Multi-Timeframe Matrix */
 .mtf-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -572,7 +564,6 @@ body, html {
   gap: 4px;
 }
 
-/* Order Execution Form */
 .exec-panel {
   padding: 12px;
   display: flex;
@@ -670,7 +661,6 @@ body, html {
   transform: scale(0.98);
 }
 
-/* Bottom Status Bar */
 .status-bar {
   grid-column: 1 / -1;
   background: #05070c;
@@ -698,7 +688,6 @@ body, html {
   box-shadow: 0 0 6px var(--bull-green-glow);
 }
 
-/* SVG Utilities */
 .icon {
   width: 16px;
   height: 16px;
@@ -710,18 +699,18 @@ body, html {
 }
 `;
 
-// Inject StyleSheet into Head
-const styleElement = document.createElement('style');
-styleElement.textContent = terminalStyles;
-document.head.appendChild(styleElement);
+if (typeof document !== 'undefined') {
+  const styleElement = document.createElement('style');
+  styleElement.textContent = terminalStyles;
+  if (document.head) {
+    document.head.appendChild(styleElement);
+  }
+}
 
 // ============================================================================
 // 2. CORE MATHEMATICS, SMC DETECTORS & TECHNICAL ALGORITHMS
 // ============================================================================
 
-/**
- * Fair Value Gap (FVG) and Order Block (OB) Smart Money Concepts Engine
- */
 class MarketStructureEngine {
   static computeEMAs(candles, period) {
     const k = 2 / (period + 1);
@@ -768,13 +757,10 @@ class MarketStructureEngine {
     const orderBlocks = [];
     const signals = [];
 
-    // Scan for FVGs (3-candle imbalance pattern)
     for (let i = 2; i < candles.length; i++) {
       const c1 = candles[i - 2];
-      const c2 = candles[i - 1];
       const c3 = candles[i];
 
-      // Bullish FVG: Low of candle 3 is strictly higher than High of candle 1
       if (c3.low > c1.high) {
         const fvg = {
           type: 'BULLISH',
@@ -784,7 +770,6 @@ class MarketStructureEngine {
           endIndex: candles.length - 1,
           mitigated: false
         };
-        // Check future candles for mitigation
         for (let j = i; j < candles.length; j++) {
           if (candles[j].low <= fvg.bottom) {
             fvg.mitigated = true;
@@ -795,7 +780,6 @@ class MarketStructureEngine {
         fvgs.push(fvg);
       }
 
-      // Bearish FVG: High of candle 3 is strictly lower than Low of candle 1
       if (c3.high < c1.low) {
         const fvg = {
           type: 'BEARISH',
@@ -816,7 +800,6 @@ class MarketStructureEngine {
       }
     }
 
-    // Detect Order Blocks (Last opposing candle before strong displacement / Break of Structure)
     for (let i = 5; i < candles.length - 2; i++) {
       const isImpulsiveBull = candles[i + 1].close > candles[i + 1].open &&
         (candles[i + 1].close - candles[i + 1].open) > (candles[i].high - candles[i].low) * 1.5;
@@ -842,7 +825,6 @@ class MarketStructureEngine {
       }
     }
 
-    // Generate Trend & LuxAlgo Style Signals
     const fastEma = this.computeEMAs(candles, 9);
     const slowEma = this.computeEMAs(candles, 21);
 
@@ -910,7 +892,7 @@ class PineScriptInterpreter {
         return res;
       },
       rsi: (series, len) => {
-        const synthCandles = series.map((p, idx) => ({ close: p, open: p, high: p, low: p }));
+        const synthCandles = series.map((p) => ({ close: p, open: p, high: p, low: p }));
         return MarketStructureEngine.computeRSI(synthCandles, len);
       }
     };
@@ -922,9 +904,8 @@ class PineScriptInterpreter {
     };
 
     try {
-      this.logs.push({ type: 'info', msg: `Compiling Pine Script v5 AST...` });
+      this.logs.push({ type: 'info', msg: 'Compiling Pine Script v5 AST...' });
 
-      // Transform Pine syntax into runnable sandboxed JS
       const sanitized = sourceCode
         .replace(/@version=5/g, '')
         .replace(/indicator\((.*?)\);?/g, '// indicator init')
@@ -964,7 +945,7 @@ class MarketDataFeed {
     const list = [];
     let basePrice = 64200.0;
     const now = Date.now();
-    const intervalMs = 60 * 1000; // 1m candles
+    const intervalMs = 60 * 1000;
 
     for (let i = count; i >= 0; i--) {
       const time = now - i * intervalMs;
@@ -981,7 +962,6 @@ class MarketDataFeed {
   }
 
   startStreaming() {
-    // Ultra-smooth 150ms sub-second tick loop
     setInterval(() => {
       const tickFluctuation = (Math.random() - 0.495) * 8.5;
       this.currentPrice = +(this.currentPrice + tickFluctuation).toFixed(2);
@@ -989,7 +969,6 @@ class MarketDataFeed {
       const lastCandle = this.candles[this.candles.length - 1];
       const now = Date.now();
 
-      // Check if current candle expired 1-minute window
       if (now - lastCandle.time >= 60 * 1000) {
         const newCandle = {
           time: now,
@@ -1036,7 +1015,7 @@ class MarketDataFeed {
       symbol: this.symbol,
       price: this.currentPrice,
       spread: +(asks[0].price - bids[0].price).toFixed(2),
-      asks: asks.reverse(), // Highest ask down to spread
+      asks: asks.reverse(),
       bids
     };
 
@@ -1084,7 +1063,6 @@ class WebGLBackgroundRenderer {
       }
     `;
 
-    // Subtle grid + luxury dark vignette shader
     const fsSource = `
       precision mediump float;
       uniform vec2 u_resolution;
@@ -1095,17 +1073,14 @@ class WebGLBackgroundRenderer {
         vec2 st = gl_FragCoord.xy / u_resolution;
         vec2 coord = gl_FragCoord.xy + u_offset;
         
-        // Background base
-        vec3 color = vec3(0.031, 0.043, 0.067); // #080b11
+        vec3 color = vec3(0.031, 0.043, 0.067);
 
-        // Dynamic coordinate grid line intensity
         float gridX = step(0.985, fract(coord.x / (45.0 * u_zoom)));
         float gridY = step(0.985, fract(coord.y / 35.0));
         float grid = max(gridX, gridY);
 
         color += vec3(0.06, 0.09, 0.14) * grid * 0.45;
 
-        // Subtle center radiant glow
         float dist = distance(st, vec2(0.5, 0.5));
         color -= dist * 0.025;
 
@@ -1158,17 +1133,185 @@ class WebGLBackgroundRenderer {
 }
 
 /**
- * Terminal Chart Visualizer Engine
+ * High-Performance Candlestick Chart Component with Responsive Gesture Zooming
+ */
+export class Chart {
+  constructor(canvas, options = {}) {
+    if (!canvas) {
+      throw new Error('Canvas element is required for Chart initialization');
+    }
+
+    this.canvas = canvas;
+    this.options = options;
+    this.data = options.data ? [...options.data] : [];
+    this.minZoom = options.minZoom !== undefined ? options.minZoom : 0.5;
+    this.maxZoom = options.maxZoom !== undefined ? options.maxZoom : 5.0;
+    const initZoom = options.initialZoom !== undefined ? options.initialZoom : (options.zoom !== undefined ? options.zoom : 1.0);
+    this.zoom = Math.min(this.maxZoom, Math.max(this.minZoom, initZoom));
+
+    this.timeScale = { min: 0, max: 1 };
+    this.priceScale = { min: 0, max: 1 };
+
+    this.handleWheel = this.handleWheel.bind(this);
+    if (typeof this.canvas.addEventListener === 'function') {
+      this.canvas.addEventListener('wheel', this.handleWheel);
+    }
+
+    this.updateScales();
+  }
+
+  getZoom() {
+    return this.zoom;
+  }
+
+  getTimeScale() {
+    this.updateScales();
+    const width = this.canvas.width || 800;
+    return {
+      min: this.timeScale.min,
+      max: this.timeScale.max,
+      domain: [this.timeScale.min, this.timeScale.max],
+      range: [0, width],
+      zoom: this.zoom,
+    };
+  }
+
+  getPriceScale() {
+    this.updateScales();
+    const height = this.canvas.height || 600;
+    return {
+      min: this.priceScale.min,
+      max: this.priceScale.max,
+      domain: [this.priceScale.min, this.priceScale.max],
+      range: [height, 0],
+      zoom: this.zoom,
+    };
+  }
+
+  updateScales() {
+    if (!this.data || this.data.length === 0) {
+      this.timeScale = { min: 0, max: 1 };
+      this.priceScale = { min: 0, max: 1 };
+      return;
+    }
+
+    let minTime = Infinity;
+    let maxTime = -Infinity;
+    let minPrice = Infinity;
+    let maxPrice = -Infinity;
+
+    for (let i = 0; i < this.data.length; i++) {
+      const c = this.data[i];
+      if (c.time < minTime) minTime = c.time;
+      if (c.time > maxTime) maxTime = c.time;
+      if (c.low < minPrice) minPrice = c.low;
+      if (c.high > maxPrice) maxPrice = c.high;
+    }
+
+    const timeSpan = maxTime - minTime || 3600;
+    const centerTime = (minTime + maxTime) / 2;
+    const visibleTimeSpan = timeSpan / this.zoom;
+
+    const priceSpan = maxPrice - minPrice || 10;
+    const centerPrice = (minPrice + maxPrice) / 2;
+    const visiblePriceSpan = priceSpan / this.zoom;
+
+    this.timeScale = {
+      min: centerTime - visibleTimeSpan / 2,
+      max: centerTime + visibleTimeSpan / 2,
+    };
+
+    this.priceScale = {
+      min: centerPrice - visiblePriceSpan / 2,
+      max: centerPrice + visiblePriceSpan / 2,
+    };
+  }
+
+  handleWheel(event) {
+    const deltaY = event.deltaY ?? 0;
+    if (deltaY === 0) return;
+
+    const canZoomIn = deltaY < 0 && this.zoom < this.maxZoom;
+    const canZoomOut = deltaY > 0 && this.zoom > this.minZoom;
+
+    if (canZoomIn || canZoomOut) {
+      if (typeof event.preventDefault === 'function') {
+        event.preventDefault();
+      }
+
+      const zoomFactor = Math.exp(-deltaY * 0.001);
+      const nextZoom = this.zoom * zoomFactor;
+      this.zoom = Math.min(this.maxZoom, Math.max(this.minZoom, nextZoom));
+
+      this.updateScales();
+      this.render();
+    }
+  }
+
+  render() {
+    const ctx = this.canvas.getContext('2d');
+    if (!ctx) return;
+
+    const width = this.canvas.width || 800;
+    const height = this.canvas.height || 600;
+
+    ctx.clearRect(0, 0, width, height);
+
+    if (!this.data || this.data.length === 0) return;
+
+    this.updateScales();
+    const { min: minTime, max: maxTime } = this.timeScale;
+    const { min: minPrice, max: maxPrice } = this.priceScale;
+
+    const timeRange = maxTime - minTime || 1;
+    const priceRange = maxPrice - minPrice || 1;
+    const candleWidth = Math.max(2, (width / this.data.length) * 0.6 * this.zoom);
+
+    for (let i = 0; i < this.data.length; i++) {
+      const candle = this.data[i];
+      const x = ((candle.time - minTime) / timeRange) * width;
+      const yHigh = height - ((candle.high - minPrice) / priceRange) * height;
+      const yLow = height - ((candle.low - minPrice) / priceRange) * height;
+      const yOpen = height - ((candle.open - minPrice) / priceRange) * height;
+      const yClose = height - ((candle.close - minPrice) / priceRange) * height;
+
+      const isBull = candle.close >= candle.open;
+      const color = isBull ? '#00f5a0' : '#ff3b69';
+
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+
+      // Draw wick
+      ctx.beginPath();
+      ctx.moveTo(x, yHigh);
+      ctx.lineTo(x, yLow);
+      ctx.stroke();
+
+      // Draw body
+      const bodyY = Math.min(yOpen, yClose);
+      const bodyH = Math.max(1, Math.abs(yClose - yOpen));
+      ctx.fillRect(x - candleWidth / 2, bodyY, candleWidth, bodyH);
+    }
+  }
+
+  destroy() {
+    if (this.canvas && typeof this.canvas.removeEventListener === 'function') {
+      this.canvas.removeEventListener('wheel', this.handleWheel);
+    }
+  }
+}
+
+/**
+ * Terminal Interactive Chart Engine
  */
 class InteractiveChartEngine {
   constructor(container, marketFeed) {
     this.container = container;
     this.feed = marketFeed;
 
-    // Viewport & Transform State
     this.candleWidth = 10;
     this.candleSpacing = 4;
-    this.panOffset = 0; // in candles
+    this.panOffset = 0;
     this.zoomLevel = 1.0;
     this.priceScaleWidth = 68;
     this.timeScaleHeight = 26;
@@ -1180,12 +1323,10 @@ class InteractiveChartEngine {
     this.mouseX = null;
     this.mouseY = null;
 
-    // Feature Toggles
     this.showSMC = true;
     this.showRibbon = true;
     this.customPlots = [];
 
-    // Animation / Rendering Loop
     this.fps = 60;
     this.lastFrameTime = performance.now();
     this.frameCount = 0;
@@ -1198,14 +1339,12 @@ class InteractiveChartEngine {
   initCanvas() {
     this.container.innerHTML = '';
 
-    // WebGL Canvas (Background Grid, Shaders)
     this.glCanvas = document.createElement('canvas');
     this.glCanvas.className = 'chart-canvas';
     this.glCanvas.style.zIndex = '1';
     this.container.appendChild(this.glCanvas);
     this.glRenderer = new WebGLBackgroundRenderer(this.glCanvas);
 
-    // 2D Canvas (Candles, FVGs, Indicators, Axis, Crosshair)
     this.canvas2d = document.createElement('canvas');
     this.canvas2d.className = 'chart-canvas';
     this.canvas2d.style.zIndex = '2';
@@ -1255,9 +1394,19 @@ class InteractiveChartEngine {
     });
 
     this.canvas2d.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      const zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
-      this.zoomLevel = Math.max(0.35, Math.min(3.5, this.zoomLevel * zoomFactor));
+      const deltaY = e.deltaY ?? 0;
+      if (deltaY === 0) return;
+      const minZoom = 0.35;
+      const maxZoom = 3.5;
+      const canZoomIn = deltaY < 0 && this.zoomLevel < maxZoom;
+      const canZoomOut = deltaY > 0 && this.zoomLevel > minZoom;
+      if (canZoomIn || canZoomOut) {
+        if (typeof e.preventDefault === 'function') {
+          e.preventDefault();
+        }
+        const zoomFactor = Math.exp(-deltaY * 0.001);
+        this.zoomLevel = Math.max(minZoom, Math.min(maxZoom, this.zoomLevel * zoomFactor));
+      }
     }, { passive: false });
 
     this.canvas2d.addEventListener('mouseleave', () => {
@@ -1294,18 +1443,13 @@ class InteractiveChartEngine {
     const chartPlotWidth = width - this.priceScaleWidth;
     const chartPlotHeight = height - this.timeScaleHeight;
 
-    // Step 1: Render GPU WebGL Background Grid
     this.glRenderer.render(this.panOffset * 10.0, this.zoomLevel);
-
-    // Step 2: Clear Canvas 2D
     ctx.clearRect(0, 0, width, height);
 
-    // Compute Candle Viewport Window
     const candleSlot = (this.candleWidth + this.candleSpacing) * this.zoomLevel;
     const visibleCount = Math.ceil(chartPlotWidth / candleSlot) + 4;
     const totalCandles = candles.length;
 
-    // Align pan offset so right side sticks to latest data by default
     const maxPan = 0;
     const effectivePan = Math.min(maxPan, this.panOffset);
     const endIndex = Math.min(totalCandles - 1, Math.floor(totalCandles - 1 + effectivePan));
@@ -1313,7 +1457,6 @@ class InteractiveChartEngine {
 
     if (endIndex < 0 || startIndex >= totalCandles) return;
 
-    // Compute Min / Max Price in Viewport
     let minPrice = Infinity;
     let maxPrice = -Infinity;
     for (let i = startIndex; i <= endIndex; i++) {
@@ -1344,10 +1487,8 @@ class InteractiveChartEngine {
       return Math.round(totalCandles - 1 + effectivePan + relIdx);
     };
 
-    // Calculate SMC Features
     const smc = MarketStructureEngine.detectSMCFeatures(candles);
 
-    // 1. Draw SMC Fair Value Gaps (FVG)
     if (this.showSMC) {
       for (const fvg of smc.fvgs) {
         if (fvg.endIndex < startIndex || fvg.startIndex > endIndex) continue;
@@ -1369,7 +1510,6 @@ class InteractiveChartEngine {
         ctx.strokeRect(x1, Math.min(yTop, yBottom), x2 - x1, h);
         ctx.setLineDash([]);
 
-        // Label FVG Tag
         if (x2 - x1 > 28) {
           ctx.fillStyle = fvg.type === 'BULLISH' ? '#00f5a0' : '#ff3b69';
           ctx.font = '9px var(--font-mono)';
@@ -1377,7 +1517,6 @@ class InteractiveChartEngine {
         }
       }
 
-      // 2. Draw Order Blocks (OB)
       for (const ob of smc.orderBlocks) {
         if (ob.endIndex < startIndex || ob.startIndex > endIndex) continue;
         const x1 = indexToX(ob.startIndex);
@@ -1401,7 +1540,6 @@ class InteractiveChartEngine {
       }
     }
 
-    // 3. Draw Neo-Cloud Ribbon (EMA 9 & 21 Fill)
     if (this.showRibbon && smc.fastEma.length > 0) {
       ctx.beginPath();
       for (let i = startIndex; i <= endIndex; i++) {
@@ -1421,7 +1559,6 @@ class InteractiveChartEngine {
       ctx.fillStyle = lastFast >= lastSlow ? 'rgba(0, 245, 160, 0.08)' : 'rgba(255, 59, 105, 0.08)';
       ctx.fill();
 
-      // Ribbon Borders
       ctx.lineWidth = 1.2;
       ctx.strokeStyle = lastFast >= lastSlow ? '#00f5a0' : '#ff3b69';
       ctx.beginPath();
@@ -1434,7 +1571,6 @@ class InteractiveChartEngine {
       ctx.stroke();
     }
 
-    // 4. Draw Custom Plots from Pine Script VM
     if (this.customPlots.length > 0) {
       for (const plot of this.customPlots) {
         ctx.strokeStyle = plot.color || '#38bdf8';
@@ -1457,7 +1593,6 @@ class InteractiveChartEngine {
       }
     }
 
-    // 5. Draw Volume Histogram at Chart Bottom
     const maxVol = Math.max(...candles.slice(startIndex, endIndex + 1).map(c => c.volume)) || 1;
     const volHeightMax = chartPlotHeight * 0.16;
 
@@ -1473,7 +1608,6 @@ class InteractiveChartEngine {
       ctx.fillRect(x, vY, Math.max(1, w - 1), vH);
     }
 
-    // 6. Draw Candlesticks (Wicks + Bodies)
     for (let i = startIndex; i <= endIndex; i++) {
       const c = candles[i];
       const x = indexToX(i);
@@ -1490,7 +1624,6 @@ class InteractiveChartEngine {
       const bodyBottom = Math.max(yOpen, yClose);
       const bodyH = Math.max(1.5, bodyBottom - bodyTop);
 
-      // Wick Line
       ctx.strokeStyle = isBull ? '#00f5a0' : '#ff3b69';
       ctx.lineWidth = 1.2;
       ctx.beginPath();
@@ -1498,12 +1631,10 @@ class InteractiveChartEngine {
       ctx.lineTo(wickX, yLow);
       ctx.stroke();
 
-      // Body Box
       ctx.fillStyle = isBull ? '#00f5a0' : '#ff3b69';
       ctx.fillRect(x, bodyTop, w - 1, bodyH);
     }
 
-    // 7. Draw LuxAlgo Buy/Sell Signal Markers
     if (this.showSMC) {
       for (const sig of smc.signals) {
         if (sig.index < startIndex || sig.index > endIndex) continue;
@@ -1531,7 +1662,6 @@ class InteractiveChartEngine {
       }
     }
 
-    // 8. Current Price Pulse Line
     const latestPrice = feed.currentPrice;
     const curY = priceToY(latestPrice);
 
@@ -1544,13 +1674,8 @@ class InteractiveChartEngine {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // 9. Price Scale on Right
     this.renderPriceScale(minPrice, maxPrice, curY, latestPrice);
-
-    // 10. Time Scale on Bottom
     this.renderTimeScale(startIndex, endIndex, indexToX, candles);
-
-    // 11. Crosshair & Snapping Legend
     this.renderCrosshair(chartPlotWidth, chartPlotHeight, priceToY, yToPrice, xToIndex, candles);
   }
 
@@ -1569,7 +1694,6 @@ class InteractiveChartEngine {
     ctx.lineTo(scaleX, height);
     ctx.stroke();
 
-    // Major Price Steps
     const steps = 8;
     const stepVal = (maxPrice - minPrice) / steps;
     ctx.fillStyle = '#7987a1';
@@ -1587,7 +1711,6 @@ class InteractiveChartEngine {
       ctx.stroke();
     }
 
-    // Current Price Badge
     ctx.fillStyle = '#00f5a0';
     ctx.fillRect(scaleX, curY - 10, this.priceScaleWidth, 20);
     ctx.fillStyle = '#05261b';
@@ -1630,25 +1753,21 @@ class InteractiveChartEngine {
     const { ctx, mouseX, mouseY, width, height } = this;
     if (mouseX === null || mouseY === null || mouseX > chartPlotWidth || mouseY > chartPlotHeight) return;
 
-    // Crosshair Lines
     ctx.strokeStyle = '#44516d';
     ctx.lineWidth = 1;
     ctx.setLineDash([3, 3]);
 
-    // Horizontal
     ctx.beginPath();
     ctx.moveTo(0, mouseY);
     ctx.lineTo(chartPlotWidth, mouseY);
     ctx.stroke();
 
-    // Vertical
     ctx.beginPath();
     ctx.moveTo(mouseX, 0);
     ctx.lineTo(mouseX, chartPlotHeight);
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Price Cursor Tag
     const cursorPrice = yToPrice(mouseY);
     const scaleX = width - this.priceScaleWidth;
     ctx.fillStyle = '#3b82f6';
@@ -1657,7 +1776,6 @@ class InteractiveChartEngine {
     ctx.font = 'bold 10px var(--font-mono)';
     ctx.fillText(cursorPrice.toFixed(2), scaleX + 6, mouseY + 4);
 
-    // Hovered Candle Data HUD Sync
     const hoveredIdx = xToIndex(mouseX);
     if (hoveredIdx >= 0 && hoveredIdx < candles.length) {
       const c = candles[hoveredIdx];
@@ -1687,7 +1805,6 @@ class TradingTerminalApp {
 
   initLayout() {
     this.root.innerHTML = `
-      <!-- TOP NAVIGATION BAR -->
       <header class="header-bar">
         <div class="brand-section">
           <div class="brand-logo">
@@ -1726,7 +1843,6 @@ class TradingTerminalApp {
         </div>
       </header>
 
-      <!-- LEFT DRAWING TOOLBAR -->
       <aside class="left-toolbar">
         <button class="tool-btn active" title="Crosshair"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="22" y1="12" x2="2" y2="12"></line><line x1="12" y1="6" x2="12" y2="2"></line><line x1="12" y1="22" x2="12" y2="18"></line></svg></button>
         <button class="tool-btn" title="Trendline"><svg class="icon" viewBox="0 0 24 24"><line x1="4" y1="20" x2="20" y2="4"></line><circle cx="4" cy="20" r="2"></circle><circle cx="20" cy="4" r="2"></circle></svg></button>
@@ -1735,10 +1851,8 @@ class TradingTerminalApp {
         <button class="tool-btn" title="Long/Short Risk Tool"><svg class="icon" viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg></button>
       </aside>
 
-      <!-- MAIN CHART & PINE SCRIPT DOCK WORKSPACE -->
       <main class="chart-workspace">
         <div class="canvas-container" id="chart-container">
-          <!-- FLOATING CHART HUD -->
           <div class="chart-hud">
             <div class="hud-ticker-row">
               <span style="color:#fff">Bitcoin / TetherUS</span>
@@ -1759,7 +1873,6 @@ class TradingTerminalApp {
           </div>
         </div>
 
-        <!-- BOTTOM PINE SCRIPT V5 DOCK -->
         <div class="dock-panel" id="pine-dock">
           <div class="dock-header">
             <div class="dock-tabs">
@@ -1777,11 +1890,9 @@ class TradingTerminalApp {
               <textarea class="pine-textarea" id="pine-editor-code" spellcheck="false">//@version=5
 indicator("LuxAlgo Trend Oscillator", overlay=true)
 
-// Calculate dual momentum averages
 fastEma = ta.ema(close, 14)
 slowEma = ta.sma(close, 28)
 
-// Custom Plot outputs to canvas
 plot(fastEma, "Fast Signal", "#38bdf8", 2)
 plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
 </textarea>
@@ -1794,7 +1905,6 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
         </div>
       </main>
 
-      <!-- RIGHT SIDEBAR (ORDERBOOK / SCREENER / EXECUTION) -->
       <aside class="right-sidebar">
         <div class="sidebar-tab-nav">
           <button class="sidebar-tab-btn active" data-tab="orderbook">Order Book</button>
@@ -1803,7 +1913,6 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
         </div>
 
         <div class="sidebar-content" id="sidebar-content-view">
-          <!-- Orderbook Tab Content -->
           <div class="orderbook-box" id="pane-orderbook">
             <div class="book-header-row">
               <span>Price (USDT)</span>
@@ -1818,7 +1927,6 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
             <div class="order-ladder" id="ladder-bids"></div>
           </div>
 
-          <!-- MTF Tab Content (Hidden by default) -->
           <div class="mtf-grid" id="pane-mtf" style="display:none">
             <div class="mtf-card">
               <span class="mtf-card-tf">1m Scalp</span>
@@ -1842,7 +1950,6 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
             </div>
           </div>
 
-          <!-- Execution Tab Content (Hidden by default) -->
           <div class="exec-panel" id="pane-trade" style="display:none">
             <div class="exec-type-toggle">
               <button class="exec-type-btn active">Market</button>
@@ -1868,7 +1975,6 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
         </div>
       </aside>
 
-      <!-- BOTTOM REALTIME STATUS BAR -->
       <footer class="status-bar">
         <div class="status-left">
           <div style="display:flex;align-items:center;gap:6px">
@@ -1890,7 +1996,6 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
     const container = document.getElementById('chart-container');
     this.chart = new InteractiveChartEngine(container, this.feed);
 
-    // Sync Live Candle Updates to HUD and Top Bar
     this.feed.subscribeCandles((candles, price) => {
       const lastCandle = candles[candles.length - 1];
       const headerPriceBadge = document.getElementById('header-price-badge');
@@ -1908,7 +2013,6 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
       const v = document.getElementById('hud-v'); if (v) v.textContent = lastCandle.volume.toFixed(2);
     });
 
-    // Crosshair Sync
     this.chart.onHoverCandle = (candle) => {
       const o = document.getElementById('hud-o'); if (o) o.textContent = candle.open.toFixed(2);
       const h = document.getElementById('hud-h'); if (h) h.textContent = candle.high.toFixed(2);
@@ -1917,13 +2021,11 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
       const v = document.getElementById('hud-v'); if (v) v.textContent = candle.volume.toFixed(2);
     };
 
-    // FPS Meter Sync
     this.chart.onFpsUpdate = (fps) => {
       const fpsElem = document.getElementById('stat-fps');
       if (fpsElem) fpsElem.textContent = fps;
     };
 
-    // Order Book Reactive Feeds
     this.feed.subscribeOrderBook((book) => {
       this.updateOrderBookUI(book);
     });
@@ -1971,7 +2073,6 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
   }
 
   bindDOMEvents() {
-    // Timeframe selector
     document.querySelectorAll('.tf-btn[data-tf]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         document.querySelectorAll('.tf-btn[data-tf]').forEach(b => b.classList.remove('active'));
@@ -1980,100 +2081,93 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
       });
     });
 
-    // SMC Toggles
     const btnSmc = document.getElementById('btn-toggle-smc');
-    btnSmc.addEventListener('click', () => {
-      this.chart.showSMC = !this.chart.showSMC;
-      btnSmc.classList.toggle('active', this.chart.showSMC);
-    });
+    if (btnSmc) {
+      btnSmc.addEventListener('click', () => {
+        this.chart.showSMC = !this.chart.showSMC;
+        btnSmc.classList.toggle('active', this.chart.showSMC);
+      });
+    }
 
     const btnRibbon = document.getElementById('btn-toggle-ribbon');
-    btnRibbon.addEventListener('click', () => {
-      this.chart.showRibbon = !this.chart.showRibbon;
-      btnRibbon.classList.toggle('active', this.chart.showRibbon);
-    });
+    if (btnRibbon) {
+      btnRibbon.addEventListener('click', () => {
+        this.chart.showRibbon = !this.chart.showRibbon;
+        btnRibbon.classList.toggle('active', this.chart.showRibbon);
+      });
+    }
 
-    // Pine Script Dock Toggle
     const pineDock = document.getElementById('pine-dock');
     const btnTogglePine = document.getElementById('btn-toggle-pine-dock');
     const btnCollapseDock = document.getElementById('btn-collapse-dock');
 
     const toggleDock = () => {
       this.isDockCollapsed = !this.isDockCollapsed;
-      pineDock.classList.toggle('collapsed', this.isDockCollapsed);
-      btnCollapseDock.textContent = this.isDockCollapsed ? '▲' : '▼';
+      if (pineDock) pineDock.classList.toggle('collapsed', this.isDockCollapsed);
+      if (btnCollapseDock) btnCollapseDock.textContent = this.isDockCollapsed ? '▲' : '▼';
     };
 
-    btnTogglePine.addEventListener('click', toggleDock);
-    btnCollapseDock.addEventListener('click', toggleDock);
+    if (btnTogglePine) btnTogglePine.addEventListener('click', toggleDock);
+    if (btnCollapseDock) btnCollapseDock.addEventListener('click', toggleDock);
 
-    // Pine Script Compiler Trigger
     const btnCompile = document.getElementById('btn-compile-pine');
     const pineEditor = document.getElementById('pine-editor-code');
-    const consoleLog = document.getElementById('pine-console-log');
+    const pineConsole = document.getElementById('pine-console-log');
 
-    btnCompile.addEventListener('click', () => {
-      const code = pineEditor.value;
-      const res = this.pineInterpreter.execute(code, this.feed.candles);
+    if (btnCompile && pineEditor) {
+      btnCompile.addEventListener('click', () => {
+        const code = pineEditor.value;
+        const result = this.pineInterpreter.execute(code, this.feed.candles);
+        if (pineConsole) {
+          pineConsole.innerHTML = result.logs.map(log =>
+            `<div class="console-entry ${log.type}">${log.msg}</div>`
+          ).join('');
+        }
+        if (result.success) {
+          this.chart.setPlots(result.plots);
+        }
+      });
+    }
 
-      consoleLog.innerHTML = res.logs.map(l => `<div class="console-entry ${l.type}">[${l.type.toUpperCase()}] ${l.msg}</div>`).join('');
-      consoleLog.scrollTop = consoleLog.scrollHeight;
-
-      if (res.success) {
-        this.chart.setPlots(res.plots);
-      }
-    });
-
-    // Right Sidebar Tab Navigation
-    document.querySelectorAll('.sidebar-tab-btn').forEach(btn => {
+    document.querySelectorAll('.sidebar-tab-btn[data-tab]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         document.querySelectorAll('.sidebar-tab-btn').forEach(b => b.classList.remove('active'));
         e.currentTarget.classList.add('active');
-
         const tab = e.currentTarget.dataset.tab;
-        document.getElementById('pane-orderbook').style.display = tab === 'orderbook' ? 'flex' : 'none';
-        document.getElementById('pane-mtf').style.display = tab === 'mtf' ? 'grid' : 'none';
-        document.getElementById('pane-trade').style.display = tab === 'trade' ? 'flex' : 'none';
+        const paneOrderbook = document.getElementById('pane-orderbook');
+        const paneMtf = document.getElementById('pane-mtf');
+        const paneTrade = document.getElementById('pane-trade');
+        if (paneOrderbook) paneOrderbook.style.display = tab === 'orderbook' ? 'flex' : 'none';
+        if (paneMtf) paneMtf.style.display = tab === 'mtf' ? 'grid' : 'none';
+        if (paneTrade) paneTrade.style.display = tab === 'trade' ? 'flex' : 'none';
       });
-    });
-
-    // Trade Order Execution Mock
-    document.getElementById('btn-order-buy')?.addEventListener('click', () => {
-      const size = document.getElementById('trade-input-size').value;
-      alert(`[Order Executed] BUY ${size} BTC at market price ${this.feed.currentPrice}`);
-    });
-
-    document.getElementById('btn-order-sell')?.addEventListener('click', () => {
-      const size = document.getElementById('trade-input-size').value;
-      alert(`[Order Executed] SELL ${size} BTC at market price ${this.feed.currentPrice}`);
     });
   }
 
   startMultiTimeframeSync() {
-    // Run initial Pine execution to paint initial indicator curves
-    setTimeout(() => {
-      const btnCompile = document.getElementById('btn-compile-pine');
-      if (btnCompile) btnCompile.click();
-    }, 250);
+    this.feed.subscribeCandles(() => {
+      const mtfCards = document.querySelectorAll('.mtf-card-bias');
+      if (mtfCards.length > 0 && Math.random() < 0.05) {
+        // Dynamic Screener refresh
+      }
+    });
   }
 }
 
-// ============================================================================
-// 7. BOOTSTRAP TERMINAL MOUNT
-// ============================================================================
-
-function bootstrapTerminal() {
-  let mountNode = document.getElementById('app');
-  if (!mountNode) {
-    mountNode = document.createElement('div');
-    mountNode.id = 'app';
-    document.body.appendChild(mountNode);
-  }
-  new TradingTerminalApp(mountNode);
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', () => {
+    const appEl = document.getElementById('app');
+    if (appEl) {
+      new TradingTerminalApp(appEl);
+    }
+  });
 }
 
-if (document.readyState === 'loading') {
-  window.addEventListener('DOMContentLoaded', bootstrapTerminal);
-} else {
-  bootstrapTerminal();
-}
+export {
+  MarketStructureEngine,
+  PineScriptInterpreter,
+  MarketDataFeed,
+  WebGLBackgroundRenderer,
+  InteractiveChartEngine,
+  TradingTerminalApp
+};
