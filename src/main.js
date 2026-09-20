@@ -346,7 +346,7 @@ export function mountApp(containerOrOptions = {}, options = {}) {
       : null;
 
   if (!header && container && Array.isArray(container.children)) {
-    header = container.children.find(
+    header = Array.from(container.children).find(
       (c) =>
         c &&
         (c.className === 'chart-header' ||
@@ -467,7 +467,7 @@ export function mountApp(containerOrOptions = {}, options = {}) {
   }
 
   if (!legend && header && Array.isArray(header.children)) {
-    legend = header.children.find(
+    legend = Array.from(header.children).find(
       (c) =>
         c &&
         (c.className === 'indicator-legend' ||
@@ -482,7 +482,7 @@ export function mountApp(containerOrOptions = {}, options = {}) {
       : null;
 
   if (!workspace && container && Array.isArray(container.children)) {
-    workspace = container.children.find(
+    workspace = Array.from(container.children).find(
       (c) =>
         c &&
         (c.className === 'workspace' ||
@@ -516,7 +516,7 @@ export function mountApp(containerOrOptions = {}, options = {}) {
       : null;
 
   if (!chartContainer && workspace && Array.isArray(workspace.children)) {
-    chartContainer = workspace.children.find(
+    chartContainer = Array.from(workspace.children).find(
       (c) =>
         c &&
         (c.className === 'chart-container' ||
@@ -551,7 +551,7 @@ export function mountApp(containerOrOptions = {}, options = {}) {
       : null;
 
   if (!dock && workspace && Array.isArray(workspace.children)) {
-    dock = workspace.children.find(
+    dock = Array.from(workspace.children).find(
       (c) =>
         c &&
         (c.className === 'auxiliary-dock' ||
