@@ -5,6 +5,7 @@
  * indicator overlays (DF-OVERLAYS-01), coordinate price mapping (DF-TOOLS-03),
  * annotation state, high-DPI canvas buffer resolution scaling (STORY 37.3.1),
  * and container buffer dimension synchronization preventing squished canvas sizing (STORY 40.1.1).
+ * Resolves UNCAUGHT_JAVASCRIPT_EXCEPTION by synchronizing viewport dimensions safely without assigning to clientWidth/clientHeight (STORY 49.1.1).
  */
 
 /**
@@ -60,11 +61,6 @@ export function syncCanvasDpi(canvas, overrideDpr) {
   clientWidth = Math.max(0, clientWidth || 800);
   clientHeight = Math.max(0, clientHeight || 600);
 
-  try {
-    canvas.clientWidth = clientWidth;
-    canvas.clientHeight = clientHeight;
-  } catch (_) {}
-
   const bufferWidth = Math.round(clientWidth * dpr);
   const bufferHeight = Math.round(clientHeight * dpr);
 
@@ -84,7 +80,7 @@ export function syncCanvasDpi(canvas, overrideDpr) {
     } else if (typeof ctx.resetTransform === 'function') {
       ctx.resetTransform();
     }
-    if (typeof ctx.scale === 'function') {
+    if (dpr !== 1 && typeof ctx.scale === 'function') {
       ctx.scale(dpr, dpr);
     }
   }
@@ -102,36 +98,62 @@ export const setupCanvasDpi = syncCanvasDpi;
 
 /**
  * Synchronizes the canvas buffer width and height to match its parent container dimensions.
- * Resolves SQUISHED_CANVAS_VIEWPORT (DF-LAYOUT-01, STORY 40.1.1).
+ * Assigns dimensions via canvas.width, canvas.height, and canvas.style without assigning
+ * directly to the read-only clientWidth/clientHeight properties (resolves DF-CRASH-01, STORY 49.1.1).
  *
  * @param {HTMLCanvasElement|Object} canvas Target canvas element
  * @param {HTMLElement|Object} [container] Parent container element
- * @returns {{ width: number, height: number } | null}
+ * @param {Object} [options={}] Optional width, height, or dpr override
+ * @returns {{ width: number, height: number, clientWidth: number, clientHeight: number, dpr: number } | null}
  */
-export function syncCanvasDimensions(canvas, container) {
+export function syncCanvasDimensions(canvas, container, options = {}) {
   if (!canvas) return null;
   const parent = container || canvas.parentElement || canvas.parentNode;
+
+  const win = typeof window !== 'undefined'
+    ? window
+    : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
+
+  let dpr = 1;
+  if (typeof options.dpr === 'number' && options.dpr > 0) {
+    dpr = options.dpr;
+  } else if (win && typeof win.devicePixelRatio === 'number' && win.devicePixelRatio > 0) {
+    dpr = win.devicePixelRatio;
+  } else if (typeof globalThis !== 'undefined' && typeof globalThis.devicePixelRatio === 'number' && globalThis.devicePixelRatio > 0) {
+    dpr = globalThis.devicePixelRatio;
+  }
 
   let width = 0;
   let height = 0;
 
+  if (typeof options.width === 'number' && options.width > 0) {
+    width = options.width;
+  }
+  if (typeof options.height === 'number' && options.height > 0) {
+    height = options.height;
+  }
+
   if (parent) {
-    if (typeof parent.clientWidth === 'number' && parent.clientWidth > 0) {
-      width = parent.clientWidth;
-    } else if (typeof parent.offsetWidth === 'number' && parent.offsetWidth > 0) {
-      width = parent.offsetWidth;
-    } else if (typeof parent.getBoundingClientRect === 'function') {
-      const rect = parent.getBoundingClientRect();
-      if (rect && rect.width > 0) width = rect.width;
+    if (!width) {
+      if (typeof parent.clientWidth === 'number' && parent.clientWidth > 0) {
+        width = parent.clientWidth;
+      } else if (typeof parent.offsetWidth === 'number' && parent.offsetWidth > 0) {
+        width = parent.offsetWidth;
+      } else if (typeof parent.getBoundingClientRect === 'function') {
+        const rect = parent.getBoundingClientRect();
+        if (rect && rect.width > 0) width = rect.width;
+      }
     }
 
-    if (typeof parent.clientHeight === 'number' && parent.clientHeight > 0) {
-      height = parent.clientHeight;
-    } else if (typeof parent.offsetHeight === 'number' && parent.offsetHeight > 0) {
-      height = parent.offsetHeight;
-    } else if (typeof parent.getBoundingClientRect === 'function') {
-      const rect = parent.getBoundingClientRect();
-      if (rect && rect.height > 0) height = rect.height;
+    if (!height) {
+      if (typeof parent.clientHeight === 'number' && parent.clientHeight > 0) {
+        height = parent.clientHeight;
+      } else if (typeof parent.offsetHeight === 'number' && parent.offsetHeight > 0) {
+        height = parent.offsetHeight;
+      } else if (typeof parent.getBoundingClientRect === 'function') {
+        const rect = parent.getBoundingClientRect();
+        if (rect && rect.height > 0) height = rect.height;
+      }
     }
   }
 
@@ -141,10 +163,6 @@ export function syncCanvasDimensions(canvas, container) {
   if (!height && typeof canvas.clientHeight === 'number' && canvas.clientHeight > 0 && canvas.clientHeight !== 150) {
     height = canvas.clientHeight;
   }
-
-  const win = typeof window !== 'undefined'
-    ? window
-    : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
 
   if (!width && win && typeof win.innerWidth === 'number' && win.innerWidth > 0) {
     width = Math.round(win.innerWidth * 0.65);
@@ -159,16 +177,17 @@ export function syncCanvasDimensions(canvas, container) {
   width = Math.round(width);
   height = Math.round(height);
 
-  canvas.width = width;
-  canvas.height = height;
+  const bufferWidth = Math.round(width * dpr);
+  const bufferHeight = Math.round(height * dpr);
 
-  try { canvas.clientWidth = width; } catch (_) {}
-  try { canvas.clientHeight = height; } catch (_) {}
+  canvas.width = bufferWidth;
+  canvas.height = bufferHeight;
 
-  if (canvas.style) {
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
+  if (!canvas.style) {
+    canvas.style = {};
   }
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
 
   const ctx = canvas.getContext ? canvas.getContext('2d') : null;
   if (ctx) {
@@ -177,13 +196,42 @@ export function syncCanvasDimensions(canvas, container) {
     } else if (typeof ctx.resetTransform === 'function') {
       ctx.resetTransform();
     }
+    if (dpr !== 1 && typeof ctx.scale === 'function') {
+      ctx.scale(dpr, dpr);
+    }
   }
 
-  return { width, height };
+  return {
+    width: bufferWidth,
+    height: bufferHeight,
+    clientWidth: width,
+    clientHeight: height,
+    dpr,
+  };
 }
 
 export const resizeCanvas = syncCanvasDimensions;
 export const updateCanvasDimensions = syncCanvasDimensions;
+export const initCanvasViewport = syncCanvasDimensions;
+export const createCanvasViewport = syncCanvasDimensions;
+export const setupCanvas = syncCanvasDimensions;
+
+/**
+ * Initializes canvas viewport sizing or creates a ChartCanvas instance.
+ *
+ * @param {HTMLCanvasElement|HTMLElement|Object} canvasOrContainer
+ * @param {HTMLElement|Object} [containerOrOptions]
+ * @param {Object} [options]
+ * @returns {Object|ChartCanvas}
+ */
+export function initCanvas(canvasOrContainer, containerOrOptions, options) {
+  if (canvasOrContainer && (canvasOrContainer.getContext || (canvasOrContainer.tagName && canvasOrContainer.tagName.toUpperCase() === 'CANVAS'))) {
+    return syncCanvasDimensions(canvasOrContainer, containerOrOptions, options);
+  }
+  return new ChartCanvas(canvasOrContainer, containerOrOptions);
+}
+
+export const createCanvas = initCanvas;
 
 /**
  * Normalizes tool mode identifier to lowercase kebab-case.
@@ -653,13 +701,7 @@ export class ChartCanvas {
 
   resize(width, height) {
     if (this.canvas) {
-      if (typeof width === 'number') {
-        try { this.canvas.clientWidth = width; } catch (_) {}
-      }
-      if (typeof height === 'number') {
-        try { this.canvas.clientHeight = height; } catch (_) {}
-      }
-      syncCanvasDimensions(this.canvas, this.container);
+      syncCanvasDimensions(this.canvas, this.container, { width, height });
     }
     if (this.innerChart && typeof this.innerChart.resize === 'function') {
       try {
@@ -913,7 +955,5 @@ export class ChartCanvas {
 
 export const CanvasWorkspace = ChartCanvas;
 export const CanvasController = ChartCanvas;
-export const initCanvas = (container, options) => new ChartCanvas(container, options);
-export const createCanvas = (container, options) => new ChartCanvas(container, options);
 
 export default ChartCanvas;
