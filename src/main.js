@@ -1,10 +1,10 @@
 /**
  * SmartTrading-V2 — Main Application Entrypoint
  * Mounts the financial chart workspace, active canvas rendering context,
- * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02, STORY 34.1.1), analytical indicator
+ * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02, STORY 36.1.1), analytical indicator
  * overlays (DF-OVERLAYS-01), live legend components, and the auxiliary dock
  * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1).
- * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 34.1.1).
+ * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 36.1.1).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -608,7 +608,7 @@ export function initApp(options = {}) {
   const priceAxisWidth = opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 70;
   const timeAxisHeight = opts.timeAxisHeight !== undefined ? opts.timeAxisHeight : 50;
 
-  // Primary Canvas Container preserving dedicated bottom axis track within 100vh layout (STORY 34.1.1)
+  // Primary Canvas Container preserving dedicated bottom axis track within 100vh layout (STORY 36.1.1)
   const chartContainer = createElement('div', {
     className: 'chart-container',
     id: 'canvas-container',
@@ -651,15 +651,6 @@ export function initApp(options = {}) {
     polyfillCanvasContext(ctx);
   }
 
-  const axesRenderer = new AxesRenderer({
-    canvas,
-    context: ctx,
-    priceAxisWidth,
-    timeAxisHeight,
-  });
-
-  canvas.axesRenderer = axesRenderer;
-
   // Dedicated bottom horizontal time axis track element
   const bottomAxisTrack = createElement('div', {
     className: 'bottom-axis-track time-axis-track',
@@ -680,6 +671,16 @@ export function initApp(options = {}) {
     },
   });
 
+  const axesRenderer = new AxesRenderer({
+    canvas,
+    context: ctx,
+    priceAxisWidth,
+    timeAxisHeight,
+    trackElement: bottomAxisTrack,
+  });
+
+  canvas.axesRenderer = axesRenderer;
+
   if (typeof chartContainer.appendChild === 'function') {
     chartContainer.appendChild(canvas);
     chartContainer.appendChild(bottomAxisTrack);
@@ -699,9 +700,12 @@ export function initApp(options = {}) {
     root.appendChild(header);
     root.appendChild(workspace);
     // In mock environments where root.querySelector only inspects direct children of appContainer,
-    // ensure canvas is also present in root's child list
-    if (typeof root.querySelector === 'function' && !root.querySelector('canvas')) {
-      root.appendChild(canvas);
+    // ensure canvas is also accessible directly inside root's child list
+    if (typeof root.querySelector === 'function') {
+      const foundCanvas = root.querySelector('canvas');
+      if (!foundCanvas) {
+        root.appendChild(canvas);
+      }
     }
   }
 
@@ -714,6 +718,7 @@ export function initApp(options = {}) {
     axesRenderer,
     priceAxisWidth,
     timeAxisHeight,
+    trackElement: bottomAxisTrack,
     initialZoom: opts.initialZoom || opts.zoom || 1.0,
     minZoom: opts.minZoom !== undefined ? opts.minZoom : 0.2,
     maxZoom: opts.maxZoom !== undefined ? opts.maxZoom : 5.0,
@@ -733,6 +738,7 @@ export function initApp(options = {}) {
   chartInstance.dockElement = dockElement;
   chartInstance.chart = chartInstance;
   chartInstance.axesRenderer = axesRenderer;
+  chartInstance.getAxesRenderer = () => axesRenderer;
 
   chartInstance.activateWorkflow = (workflow, widget) => dockComponent.activateWorkflow(workflow, widget);
   chartInstance.mountWorkflow = (workflow, widget) => dockComponent.mountWorkflow(workflow, widget);
@@ -841,14 +847,17 @@ export function teardown() {
  * @returns {Promise<Object>}
  */
 export function updateCandleData(targetOrData, maybeCandles) {
-  let inst = activeAppInstance;
+  let inst = activeAppInstance || activeChart || chart;
   let data = targetOrData;
   if (maybeCandles !== undefined) {
     inst = targetOrData;
     data = maybeCandles;
+  } else if (targetOrData && typeof targetOrData.updateData === 'function') {
+    inst = targetOrData;
+    data = maybeCandles;
   }
   if (inst && typeof inst.updateData === 'function') {
-    return inst.updateData(data);
+    return Promise.resolve(inst.updateData(data));
   }
   return Promise.resolve();
 }

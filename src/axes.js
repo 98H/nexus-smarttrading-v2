@@ -2,7 +2,7 @@
  * SmartTrading-V2 — Coordinate Axes Renderer
  * Handles rendering of background coordinate gridlines, right-hand vertical price scale,
  * and bottom horizontal time scale across active candlestick chart areas.
- * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02), and STORY 35.1.1 (MISSING_HORIZONTAL_TIME_AXIS).
+ * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02), and STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS).
  */
 
 /**
@@ -48,6 +48,9 @@ export function updateDOMTimeAxisTrack(trackElement, timeRange, steps = 5) {
   const isDaily = spanMs >= 86400000 * 2;
 
   if (typeof trackElement.removeChild === 'function') {
+    while (trackElement.firstChild) {
+      trackElement.removeChild(trackElement.firstChild);
+    }
     while (trackElement.children && trackElement.children.length > 0) {
       trackElement.removeChild(trackElement.children[0]);
     }
@@ -61,19 +64,34 @@ export function updateDOMTimeAxisTrack(trackElement, timeRange, steps = 5) {
     const label = formatTimestamp(timeVal, isDaily);
     labels.push(label);
 
-    const marker = {
-      tagName: 'SPAN',
-      className: 'time-axis-marker',
-      textContent: label,
-      style: {
-        color: '#787b86',
-        fontSize: '11px',
-        fontFamily: 'sans-serif',
-        userSelect: 'none',
-        pointerEvents: 'none',
-        whiteSpace: 'nowrap',
-      },
-    };
+    let marker;
+    if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+      marker = document.createElement('span');
+      marker.className = 'time-axis-marker';
+      marker.textContent = label;
+      if (marker.style) {
+        marker.style.color = '#787b86';
+        marker.style.fontSize = '11px';
+        marker.style.fontFamily = 'sans-serif';
+        marker.style.userSelect = 'none';
+        marker.style.pointerEvents = 'none';
+        marker.style.whiteSpace = 'nowrap';
+      }
+    } else {
+      marker = {
+        tagName: 'SPAN',
+        className: 'time-axis-marker',
+        textContent: label,
+        style: {
+          color: '#787b86',
+          fontSize: '11px',
+          fontFamily: 'sans-serif',
+          userSelect: 'none',
+          pointerEvents: 'none',
+          whiteSpace: 'nowrap',
+        },
+      };
+    }
 
     if (typeof trackElement.appendChild === 'function') {
       trackElement.appendChild(marker);
@@ -368,7 +386,7 @@ export class AxesRenderer {
 
   /**
    * Draws a bottom horizontal time scale axis with timestamp tick marks and formatted labels.
-   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 35.1.1).
+   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 36.1.1).
    *
    * @param {Object|Array} [range={}]
    * @param {number} [range.min=1700000000]

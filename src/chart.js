@@ -1,7 +1,7 @@
 /**
  * SmartTrading-V2 — Chart Engine & Candlestick/Axes Orchestrator
- * Integrates Candlestick rendering, AxesRenderer (DF-SCALES-01, DF-SCALES-02, STORY 34.1.1),
- * pan gestures (DF-GESTURE-01, STORY 33.1.1), and analytical overlays (DF-OVERLAYS-01)
+ * Integrates Candlestick rendering, AxesRenderer (DF-SCALES-01, DF-SCALES-02, STORY 36.1.1),
+ * pan gestures (DF-GESTURE-01), and analytical overlays (DF-OVERLAYS-01)
  * within constrained viewport bounds.
  */
 
@@ -150,6 +150,7 @@ export class Chart {
       context: this.ctx,
       priceAxisWidth,
       timeAxisHeight,
+      trackElement: options.trackElement || null,
     });
 
     if (this.canvas) {
