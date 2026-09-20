@@ -286,7 +286,7 @@ describe('STORY 5.4.1: Resolve UNRESPONSIVE_CANVAS_ZOOM (Defect ID: DF-GESTURE-0
         assert.fail('src/main.js must export an initialization/mount function (initApp, mount, or default)');
       }
 
-      const canvasChild = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const canvasChild = Array.from(appContainer.children).find((child) => child.tagName === 'CANVAS');
       assert.ok(
         canvasChild,
         'src/main.js must mount the canvas element into document.getElementById("app")'
@@ -303,7 +303,7 @@ describe('STORY 5.4.1: Resolve UNRESPONSIVE_CANVAS_ZOOM (Defect ID: DF-GESTURE-0
       }
 
       const appContainer = document.getElementById('app');
-      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const canvas = Array.from(appContainer.children).find((child) => child.tagName === 'CANVAS');
       assert.ok(canvas, 'Canvas must be mounted to #app');
 
       const wheelListeners = canvas.listeners.get('wheel') || [];
@@ -333,7 +333,7 @@ describe('STORY 5.4.1: Resolve UNRESPONSIVE_CANVAS_ZOOM (Defect ID: DF-GESTURE-0
       }
 
       const appContainer = document.getElementById('app');
-      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const canvas = Array.from(appContainer.children).find((child) => child.tagName === 'CANVAS');
       const context = canvas.getContext('2d');
 
       // Clear initialization draw records

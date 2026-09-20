@@ -98,9 +98,9 @@ export class Chart {
     } else if (
       this.container &&
       Array.isArray(this.container.children) &&
-      this.container.children.find((c) => c && c.tagName === 'CANVAS')
+      this.Array.from(container.children).find((c) => c && c.tagName === 'CANVAS')
     ) {
-      this.canvas = this.container.children.find((c) => c && c.tagName === 'CANVAS');
+      this.canvas = this.Array.from(container.children).find((c) => c && c.tagName === 'CANVAS');
     } else if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
       this.canvas = document.createElement('canvas');
       if (this.container && typeof this.container.appendChild === 'function') {

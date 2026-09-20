@@ -203,7 +203,7 @@ export function mountApp(container) {
     canvas = mountTarget.querySelector('canvas');
   }
   if (!canvas && Array.isArray(mountTarget.children)) {
-    canvas = mountTarget.children.find((c) => c && c.tagName === 'CANVAS') || null;
+    canvas = Array.from(mountTarget.children).find((c) => c && c.tagName === 'CANVAS') || null;
   }
   if (!canvas && typeof document !== 'undefined' && typeof document.createElement === 'function') {
     canvas = document.createElement('canvas');
