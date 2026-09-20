@@ -49,7 +49,7 @@ class MockDOMElement {
   }
 
   querySelector(selector) {
-    return this.children.find((c) => `#${c.id}` === selector || c.tagName.toLowerCase() === selector.toLowerCase()) || null;
+    return Array.from(this.children).find((c) => `#${c.id}` === selector || c.tagName.toLowerCase() === selector.toLowerCase()) || null;
   }
 }
 

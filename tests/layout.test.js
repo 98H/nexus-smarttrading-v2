@@ -306,7 +306,7 @@ describe('STORY 1.2.1: Resolve UNSTRUCTURED_UI_LAYOUT (DF-LAYOUT-01)', () => {
     const app = globalThis.document.getElementById('app');
 
     // Direct children of #app should NOT include flat chart canvas, orders panel, or tools panel
-    const directCanvas = app.children.find((c) => c.tagName === 'CANVAS');
+    const directCanvas = Array.from(app.children).find((c) => c.tagName === 'CANVAS');
     assert.strictEqual(
       directCanvas,
       undefined,
@@ -454,7 +454,7 @@ describe('STORY 1.2.1: Resolve UNSTRUCTURED_UI_LAYOUT (DF-LAYOUT-01)', () => {
     );
 
     // Ensure #app direct children count is constrained to layout parents (e.g., header, workspace, footer)
-    const directChildrenTags = app.children.map((c) => c.tagName);
+    const directChildrenTags = Array.from(app.children).map((c) => c.tagName);
     assert.ok(
       !directChildrenTags.includes('CANVAS'),
       'Direct children of #app must not include raw CANVAS after resize'

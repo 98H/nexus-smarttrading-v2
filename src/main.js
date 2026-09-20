@@ -111,7 +111,7 @@ function ensureCanvasCompat(canvas) {
   ensureElementCompat(canvas);
   if (!canvas.getContext) {
     const mockCtx = createMock2DContext();
-    mockCtx.canvas = canvas;
+    try { try { mockCtx.canvas = canvas; } catch {} } catch {}
     canvas.getContext = () => mockCtx;
   } else {
     const origGetContext = canvas.getContext.bind(canvas);
@@ -120,7 +120,7 @@ function ensureCanvasCompat(canvas) {
       const mockFallback = createMock2DContext();
       for (const key of Object.keys(mockFallback)) {
         if (typeof ctx[key] !== 'function') {
-          ctx[key] = mockFallback[key];
+          if (key !== 'canvas') { try { if (key !== 'canvas') { try { ctx[key] = mockFallback[key]; } catch {} } } catch {} }
         }
       }
       return ctx;
@@ -360,7 +360,7 @@ function buildStructuredLayout(mountTarget) {
 
   // Eject any stray elements placed directly on mountTarget into workspace hierarchy
   if (mountTarget.children) {
-    const strayChildren = mountTarget.children.filter((c) => c !== header && c !== workspace);
+    const strayChildren = Array.from(mountTarget.children).filter((c) => c !== header && c !== workspace);
     for (const stray of strayChildren) {
       if (stray.tagName === 'CANVAS') {
         chartContainer.appendChild(stray);
@@ -494,7 +494,7 @@ export function mountApp(container) {
   // Preserve structured hierarchies and re-render on resize
   let resizeHandler = () => {
     if (mountTarget.children) {
-      const strays = mountTarget.children.filter((c) => c !== header && c !== workspace);
+      const strays = Array.from(mountTarget.children).filter((c) => c !== header && c !== workspace);
       for (const stray of strays) {
         if (stray.tagName === 'CANVAS') {
           const host = workspace.querySelector('.chart-container') || workspace;

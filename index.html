@@ -139,6 +139,20 @@
 </head>
 <body>
   <div id="app"></div>
-  <script type="module" src="./src/main.js"></script>
+  <script type="module">
+  import * as App from '/src/main.js';
+  const mountTarget = document.getElementById('app') || document.body;
+  if (typeof App.mountApp === 'function') {
+    App.mountApp(mountTarget);
+  } else if (typeof App.mount === 'function') {
+    App.mount(mountTarget);
+  } else if (typeof App.default === 'function') {
+    App.default(mountTarget);
+  } else if (App.default && typeof App.default.mount === 'function') {
+    App.default.mount(mountTarget);
+  } else if (App.default && typeof App.default.mountApp === 'function') {
+    App.default.mountApp(mountTarget);
+  }
+</script>
 </body>
 </html>

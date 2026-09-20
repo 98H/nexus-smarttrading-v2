@@ -277,7 +277,7 @@ export class Chart {
           searchRoot.querySelector('canvas') ||
           searchRoot.querySelector('[data-testid="chart-canvas"]');
       } else if (Array.isArray(searchRoot.children)) {
-        canvas = searchRoot.children.find((child) => child.tagName === 'CANVAS') || null;
+        canvas = Array.from(searchRoot.children).find((child) => child.tagName === 'CANVAS') || null;
       }
       if (!canvas) {
         canvas =

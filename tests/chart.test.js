@@ -219,7 +219,7 @@ describe('STORY 1.2.1: Resolve MISSING_COORDINATE_AXES (Defect ID: DF-SCALES-01)
       chart.setData(sampleCandles);
       chart.render();
 
-      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const canvas = Array.from(appContainer.children).find((child) => child.tagName === 'CANVAS');
       assert.ok(canvas, 'Expected a canvas element to be mounted inside container');
 
       const ctx = canvas.getContext('2d');
@@ -254,7 +254,7 @@ describe('STORY 1.2.1: Resolve MISSING_COORDINATE_AXES (Defect ID: DF-SCALES-01)
       chart.setData(sampleCandles);
       chart.render();
 
-      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const canvas = Array.from(appContainer.children).find((child) => child.tagName === 'CANVAS');
       const ctx = canvas.getContext('2d');
       const plotWidth = 800 - 60;
       const plotHeight = 600 - 30;
@@ -286,7 +286,7 @@ describe('STORY 1.2.1: Resolve MISSING_COORDINATE_AXES (Defect ID: DF-SCALES-01)
       chart.setData(sampleCandles);
       chart.render();
 
-      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const canvas = Array.from(appContainer.children).find((child) => child.tagName === 'CANVAS');
       const ctx = canvas.getContext('2d');
       const plotWidth = 800 - 70;
       const plotHeight = 600 - 40;
@@ -333,7 +333,7 @@ describe('STORY 1.2.1: Resolve MISSING_COORDINATE_AXES (Defect ID: DF-SCALES-01)
       chart.setData(sampleCandles);
       chart.render();
 
-      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const canvas = Array.from(appContainer.children).find((child) => child.tagName === 'CANVAS');
       const ctx = canvas.getContext('2d');
       const plotWidth = 800 - 60;
 
@@ -384,7 +384,7 @@ describe('STORY 1.2.1: Resolve MISSING_COORDINATE_AXES (Defect ID: DF-SCALES-01)
       chart.setData(sampleCandles);
       chart.render();
 
-      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const canvas = Array.from(appContainer.children).find((child) => child.tagName === 'CANVAS');
       const ctx = canvas.getContext('2d');
       const plotHeight = 600 - 30;
 
@@ -440,7 +440,7 @@ describe('STORY 1.2.1: Resolve MISSING_COORDINATE_AXES (Defect ID: DF-SCALES-01)
         'Container #app must have children mounted by src/main.js'
       );
 
-      const canvas = appContainer.children.find((el) => el.tagName === 'CANVAS');
+      const canvas = Array.from(appContainer.children).find((el) => el.tagName === 'CANVAS');
       assert.ok(canvas, 'src/main.js must mount a canvas element to #app');
 
       const ctx = canvas.getContext('2d');
@@ -461,7 +461,7 @@ describe('STORY 1.2.1: Resolve MISSING_COORDINATE_AXES (Defect ID: DF-SCALES-01)
       const initFn = MainModule.init || MainModule.bootstrap || MainModule.start || MainModule.default;
       const app = typeof initFn === 'function' ? await initFn() : null;
 
-      const canvas = appContainer.children.find((el) => el.tagName === 'CANVAS');
+      const canvas = Array.from(appContainer.children).find((el) => el.tagName === 'CANVAS');
       const ctx = canvas.getContext('2d');
 
       const initialTextCount = ctx.texts.length;

@@ -295,7 +295,7 @@ describe('STORY 1.3.1: Resolve UNRESPONSIVE_CANVAS_ZOOM (DF-GESTURE-02)', () => 
     it('should mount canvas inside document.getElementById("app") upon initialization', () => {
       init();
 
-      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const canvas = Array.from(appContainer.children).find((child) => child.tagName === 'CANVAS');
       assert.ok(
         canvas !== undefined,
         'Canvas element must be mounted into #app during entrypoint init'
@@ -305,7 +305,7 @@ describe('STORY 1.3.1: Resolve UNRESPONSIVE_CANVAS_ZOOM (DF-GESTURE-02)', () => 
     it('should bind the "wheel" event listener directly to the canvas element', () => {
       init();
 
-      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const canvas = Array.from(appContainer.children).find((child) => child.tagName === 'CANVAS');
       assert.ok(canvas, 'Canvas element must exist in #app');
 
       const wheelListeners = canvas.getListeners('wheel');
@@ -318,7 +318,7 @@ describe('STORY 1.3.1: Resolve UNRESPONSIVE_CANVAS_ZOOM (DF-GESTURE-02)', () => 
     it('should prevent default scrolling when wheel event is dispatched on canvas', () => {
       init();
 
-      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const canvas = Array.from(appContainer.children).find((child) => child.tagName === 'CANVAS');
       assert.ok(canvas, 'Canvas must be mounted');
 
       const wheelEvent = new MockWheelEvent('wheel', {
@@ -338,7 +338,7 @@ describe('STORY 1.3.1: Resolve UNRESPONSIVE_CANVAS_ZOOM (DF-GESTURE-02)', () => 
     it('should update active chart scale when wheel event is dispatched through the DOM canvas', () => {
       init();
 
-      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const canvas = Array.from(appContainer.children).find((child) => child.tagName === 'CANVAS');
       const chartInstance = getActiveChart ? getActiveChart() : null;
 
       assert.ok(

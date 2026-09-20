@@ -46,7 +46,7 @@ class MockElement extends EventTarget {
 
   querySelector(selector) {
     if (selector.toLowerCase() === 'canvas') {
-      return this.children.find((c) => c.tagName === 'CANVAS') || null;
+      return Array.from(this.children).find((c) => c.tagName === 'CANVAS') || null;
     }
     return null;
   }

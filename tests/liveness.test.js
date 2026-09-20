@@ -102,7 +102,7 @@ class MockElement {
 
   querySelector(selector) {
     if (selector === 'canvas' || selector === `#${this.id} canvas`) {
-      return this.children.find((c) => c.tagName === 'CANVAS') || null;
+      return Array.from(this.children).find((c) => c.tagName === 'CANVAS') || null;
     }
     return null;
   }
@@ -235,7 +235,7 @@ test('Resolve STATIC_APPLICATION: Entrypoint mounts active continuous animation 
   assert.ok(appRoot, 'Target container #app must exist');
   
   // Verify canvas is mounted inside #app or exists as render target
-  const canvas = appRoot.children.find((child) => child.tagName === 'CANVAS');
+  const canvas = Array.from(appRoot.children).find((child) => child.tagName === 'CANVAS');
   assert.ok(
     canvas || appRoot.children.length > 0,
     'Entrypoint must mount active UI components or canvas into #app'
@@ -260,7 +260,7 @@ test('Resolve STATIC_APPLICATION: Entrypoint mounts active continuous animation 
 test('Resolve STATIC_APPLICATION: Continuous canvas frame renders over 2.5-second observation window', async () => {
   await loadMainEntrypoint();
 
-  const canvas = appRoot.querySelector('canvas') || appRoot.children.find((c) => c.tagName === 'CANVAS');
+  const canvas = appRoot.querySelector('canvas') || Array.from(appRoot.children).find((c) => c.tagName === 'CANVAS');
   assert.ok(canvas, 'Canvas must be mounted to #app for pixel rendering');
   const ctx = canvas.getContext('2d');
 
@@ -300,7 +300,7 @@ test('Resolve STATIC_APPLICATION: Continuous canvas frame renders over 2.5-secon
 test('Resolve STATIC_APPLICATION: Dynamic state mutations occur across the 2.5s observation window', async () => {
   await loadMainEntrypoint();
 
-  const canvas = appRoot.querySelector('canvas') || appRoot.children.find((c) => c.tagName === 'CANVAS');
+  const canvas = appRoot.querySelector('canvas') || Array.from(appRoot.children).find((c) => c.tagName === 'CANVAS');
   assert.ok(canvas, 'Canvas must be present');
   const ctx = canvas.getContext('2d');
 
@@ -355,7 +355,7 @@ test('Resolve STATIC_APPLICATION: Dynamic state mutations occur across the 2.5s 
 test('Resolve STATIC_APPLICATION: Maximum inter-frame freeze gap must not exceed 100ms', async () => {
   await loadMainEntrypoint();
 
-  const canvas = appRoot.querySelector('canvas') || appRoot.children.find((c) => c.tagName === 'CANVAS');
+  const canvas = appRoot.querySelector('canvas') || Array.from(appRoot.children).find((c) => c.tagName === 'CANVAS');
   const ctx = canvas.getContext('2d');
 
   // Run full 2.5s simulation in individual 16.6ms frame increments

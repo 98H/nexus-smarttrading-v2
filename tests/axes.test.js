@@ -68,7 +68,7 @@ function setupDomMock() {
       return child;
     },
     querySelector(sel) {
-      if (sel === 'canvas') return this.children.find((c) => c.tagName === 'CANVAS') || null;
+      if (sel === 'canvas') return Array.from(this.children).find((c) => c.tagName === 'CANVAS') || null;
       return null;
     },
   };
