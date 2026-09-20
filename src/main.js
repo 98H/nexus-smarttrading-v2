@@ -2,8 +2,8 @@
  * SmartTrading-V2 — Main Application Entrypoint
  * Mounts the financial chart workspace, active canvas rendering context,
  * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02), analytical indicator
- * overlays (DF-OVERLAYS-01), and live legend components.
- * Satisfies STORY 2.3.1, STORY 30.2.1, and STORY 31.3.1.
+ * overlays (DF-OVERLAYS-01), live legend components, and interactive zoom/gesture wiring.
+ * Satisfies STORY 2.3.1, STORY 30.2.1, STORY 31.1.1, and STORY 31.3.1.
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -50,6 +50,7 @@ const appState = {
 };
 
 let activeAppInstance = null;
+export let activeChart = null;
 
 /**
  * Returns the current application state.
@@ -425,7 +426,8 @@ export function startRenderLoop(instance) {
 
 /**
  * Initializes and mounts the financial chart application into the specified DOM target.
- * Satisfies STORY 2.3.1 (DF-SCALES-01) and STORY 31.3.1 (DF-SCALES-02).
+ * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.1.1 (Resolve UNRESPONSIVE_CANVAS_ZOOM),
+ * and STORY 31.3.1 (DF-SCALES-02).
  *
  * @param {Object} [options={}] Initialization settings
  * @returns {Object} Chart workspace instance
@@ -618,7 +620,7 @@ export function initApp(options = {}) {
     }
   }
 
-  // Chart manager instance
+  // Chart manager instance (wires zoom wheel handler and viewport calculation)
   const chart = new Chart(canvas, {
     data: initialData,
     overlayType,
@@ -626,6 +628,9 @@ export function initApp(options = {}) {
     color: overlayColor,
     legend,
     axesRenderer,
+    initialZoom: options.initialZoom || options.zoom || 1.0,
+    minZoom: options.minZoom !== undefined ? options.minZoom : 0.2,
+    maxZoom: options.maxZoom !== undefined ? options.maxZoom : 5.0,
   });
 
   const instance = {
@@ -638,6 +643,8 @@ export function initApp(options = {}) {
     dock,
     chart,
     axesRenderer,
+    getZoom: () => chart.getZoom(),
+    setZoom: (z) => chart.setZoom(z),
     getAxesRenderer: () => axesRenderer,
     get data() {
       return chart.data;
@@ -693,6 +700,7 @@ export function initApp(options = {}) {
 
   instance.onDataUpdate = instance.updateData;
   activeAppInstance = instance;
+  activeChart = chart;
 
   // Window resize handler triggering coordinate axes redrawing
   const handleResize = () => {
@@ -740,13 +748,28 @@ export function initApp(options = {}) {
     canvas.addEventListener('mouseup', () => {
       isDragging = false;
     });
-
-    canvas.addEventListener('wheel', (e) => {
-      if (typeof e.preventDefault === 'function') e.preventDefault();
-    });
   }
 
   return instance;
+}
+
+/**
+ * Teardown and cleanup function for test suites and application unmounting.
+ */
+export function teardown() {
+  if (activeAppInstance) {
+    if (typeof activeAppInstance.stopRenderLoop === 'function') {
+      activeAppInstance.stopRenderLoop();
+    }
+    if (activeAppInstance.realtimeTimer && typeof clearInterval === 'function') {
+      clearInterval(activeAppInstance.realtimeTimer);
+    }
+    if (activeAppInstance.chart && typeof activeAppInstance.chart.destroy === 'function') {
+      activeAppInstance.chart.destroy();
+    }
+    activeAppInstance = null;
+  }
+  activeChart = null;
 }
 
 /**
