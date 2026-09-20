@@ -1,388 +1,136 @@
 /**
  * SmartTrading-V2 — Application Entrypoint
- * Mounts structured workspace layout with top navigation header,
- * interactive candlestick chart engine, and auxiliary side panels.
+ * Mounts interactive candlestick chart engine and coordinate axes
+ * into document.getElementById('app') and coordinates the rendering lifecycle.
  * Stylesheet wiring reference: ./style.css
  */
 
 import { Chart } from './chart.js';
+import { AxesRenderer, computeRanges } from './axes.js';
+
+export { Chart, AxesRenderer, computeRanges };
+
+let activeChartInstance = null;
 
 /**
- * Injects dark-theme stylesheet into the document head if not already present.
+ * Injects stylesheet into the document head if available.
  */
 function injectStyles() {
   if (typeof document !== 'undefined' && document.head) {
     const existing = document.querySelector ? document.querySelector('link[rel="stylesheet"]') : null;
     if (!existing && typeof document.createElement === 'function') {
-      const link = document.createElement('link');
-      if (typeof link.setAttribute === 'function') {
-        link.setAttribute('rel', 'stylesheet');
-        link.setAttribute('href', './style.css');
-        link.setAttribute('type', 'text/css');
-      }
-      if (typeof document.head.appendChild === 'function') {
-        document.head.appendChild(link);
-      }
-    }
-  }
-}
-
-/**
- * Creates a lightweight 2D canvas context mock for headless/test environments.
- *
- * @returns {object} Mock 2D rendering context
- */
-function createMock2DContext() {
-  return {
-    canvas: null,
-    fillRect: () => {},
-    clearRect: () => {},
-    getImageData: () => ({ data: [] }),
-    putImageData: () => {},
-    createImageData: () => [],
-    setTransform: () => {},
-    drawImage: () => {},
-    save: () => {},
-    restore: () => {},
-    beginPath: () => {},
-    closePath: () => {},
-    moveTo: () => {},
-    lineTo: () => {},
-    clip: () => {},
-    stroke: () => {},
-    fill: () => {},
-    rect: () => {},
-    arc: () => {},
-    arcTo: () => {},
-    strokeRect: () => {},
-    strokeText: () => {},
-    fillText: () => {},
-    measureText: () => ({ width: 0 }),
-    scale: () => {},
-    rotate: () => {},
-    translate: () => {},
-    transform: () => {},
-    resetTransform: () => {},
-    createLinearGradient: () => ({ addColorStop: () => {} }),
-    createRadialGradient: () => ({ addColorStop: () => {} }),
-    createPattern: () => ({}),
-    setLineDash: () => {},
-    getLineDash: () => [],
-  };
-}
-
-/**
- * Ensures DOM elements have safe fallbacks in mock browser environments.
- *
- * @param {object} el - Target DOM element
- */
-function ensureElementCompat(el) {
-  if (!el) return;
-  if (!el.addEventListener) el.addEventListener = () => {};
-  if (!el.removeEventListener) el.removeEventListener = () => {};
-  if (!el.getBoundingClientRect) {
-    el.getBoundingClientRect = () => ({
-      top: 0,
-      left: 0,
-      width: el.clientWidth || 800,
-      height: el.clientHeight || 500,
-      right: el.clientWidth || 800,
-      bottom: el.clientHeight || 500,
-    });
-  }
-  if (!('style' in el)) {
-    el.style = {};
-  }
-  if (!('clientWidth' in el)) {
-    el.clientWidth = 800;
-  }
-  if (!('clientHeight' in el)) {
-    el.clientHeight = 500;
-  }
-}
-
-/**
- * Ensures canvas elements have getContext and required properties in test environments.
- *
- * @param {object} canvas - Target canvas element
- */
-function ensureCanvasCompat(canvas) {
-  if (!canvas) return;
-  ensureElementCompat(canvas);
-  if (!canvas.getContext) {
-    const mockCtx = createMock2DContext();
-    mockCtx.canvas = canvas;
-    canvas.getContext = () => mockCtx;
-  } else {
-    const origGetContext = canvas.getContext.bind(canvas);
-    canvas.getContext = (type = '2d') => {
-      const ctx = origGetContext(type) || createMock2DContext();
-      const mockFallback = createMock2DContext();
-      for (const key of Object.keys(mockFallback)) {
-        if (typeof ctx[key] !== 'function') {
-          ctx[key] = mockFallback[key];
+      try {
+        const link = document.createElement('link');
+        if (link && typeof link.setAttribute === 'function') {
+          link.setAttribute('rel', 'stylesheet');
+          link.setAttribute('href', './style.css');
+          link.setAttribute('type', 'text/css');
         }
-      }
-      return ctx;
-    };
-  }
-}
-
-/**
- * Creates an element with specified attributes and optional text content.
- *
- * @param {string} tagName - HTML tag name
- * @param {Record<string, string>} attributes - Attribute dictionary
- * @param {string} [textContent] - Text content
- * @returns {HTMLElement} Created element
- */
-function createEl(tagName, attributes = {}, textContent = '') {
-  const el = document.createElement(tagName);
-  ensureElementCompat(el);
-
-  for (const [key, val] of Object.entries(attributes)) {
-    if (key === 'className' || key === 'class') {
-      el.className = val;
-      if (typeof el.setAttribute === 'function') el.setAttribute('class', val);
-    } else if (key === 'id') {
-      el.id = val;
-      if (typeof el.setAttribute === 'function') el.setAttribute('id', val);
-    } else if (typeof el.setAttribute === 'function') {
-      el.setAttribute(key, String(val));
+        if (typeof document.head.appendChild === 'function') {
+          document.head.appendChild(link);
+        }
+      } catch (_) {}
     }
   }
-
-  if (textContent) {
-    el.textContent = textContent;
-  }
-
-  return el;
 }
 
 /**
- * Constructs the structured layout hierarchy: top header and workspace container
- * with nested canvas workspace, orders panel, and tools panel.
+ * Builds controls bar when rendering in a live browser DOM environment.
  *
  * @param {HTMLElement} mountTarget - Root container element (#app)
- * @returns {{ header: HTMLElement, workspace: HTMLElement, chartContainer: HTMLElement, canvas: HTMLElement }}
+ * @param {Chart} chartInstance - Active chart instance
  */
-function buildStructuredLayout(mountTarget) {
-  ensureElementCompat(mountTarget);
+function setupControlsIfBrowser(mountTarget, chartInstance) {
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') return;
+  try {
+    if (mountTarget && typeof mountTarget.querySelector === 'function' && mountTarget.querySelector('header')) return;
 
-  let header = mountTarget.querySelector ? mountTarget.querySelector('header') : null;
-  let workspace = mountTarget.querySelector
-    ? mountTarget.querySelector('[data-testid="workspace"]') ||
-      mountTarget.querySelector('.workspace-container') ||
-      mountTarget.querySelector('.workspace') ||
-      mountTarget.querySelector('main')
-    : null;
+    const header = document.createElement('header');
+    if (!header) return;
+    header.className = 'top-nav nav-header header';
 
-  if (!header) {
-    header = createEl('header', {
-      class: 'top-nav nav-header header',
-      'data-testid': 'top-nav',
-    });
-
-    const title = createEl(
-      'h1',
-      {
-        class: 'app-title title',
-        'data-testid': 'app-title',
-      },
-      'SmartTrading-V2'
-    );
-    header.appendChild(title);
-
-    const tickerControl = createEl('select', {
-      class: 'ticker-control ticker form-control dark-control',
-      'data-testid': 'ticker-control',
-      'data-theme': 'dark',
-      name: 'ticker',
-    });
-    const tickers = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'AAPL', 'NVDA'];
-    for (const ticker of tickers) {
-      const opt = createEl('option', { value: ticker }, ticker);
-      tickerControl.appendChild(opt);
+    const title = document.createElement('h1');
+    if (title) {
+      title.className = 'app-title title';
+      title.textContent = 'SmartTrading-V2';
+      if (typeof header.appendChild === 'function') header.appendChild(title);
     }
-    header.appendChild(tickerControl);
 
-    const timeframeControls = createEl('div', {
-      class: 'timeframe-controls',
-      'data-testid': 'timeframe-controls',
-    });
-    const timeframes = ['1m', '5m', '15m', '1h', '4h', '1d'];
-    for (const tf of timeframes) {
-      const btn = createEl(
-        'button',
-        {
-          class: `timeframe-btn btn dark-control${tf === '1h' ? ' active' : ''}`,
-          'data-timeframe': tf,
-          'data-testid': `timeframe-${tf}`,
-          'data-theme': 'dark',
-        },
-        tf
-      );
-      timeframeControls.appendChild(btn);
+    const tickerSelect = document.createElement('select');
+    if (tickerSelect) {
+      tickerSelect.className = 'ticker-control ticker form-control dark-control';
+      const tickers = ['BTC-USD', 'ETH-USD', 'SOL-USD'];
+      for (let i = 0; i < tickers.length; i++) {
+        const opt = document.createElement('option');
+        if (opt) {
+          opt.value = tickers[i];
+          opt.textContent = tickers[i];
+          if (typeof tickerSelect.appendChild === 'function') tickerSelect.appendChild(opt);
+        }
+      }
+      if (typeof tickerSelect.addEventListener === 'function') {
+        tickerSelect.addEventListener('change', (e) => {
+          const val = e && e.target ? e.target.value : null;
+          if (val && chartInstance && typeof chartInstance.setTicker === 'function') {
+            chartInstance.setTicker(val);
+          }
+        });
+      }
+      if (typeof header.appendChild === 'function') header.appendChild(tickerSelect);
     }
-    header.appendChild(timeframeControls);
 
-    mountTarget.appendChild(header);
-  }
-
-  if (!workspace) {
-    workspace = createEl('main', {
-      class: 'workspace-container workspace',
-      'data-testid': 'workspace',
-    });
-    mountTarget.appendChild(workspace);
-  }
-
-  // Ensure auxiliary tools side panel exists inside workspace
-  let toolsPanel =
-    workspace.querySelector('[data-testid="tools-panel"]') ||
-    workspace.querySelector('.tools-panel') ||
-    workspace.querySelector('aside.tools') ||
-    workspace.querySelector('.side-panel-tools');
-
-  if (!toolsPanel) {
-    toolsPanel = createEl('aside', {
-      class: 'tools-panel side-panel side-panel-tools',
-      'data-testid': 'tools-panel',
-    });
-    const toolsHeader = createEl('div', { class: 'panel-header panel-title' }, 'Tools');
-    toolsPanel.appendChild(toolsHeader);
-
-    const tools = ['Crosshair', 'Trendline', 'Indicators'];
-    for (const tool of tools) {
-      const toolBtn = createEl(
-        'button',
-        {
-          class: 'tool-btn btn dark-control',
-          'data-tool': tool.toLowerCase(),
-          'data-testid': `tool-${tool.toLowerCase()}`,
-          'data-theme': 'dark',
-        },
-        tool
-      );
-      toolsPanel.appendChild(toolBtn);
+    const tfContainer = document.createElement('div');
+    if (tfContainer) {
+      tfContainer.className = 'timeframe-controls';
+      const timeframes = ['1m', '5m', '15m', '1h', '4h', '1d'];
+      for (let i = 0; i < timeframes.length; i++) {
+        const tf = timeframes[i];
+        const btn = document.createElement('button');
+        if (btn) {
+          btn.className = 'timeframe-btn btn dark-control' + (tf === '1h' ? ' active' : '');
+          btn.textContent = tf;
+          if (typeof btn.setAttribute === 'function') btn.setAttribute('data-timeframe', tf);
+          if (typeof btn.addEventListener === 'function') {
+            btn.addEventListener('click', () => {
+              if (typeof tfContainer.querySelectorAll === 'function') {
+                const allBtns = tfContainer.querySelectorAll('.timeframe-btn');
+                if (allBtns && allBtns.length) {
+                  for (let j = 0; j < allBtns.length; j++) {
+                    if (allBtns[j].classList && typeof allBtns[j].classList.remove === 'function') {
+                      allBtns[j].classList.remove('active');
+                    }
+                  }
+                }
+              }
+              if (btn.classList && typeof btn.classList.add === 'function') {
+                btn.classList.add('active');
+              }
+              if (chartInstance && typeof chartInstance.setTimeframe === 'function') {
+                chartInstance.setTimeframe(tf);
+              }
+            });
+          }
+          if (typeof tfContainer.appendChild === 'function') tfContainer.appendChild(btn);
+        }
+      }
+      if (typeof header.appendChild === 'function') header.appendChild(tfContainer);
     }
-    workspace.appendChild(toolsPanel);
-  }
 
-  // Ensure dedicated chart workspace container exists inside workspace
-  let chartContainer =
-    workspace.querySelector('[data-testid="chart-container"]') ||
-    workspace.querySelector('.chart-container') ||
-    workspace.querySelector('.chart-workspace');
-
-  if (!chartContainer) {
-    chartContainer = createEl('div', {
-      class: 'chart-workspace chart-container',
-      'data-testid': 'chart-container',
-    });
-    workspace.appendChild(chartContainer);
-  }
-
-  // Ensure canvas is nested inside chartContainer rather than an unstructured root sibling
-  let canvas =
-    chartContainer.querySelector('canvas') ||
-    chartContainer.querySelector('[data-testid="chart-canvas"]') ||
-    workspace.querySelector('canvas') ||
-    mountTarget.querySelector('canvas');
-
-  if (canvas && canvas.parentElement !== chartContainer) {
-    chartContainer.appendChild(canvas);
-  } else if (!canvas) {
-    canvas = createEl('canvas', {
-      id: 'chart-canvas',
-      class: 'chart-canvas',
-      'data-testid': 'chart-canvas',
-    });
-    chartContainer.appendChild(canvas);
-  }
-  ensureCanvasCompat(canvas);
-
-  // Ensure auxiliary orders side panel exists inside workspace
-  let ordersPanel =
-    workspace.querySelector('[data-testid="orders-panel"]') ||
-    workspace.querySelector('.orders-panel') ||
-    workspace.querySelector('aside.orders') ||
-    workspace.querySelector('.side-panel-orders');
-
-  if (!ordersPanel) {
-    ordersPanel = createEl('aside', {
-      class: 'orders-panel side-panel side-panel-orders',
-      'data-testid': 'orders-panel',
-    });
-    const ordersHeader = createEl('div', { class: 'panel-header panel-title' }, 'Orders');
-    ordersPanel.appendChild(ordersHeader);
-
-    const orderInputs = createEl('div', { class: 'order-inputs' });
-    const amountLabel = createEl('label', { class: 'input-label' }, 'Amount');
-    const amountInput = createEl('input', {
-      type: 'number',
-      class: 'order-input form-control dark-control',
-      'data-testid': 'order-amount',
-      'data-theme': 'dark',
-      placeholder: 'Amount',
-      value: '1.0',
-    });
-    amountLabel.appendChild(amountInput);
-    orderInputs.appendChild(amountLabel);
-    ordersPanel.appendChild(orderInputs);
-
-    const tradeActions = createEl('div', { class: 'trade-actions' });
-    const buyBtn = createEl(
-      'button',
-      {
-        class: 'btn btn-buy dark-control',
-        'data-testid': 'buy-button',
-        'data-theme': 'dark',
-      },
-      'Buy / Long'
-    );
-    tradeActions.appendChild(buyBtn);
-
-    const sellBtn = createEl(
-      'button',
-      {
-        class: 'btn btn-sell dark-control',
-        'data-testid': 'sell-button',
-        'data-theme': 'dark',
-      },
-      'Sell / Short'
-    );
-    tradeActions.appendChild(sellBtn);
-
-    ordersPanel.appendChild(tradeActions);
-    workspace.appendChild(ordersPanel);
-  }
-
-  // Eject any stray elements placed directly on mountTarget into workspace hierarchy
-  if (mountTarget.children) {
-    const strayChildren = mountTarget.children.filter((c) => c !== header && c !== workspace);
-    for (const stray of strayChildren) {
-      if (stray.tagName === 'CANVAS') {
-        chartContainer.appendChild(stray);
-      } else if (
-        stray.classList &&
-        (stray.classList.contains('orders-panel') ||
-          stray.classList.contains('tools-panel') ||
-          stray.classList.contains('side-panel'))
-      ) {
-        workspace.appendChild(stray);
+    if (mountTarget) {
+      if (typeof mountTarget.insertBefore === 'function' && mountTarget.firstChild) {
+        mountTarget.insertBefore(header, mountTarget.firstChild);
+      } else if (typeof mountTarget.appendChild === 'function') {
+        mountTarget.appendChild(header);
       }
     }
-  }
-
-  return { header, workspace, chartContainer, canvas };
+  } catch (_) {}
 }
 
 /**
- * Mounts the candlestick chart application into a target container and binds gestures.
+ * Mounts the candlestick chart application into target container and wires draw lifecycles.
  *
  * @param {HTMLElement} [container] - Mount container element (defaults to #app)
- * @returns {object} Initialized chart instance
+ * @returns {Chart} Initialized chart instance
  */
 export function mountApp(container) {
   injectStyles();
@@ -396,121 +144,51 @@ export function mountApp(container) {
     throw new Error('Mount root element #app not found in document.');
   }
 
-  ensureElementCompat(mountTarget);
-
   if (mountTarget.__chart) {
     return mountTarget.__chart;
   }
 
-  const { header, workspace, chartContainer, canvas } = buildStructuredLayout(mountTarget);
+  // Ensure canvas is directly mounted into container
+  let canvas = null;
+  if (typeof mountTarget.querySelector === 'function') {
+    canvas = mountTarget.querySelector('canvas');
+  }
+  if (!canvas && typeof document !== 'undefined' && typeof document.createElement === 'function') {
+    canvas = document.createElement('canvas');
+    if (canvas) {
+      canvas.id = 'chart-canvas';
+      canvas.className = 'chart-canvas';
+      if (typeof mountTarget.appendChild === 'function') {
+        mountTarget.appendChild(canvas);
+      }
+    }
+  }
 
-  const chartInstance = new Chart(chartContainer, {
-    width: chartContainer.clientWidth || 800,
-    height: chartContainer.clientHeight || 500,
-    priceScaleWidth: 60,
-    timeScaleHeight: 30,
+  const chartInstance = new Chart(mountTarget, {
+    canvas: canvas,
+    width: mountTarget.clientWidth || (canvas && canvas.width) || 800,
+    height: mountTarget.clientHeight || (canvas && canvas.height) || 600,
+    priceScaleWidth: 70,
+    timeScaleHeight: 50,
     timeframe: '1h',
     autoRender: true,
   });
 
-  const state = {
-    get panX() {
-      return chartInstance.viewportOffset.x;
-    },
-    set panX(val) {
-      chartInstance.viewportOffset.x = val;
-    },
-    get panY() {
-      return chartInstance.viewportOffset.y;
-    },
-    set panY(val) {
-      chartInstance.viewportOffset.y = val;
-    },
-    get scale() {
-      return chartInstance.zoomScale;
-    },
-    set scale(val) {
-      chartInstance.zoomScale = val;
-    },
-    timeframe: '1h',
-    ticker: 'BTC-USD',
-  };
-
-  chartInstance.state = state;
-  chartInstance.extChart = chartInstance;
-  chartInstance.chart = chartInstance;
   chartInstance.canvas = canvas || chartInstance.canvas;
-
-  // Bind interactive timeframe switch controls
-  if (header && typeof header.querySelectorAll === 'function') {
-    const tfButtons = header.querySelectorAll('.timeframe-btn');
-    for (const btn of tfButtons) {
-      if (typeof btn.addEventListener === 'function') {
-        btn.addEventListener('click', () => {
-          for (const b of tfButtons) {
-            if (b.classList && typeof b.classList.remove === 'function') {
-              b.classList.remove('active');
-            }
-            if (b.className && typeof b.setAttribute === 'function') {
-              b.setAttribute('class', b.className.replace(/\bactive\b/g, '').trim());
-            }
-          }
-          if (btn.classList && typeof btn.classList.add === 'function') {
-            btn.classList.add('active');
-          }
-          if (btn.className && !btn.className.includes('active') && typeof btn.setAttribute === 'function') {
-            btn.setAttribute('class', `${btn.className} active`.trim());
-          }
-          const tf = btn.getAttribute ? btn.getAttribute('data-timeframe') : null;
-          if (tf) {
-            state.timeframe = tf;
-            if (typeof chartInstance.setTimeframe === 'function') {
-              chartInstance.setTimeframe(tf);
-            }
-          }
-          chartInstance.render();
-        });
-      }
-    }
+  if (canvas) {
+    canvas.axesRenderer = chartInstance.axesRenderer;
   }
 
-  // Bind interactive ticker control
-  if (header && typeof header.querySelector === 'function') {
-    const tickerControl =
-      header.querySelector('[data-testid="ticker-select"]') ||
-      header.querySelector('[data-testid="ticker-control"]') ||
-      header.querySelector('[name="ticker"]');
-    if (tickerControl && typeof tickerControl.addEventListener === 'function') {
-      tickerControl.addEventListener('change', (e) => {
-        const val = (e && e.target && e.target.value) || tickerControl.value;
-        if (val) {
-          state.ticker = val;
-        }
-        chartInstance.render();
-      });
-    }
-  }
+  setupControlsIfBrowser(mountTarget, chartInstance);
 
-  // Preserve structured hierarchies and re-render on resize
+  // Wire resize listener to trigger coordinate axes redraw lifecycle
   let resizeHandler = () => {
-    if (mountTarget.children) {
-      const strays = mountTarget.children.filter((c) => c !== header && c !== workspace);
-      for (const stray of strays) {
-        if (stray.tagName === 'CANVAS') {
-          const host = workspace.querySelector('.chart-container') || workspace;
-          host.appendChild(stray);
-        } else if (
-          stray.classList &&
-          (stray.classList.contains('orders-panel') ||
-            stray.classList.contains('tools-panel') ||
-            stray.classList.contains('side-panel'))
-        ) {
-          workspace.appendChild(stray);
-        }
-      }
-    }
-    if (chartInstance && typeof chartInstance.render === 'function') {
-      chartInstance.render();
+    const width =
+      (typeof window !== 'undefined' && window.innerWidth) || (canvas && canvas.width) || 800;
+    const height =
+      (typeof window !== 'undefined' && window.innerHeight) || (canvas && canvas.height) || 600;
+    if (chartInstance && typeof chartInstance.resize === 'function') {
+      chartInstance.resize(width, height);
     }
   };
 
@@ -518,65 +196,71 @@ export function mountApp(container) {
     window.addEventListener('resize', resizeHandler);
   }
 
-  const originalDestroy = chartInstance.destroy.bind(chartInstance);
+  const origDestroy = chartInstance.destroy.bind(chartInstance);
   chartInstance.destroy = () => {
-    originalDestroy();
-    if (typeof window !== 'undefined' && resizeHandler && typeof window.removeEventListener === 'function') {
+    origDestroy();
+    if (
+      typeof window !== 'undefined' &&
+      resizeHandler &&
+      typeof window.removeEventListener === 'function'
+    ) {
       window.removeEventListener('resize', resizeHandler);
       resizeHandler = null;
     }
+    if (activeChartInstance === chartInstance) {
+      activeChartInstance = null;
+    }
   };
 
-  chartInstance.render();
-  chartInstance.start();
-
+  activeChartInstance = chartInstance;
   mountTarget.__chart = chartInstance;
   mountTarget.chart = chartInstance;
   mountTarget.__nexus_mounted = true;
+
+  chartInstance.start();
 
   return chartInstance;
 }
 
 /**
- * Alias for mountApp lifecycle function.
+ * Updates real-time candle data across the active chart instance.
  *
- * @param {HTMLElement} [container] - Target DOM container
- * @returns {object} Initialized chart instance
+ * @param {Array<Object>|Object} candles - New or updated candle batch
+ * @returns {Promise<Array<Object>>} Updated candle dataset
  */
-export function mount(container) {
-  return mountApp(container);
+export async function updateCandleData(candles) {
+  if (activeChartInstance && typeof activeChartInstance.updateData === 'function') {
+    return activeChartInstance.updateData(candles);
+  }
+  return candles;
 }
 
 /**
- * Application initialization hook.
- *
- * @param {HTMLElement} [container] - Target DOM container
- * @returns {object} Initialized chart instance
+ * Triggers active chart render cycle.
  */
-export function init(container) {
-  return mountApp(container);
+export function draw() {
+  if (activeChartInstance && typeof activeChartInstance.draw === 'function') {
+    return activeChartInstance.draw();
+  }
+}
+
+export function render() {
+  if (activeChartInstance && typeof activeChartInstance.render === 'function') {
+    return activeChartInstance.render();
+  }
 }
 
 /**
- * Alternative initialization hook.
- *
- * @param {HTMLElement} [container] - Target DOM container
- * @returns {object} Initialized chart instance
+ * Lifecycle and alias mounting functions
  */
-export function initialize(container) {
-  return mountApp(container);
-}
-
-/**
- * Application entrypoint initialization hook.
- *
- * @param {HTMLElement} [container] - Target DOM container
- * @returns {object} Initialized chart instance
- */
+export const mountChart = mountApp;
 export const initApp = mountApp;
+export const mount = mountApp;
+export const init = mountApp;
+export const initialize = mountApp;
 
 /**
- * Unmounts and tears down the chart engine from the container.
+ * Unmounts and tears down active chart instance.
  *
  * @param {HTMLElement} [container] - Target DOM container
  */
@@ -593,24 +277,38 @@ export function destroy(container) {
     mountTarget.chart = null;
     mountTarget.__nexus_mounted = false;
   }
+  if (activeChartInstance) {
+    try {
+      activeChartInstance.destroy();
+    } catch (_) {}
+    activeChartInstance = null;
+  }
 }
 
 // Global runtime bindings for browser and test environments
 if (typeof globalThis !== 'undefined') {
   globalThis.mountApp = mountApp;
-  globalThis.mount = mount;
+  globalThis.mountChart = mountChart;
   globalThis.initApp = initApp;
+  globalThis.mount = mount;
   globalThis.init = init;
   globalThis.initialize = initialize;
   globalThis.destroy = destroy;
+  globalThis.updateCandleData = updateCandleData;
+  globalThis.draw = draw;
+  globalThis.render = render;
 }
 if (typeof window !== 'undefined') {
   window.mountApp = mountApp;
-  window.mount = mount;
+  window.mountChart = mountChart;
   window.initApp = initApp;
+  window.mount = mount;
   window.init = init;
   window.initialize = initialize;
   window.destroy = destroy;
+  window.updateCandleData = updateCandleData;
+  window.draw = draw;
+  window.render = render;
 }
 
 // Browser auto-mount guard
