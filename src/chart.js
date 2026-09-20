@@ -94,7 +94,8 @@ export class Chart {
 
   start(fps = 60) {
     if (this.animationTimer) return;
-    const intervalMs = Math.max(1, Math.round(1000 / fps));
+    const targetFps = typeof fps === 'number' && fps > 0 ? fps : 60;
+    const intervalMs = Math.max(1, Math.round(1000 / targetFps));
     this.animationTimer = setInterval(() => {
       this.frameCount++;
       this.render();
