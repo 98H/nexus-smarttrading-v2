@@ -1,9 +1,9 @@
 /**
  * SmartTrading-V2 — Charting Engine
- * Implements financial chart rendering, price/time scales, candlestick series,
- * indicator overlays, layout geometry, interactive pan gestures, and canvas zoom.
+ * Implements financial chart rendering, price/time scales, coordinate axes & gridlines,
+ * candlestick series, indicator overlays, layout geometry, interactive pan gestures, and canvas zoom.
  * Satisfies STORY 29.4.1 (DF-GRAPHICS-01), STORY 29.2.1 (DF-GESTURE-01),
- * STORY 29.3.1 (DF-GESTURE-02), and STORY 29.6.1 (DF-SCALES-02).
+ * STORY 29.3.1 (DF-GESTURE-02), STORY 29.6.1 (DF-SCALES-02), and STORY 29.5.1 (DF-SCALES-01).
  */
 
 export const PERIOD_DEFAULT = 20;
@@ -175,7 +175,6 @@ export function formatTimestamp(timestamp, isDaily = false) {
 
 /**
  * Computes price and time ranges across candlestick data.
- * Supports both timestamp and time entity properties.
  *
  * @param {Array<Object>} candles
  * @returns {{ priceRange: { min: number, max: number }, timeRange: { min: number, max: number } }}
@@ -219,64 +218,171 @@ export function computeCandleRanges(candles = []) {
 export const computeRanges = computeCandleRanges;
 
 /**
- * Renders background grid lines across the plot area.
+ * Renders horizontal and vertical coordinate gridlines across the plot area (DF-SCALES-01).
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Object} plotArea
+ * @param {Object} [gridOptions={}]
  */
-export function renderGrid(ctx, plotArea, width, height) {
+export function renderGridlines(ctx, plotArea, gridOptions = {}) {
   if (!ctx || !plotArea) return;
   ctx.save?.();
-  ctx.strokeStyle = '#1e222d';
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = gridOptions.strokeStyle || '#1e222d';
+  ctx.lineWidth = gridOptions.lineWidth || 1;
 
-  const steps = 5;
-  for (let i = 1; i < steps; i++) {
-    const y = plotArea.top + (i / steps) * plotArea.height;
+  if (Array.isArray(gridOptions.lineDash) && typeof ctx.setLineDash === 'function') {
+    ctx.setLineDash(gridOptions.lineDash);
+  }
+
+  const left = plotArea.left ?? 0;
+  const right = plotArea.right ?? (left + (plotArea.width ?? 0));
+  const top = plotArea.top ?? 0;
+  const bottom = plotArea.bottom ?? (top + (plotArea.height ?? 0));
+  const width = plotArea.width ?? (right - left);
+  const height = plotArea.height ?? (bottom - top);
+
+  let horizontalTicks = gridOptions.horizontalTicks;
+  if (!horizontalTicks || !Array.isArray(horizontalTicks)) {
+    horizontalTicks = [];
+    const steps = gridOptions.horizontalSteps || gridOptions.steps || 5;
+    for (let i = 1; i < steps; i++) {
+      horizontalTicks.push(top + (i / steps) * height);
+    }
+  }
+
+  let verticalTicks = gridOptions.verticalTicks;
+  if (!verticalTicks || !Array.isArray(verticalTicks)) {
+    verticalTicks = [];
+    const steps = gridOptions.verticalSteps || gridOptions.steps || 5;
+    for (let i = 1; i < steps; i++) {
+      verticalTicks.push(left + (i / steps) * width);
+    }
+  }
+
+  for (const y of horizontalTicks) {
     ctx.beginPath?.();
-    ctx.moveTo?.(plotArea.left, y);
-    ctx.lineTo?.(plotArea.right, y);
+    ctx.moveTo?.(left, y);
+    ctx.lineTo?.(right, y);
     ctx.stroke?.();
   }
 
-  for (let i = 1; i < steps; i++) {
-    const x = plotArea.left + (i / steps) * plotArea.width;
+  for (const x of verticalTicks) {
     ctx.beginPath?.();
-    ctx.moveTo?.(x, plotArea.top);
-    ctx.lineTo?.(x, plotArea.bottom);
+    ctx.moveTo?.(x, top);
+    ctx.lineTo?.(x, bottom);
     ctx.stroke?.();
   }
+
   ctx.restore?.();
 }
 
 /**
- * Renders vertical price scale along the right edge.
+ * Backward-compatible grid renderer delegating to renderGridlines.
  */
-export function renderPriceScale(ctx, plotArea, priceRange, width, height) {
-  if (!ctx || !plotArea) return;
+export function renderGrid(ctx, plotArea, width, height, options = {}) {
+  renderGridlines(ctx, plotArea, options);
+}
+
+/**
+ * Renders vertical price scale axis with formatted price levels and tick marks (DF-SCALES-01).
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Object} axisBoundary
+ * @param {Object} [priceScaleConfig={}]
+ */
+export function renderPriceAxis(ctx, axisBoundary, priceScaleConfig = {}) {
+  if (!ctx || !axisBoundary) return;
   ctx.save?.();
 
+  const left = axisBoundary.left ?? 0;
+  const top = axisBoundary.top ?? 0;
+  const height = axisBoundary.height ?? 500;
+  const tickSize = typeof axisBoundary.tickSize === 'number' ? axisBoundary.tickSize : 5;
+
+  const minPrice = priceScaleConfig.minPrice ?? priceScaleConfig.min ?? priceScaleConfig.priceRange?.min ?? 0;
+  const maxPrice = priceScaleConfig.maxPrice ?? priceScaleConfig.max ?? priceScaleConfig.priceRange?.max ?? 100;
+  const range = maxPrice - minPrice || 1;
+
+  const format = typeof priceScaleConfig.format === 'function'
+    ? priceScaleConfig.format
+    : (val) => {
+        const span = Math.abs(maxPrice - minPrice);
+        let decimals = 2;
+        if (span > 0 && span < 0.01) decimals = 4;
+        else if (span > 0 && span < 0.1) decimals = 3;
+        else if (span > 0 && span < 1) decimals = 2;
+        return Number(val).toFixed(decimals);
+      };
+
+  let prices = [];
+  if (Array.isArray(priceScaleConfig.ticks) && typeof priceScaleConfig.ticks[0] === 'number') {
+    prices = [...priceScaleConfig.ticks];
+  } else if (typeof priceScaleConfig.step === 'number' && priceScaleConfig.step > 0) {
+    const step = priceScaleConfig.step;
+    for (let p = minPrice; p <= maxPrice + step * 0.0001; p += step) {
+      prices.push(Number(p.toFixed(8)));
+    }
+  } else {
+    const ticksCount = priceScaleConfig.ticksCount ?? (typeof priceScaleConfig.ticks === 'number' ? priceScaleConfig.ticks : 5);
+    const intervals = ticksCount;
+    for (let i = 0; i <= intervals; i++) {
+      const fraction = i / intervals;
+      const p = minPrice + fraction * (maxPrice - minPrice);
+      prices.push(Number(p.toFixed(8)));
+    }
+  }
+
+  // Draw vertical axis baseline along boundary
   ctx.beginPath?.();
-  ctx.strokeStyle = '#2a2e39';
-  ctx.lineWidth = 1;
-  ctx.moveTo?.(plotArea.right, 0);
-  ctx.lineTo?.(plotArea.right, plotArea.bottom);
+  ctx.strokeStyle = priceScaleConfig.strokeStyle || '#2a2e39';
+  ctx.lineWidth = priceScaleConfig.lineWidth || 1;
+  ctx.moveTo?.(left, top);
+  ctx.lineTo?.(left, top + height);
   ctx.stroke?.();
 
-  ctx.fillStyle = '#787b86';
-  ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  ctx.fillStyle = priceScaleConfig.textColor || '#787b86';
+  ctx.font = priceScaleConfig.font || '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
 
-  const { min, max } = priceRange || { min: 0, max: 100 };
-  const ticks = 5;
-  for (let i = 0; i <= ticks; i++) {
-    const fraction = i / ticks;
-    const price = max - fraction * (max - min);
-    const y = plotArea.top + fraction * plotArea.height;
+  for (const price of prices) {
+    const y = top + ((maxPrice - price) / range) * height;
+
+    // Tick line along boundary starting at axisBoundary.left
+    ctx.beginPath?.();
+    ctx.strokeStyle = priceScaleConfig.tickColor || priceScaleConfig.strokeStyle || '#363c4e';
+    ctx.lineWidth = 1;
+    ctx.moveTo?.(left, y);
+    ctx.lineTo?.(left + tickSize, y);
+    ctx.stroke?.();
+
+    const label = format(price);
     if (typeof ctx.fillText === 'function') {
-      ctx.fillText(price.toFixed(2), plotArea.right + 6, y);
+      ctx.fillText(label, left + tickSize + 2, y);
     }
   }
 
   ctx.restore?.();
+}
+
+/**
+ * Backward-compatible price scale renderer delegating to renderPriceAxis.
+ */
+export function renderPriceScale(ctx, plotArea, priceRange, width, height) {
+  if (!ctx || !plotArea) return;
+  const axisBoundary = {
+    left: plotArea.right,
+    top: plotArea.top,
+    width: (width || 800) - plotArea.right,
+    height: plotArea.height,
+    tickSize: 5,
+  };
+  const { min, max } = priceRange || { min: 0, max: 100 };
+  renderPriceAxis(ctx, axisBoundary, {
+    minPrice: min,
+    maxPrice: max,
+    ticksCount: 5,
+  });
 }
 
 /**
@@ -459,6 +565,12 @@ export class AxesRenderer {
   static renderPriceScale(ctx, plotArea, priceRange, width, height) {
     return renderPriceScale(ctx, plotArea, priceRange, width, height);
   }
+  static renderPriceAxis(ctx, axisBoundary, priceScaleConfig) {
+    return renderPriceAxis(ctx, axisBoundary, priceScaleConfig);
+  }
+  static renderGridlines(ctx, plotArea, gridOptions) {
+    return renderGridlines(ctx, plotArea, gridOptions);
+  }
   static renderTimeScale(ctx, plotArea, candles, width, height, reservedBottom) {
     return renderTimeScale(ctx, plotArea, candles, width, height, reservedBottom);
   }
@@ -466,7 +578,7 @@ export class AxesRenderer {
 
 /**
  * Core quantitative Chart class supporting viewport panning, responsive rendering,
- * horizontal time axis anchoring, and wheel gesture zooming (DF-SCALES-02, DF-GESTURE-02).
+ * coordinate axes, gridlines, price/time scales, and wheel gesture zooming (DF-SCALES-01, DF-SCALES-02).
  */
 export class Chart {
   constructor(canvasOrOptions = {}, maybeOptions = {}) {
@@ -492,10 +604,17 @@ export class Chart {
       }
       if (!canvas && typeof document !== 'undefined' && typeof document.createElement === 'function') {
         canvas = document.createElement('canvas');
+        if (canvas && !canvas.tagName) {
+          canvas.tagName = 'CANVAS';
+        }
         if (typeof container.appendChild === 'function') {
           container.appendChild(canvas);
         }
       }
+    }
+
+    if (canvas && !canvas.tagName) {
+      canvas.tagName = 'CANVAS';
     }
 
     this.canvas = canvas;
@@ -554,6 +673,10 @@ export class Chart {
       },
     };
 
+    if (options.plotArea) {
+      this.customPlotArea = { ...options.plotArea };
+    }
+
     const initialCandles = options.data !== undefined ? options.data : options.candles;
     this.candles = initialCandles !== undefined ? initialCandles : generateDenseCandles(80);
     this.data = this.candles;
@@ -568,6 +691,10 @@ export class Chart {
     }
 
     this.updatePlotArea();
+  }
+
+  isAxesActive() {
+    return true;
   }
 
   getLayout() {
@@ -593,30 +720,48 @@ export class Chart {
   }
 
   _recalculateScales() {
-    const ranges = computeCandleRanges(this.candles);
-    const timeMin = ranges.timeRange.min;
-    const timeMax = ranges.timeRange.max;
-    const timeCenter = (timeMin + timeMax) / 2;
-    const timeSpan = (timeMax - timeMin) / (this.scale || 1.0);
+    if (this.options?.priceRange && this.options.candles === undefined && this.options.data === undefined) {
+      this.priceScale = {
+        range: {
+          min: this.options.priceRange.min,
+          max: this.options.priceRange.max,
+        },
+      };
+    } else {
+      const ranges = computeCandleRanges(this.candles);
+      const priceMin = ranges.priceRange.min;
+      const priceMax = ranges.priceRange.max;
+      const priceCenter = (priceMin + priceMax) / 2;
+      const priceSpan = (priceMax - priceMin) / (this.scale || 1.0);
 
-    this.timeScale = {
-      range: {
-        min: timeCenter - timeSpan / 2,
-        max: timeCenter + timeSpan / 2,
-      },
-    };
+      this.priceScale = {
+        range: {
+          min: priceCenter - priceSpan / 2,
+          max: priceCenter + priceSpan / 2,
+        },
+      };
+    }
 
-    const priceMin = ranges.priceRange.min;
-    const priceMax = ranges.priceRange.max;
-    const priceCenter = (priceMin + priceMax) / 2;
-    const priceSpan = (priceMax - priceMin) / (this.scale || 1.0);
+    if (this.options?.timeRange && this.options.candles === undefined && this.options.data === undefined) {
+      const min = this.options.timeRange.start ?? this.options.timeRange.min ?? 0;
+      const max = this.options.timeRange.end ?? this.options.timeRange.max ?? 1;
+      this.timeScale = {
+        range: { min, max },
+      };
+    } else {
+      const ranges = computeCandleRanges(this.candles);
+      const timeMin = ranges.timeRange.min;
+      const timeMax = ranges.timeRange.max;
+      const timeCenter = (timeMin + timeMax) / 2;
+      const timeSpan = (timeMax - timeMin) / (this.scale || 1.0);
 
-    this.priceScale = {
-      range: {
-        min: priceCenter - priceSpan / 2,
-        max: priceCenter + priceSpan / 2,
-      },
-    };
+      this.timeScale = {
+        range: {
+          min: timeCenter - timeSpan / 2,
+          max: timeCenter + timeSpan / 2,
+        },
+      };
+    }
   }
 
   getZoomLevel() {
@@ -762,6 +907,9 @@ export class Chart {
       : this.canvas;
 
     if (canvasElement) {
+      if (!canvasElement.tagName) {
+        canvasElement.tagName = 'CANVAS';
+      }
       if (this.canvas !== canvasElement) {
         this._detachEvents();
         this.canvas = canvasElement;
@@ -771,6 +919,9 @@ export class Chart {
         this.ctx = canvasElement.getContext('2d');
       }
     } else if (this.canvas && typeof this.canvas.getContext === 'function') {
+      if (!this.canvas.tagName) {
+        this.canvas.tagName = 'CANVAS';
+      }
       this.ctx = this.canvas.getContext('2d');
       if (!this._eventTarget) {
         this._attachEvents(this.canvas);
@@ -820,6 +971,10 @@ export class Chart {
   }
 
   updatePlotArea() {
+    if (this.customPlotArea) {
+      this.plotArea = { ...this.customPlotArea };
+      return;
+    }
     const w = (this.canvas && this.canvas.width) || this.width || 800;
     const h = (this.canvas && this.canvas.height) || this.height || 600;
     const reservedBottom = this.layout.bottomMargin ?? this.layout.bottomPadding ?? this.layout.padding.bottom;
@@ -859,6 +1014,7 @@ export class Chart {
       this.canvas.width = w;
       this.canvas.height = h;
     }
+    this.customPlotArea = null;
     this.updatePlotArea();
     this.render();
   }
@@ -871,11 +1027,6 @@ export class Chart {
     this.render();
   }
 
-  /**
-   * Synchronously updates timeseries or candlestick dataset and redraws time axis (DF-SCALES-02).
-   *
-   * @param {Array<Object>} candles New candlestick timeseries domain
-   */
   updateData(candles) {
     this.candles = Array.isArray(candles) ? [...candles] : [];
     this.data = this.candles;
@@ -891,6 +1042,9 @@ export class Chart {
   render() {
     if (!this.canvas && this.container && typeof document !== 'undefined' && typeof document.createElement === 'function') {
       this.canvas = document.createElement('canvas');
+      if (!this.canvas.tagName) {
+        this.canvas.tagName = 'CANVAS';
+      }
       this.canvas.width = this.width;
       this.canvas.height = this.height;
       if (typeof this.container.appendChild === 'function') {
@@ -920,8 +1074,8 @@ export class Chart {
 
     const priceRange = this.getPriceRange();
 
-    // 1. Grid lines
-    renderGrid(ctx, this.plotArea, w, h);
+    // 1. Horizontal and vertical coordinate gridlines across plot area (DF-SCALES-01)
+    renderGridlines(ctx, this.plotArea, this.options.gridOptions || {});
 
     // 2. Candlestick series and indicator overlay inside viewport transform
     if (typeof ctx.save === 'function') ctx.save();
@@ -939,8 +1093,21 @@ export class Chart {
 
     if (typeof ctx.restore === 'function') ctx.restore();
 
-    // 3. Vertical price scale along the right boundary
-    renderPriceScale(ctx, this.plotArea, priceRange, w, h);
+    // 3. Vertical price scale along the right boundary (DF-SCALES-01)
+    const axisBoundary = {
+      left: this.plotArea.right,
+      top: this.plotArea.top,
+      width: Math.max(0, w - this.plotArea.right),
+      height: this.plotArea.height,
+      tickSize: 5,
+    };
+    renderPriceAxis(ctx, axisBoundary, {
+      minPrice: priceRange.min,
+      maxPrice: priceRange.max,
+      ticksCount: 5,
+      format: (val) => (typeof val === 'number' ? val.toFixed(2) : String(val)),
+      ...(this.options.priceScale || {}),
+    });
 
     // 4. Horizontal time scale axis anchored along the bottom boundary above the fold (DF-SCALES-02)
     renderTimeScale(ctx, this.plotArea, this.candles, w, h, reservedBottom);
