@@ -1,0 +1,177 @@
+/* SmartTrading-V2 — Global & Structured Layout Styles */
+
+:root {
+  --bg-primary: #12141a;
+  --bg-secondary: #1a1d26;
+  --bg-tertiary: #222634;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --border-color: #30363d;
+  --accent-color: #58a6ff;
+  --accent-hover: #79c0ff;
+  --bullish-color: #26a69a;
+  --bearish-color: #ef5350;
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+/* Top Navigation Header */
+header,
+.top-nav,
+.nav-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  height: 52px;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+  z-index: 10;
+  gap: 16px;
+}
+
+.app-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.ticker-control,
+.ticker-selector,
+select.ticker {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.ticker-control:hover,
+.ticker-control:focus {
+  border-color: var(--accent-color);
+}
+
+.timeframe-controls,
+.timeframe-selector,
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background-color: var(--bg-tertiary);
+  padding: 3px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+}
+
+.timeframe-btn,
+.timeframe-controls button {
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  padding: 5px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.timeframe-btn:hover,
+.timeframe-controls button:hover {
+  color: var(--text-primary);
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+.timeframe-btn.active,
+.timeframe-controls button.active {
+  background-color: var(--accent-color);
+  color: #ffffff;
+}
+
+/* Workspace Container — Flex layout hosting chart and side panels */
+.workspace-container,
+main.workspace {
+  display: flex;
+  flex: 1;
+  height: calc(100vh - 52px);
+  overflow: hidden;
+  position: relative;
+}
+
+/* Dedicated Chart Workspace */
+.chart-workspace,
+.chart-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background-color: var(--bg-primary);
+  overflow: hidden;
+  min-width: 0;
+}
+
+.chart-workspace canvas,
+.chart-container canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Side Panels */
+.side-panel,
+aside,
+.orders-panel,
+.tools-panel {
+  width: 280px;
+  background-color: var(--bg-secondary);
+  border-left: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+
+.tools-panel {
+  width: 64px;
+  border-left: none;
+  border-right: 1px solid var(--border-color);
+  align-items: center;
+}
+
+.panel-header {
+  padding: 12px 16px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-color);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
