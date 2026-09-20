@@ -2,11 +2,11 @@
  * SmartTrading-V2 — Main Application Entrypoint
  * Responsible for root application mounting, layout composition,
  * coordinate mapping, interactive control binding, pan/zoom gesture wiring,
- * and continuous liveness render loops.
+ * auxiliary dock co-location, and continuous liveness render loops.
  * Satisfies STORY 29.1.1 (DF-LIVENESS-01), STORY 29.4.1 (DF-GRAPHICS-01),
  * STORY 29.7.1 (DF-TOOLS-01), STORY 29.2.1 (DF-GESTURE-01),
  * STORY 29.3.1 (DF-GESTURE-02), STORY 29.6.1 (DF-SCALES-02),
- * and STORY 29.5.1 (DF-SCALES-01).
+ * STORY 29.5.1 (DF-SCALES-01), and STORY 30.6.1 (DF-PANEL-01).
  */
 
 import {
@@ -146,6 +146,32 @@ function setClass(element, className) {
 }
 
 /**
+ * Applies dark-theme styling and properties to control elements.
+ *
+ * @param {HTMLElement|Object} el
+ * @param {boolean} [isButton=true]
+ */
+function applyControlTheme(el, isButton = true) {
+  if (!el) return;
+  const style = isButton
+    ? 'background: #1e222d; color: #d1d4dc; border: 1px solid #363c4e; border-radius: 4px; padding: 6px 10px; cursor: pointer;'
+    : 'background: #1e222d; color: #d1d4dc; border: 1px solid #363c4e; border-radius: 4px; padding: 6px 10px;';
+  if (typeof el.setAttribute === 'function') {
+    el.setAttribute('style', style);
+  }
+  if (el.style) {
+    el.style.background = '#1e222d';
+    el.style.color = '#d1d4dc';
+    el.style.border = '1px solid #363c4e';
+    el.style.borderRadius = '4px';
+    el.style.padding = '6px 10px';
+    if (isButton) {
+      el.style.cursor = 'pointer';
+    }
+  }
+}
+
+/**
  * Recursively collects all canvas elements mounted within an element.
  *
  * @param {HTMLElement|Object} el
@@ -239,6 +265,7 @@ export function activeChartInstance() {
 /**
  * Initiates continuous self-sustaining render loop via requestAnimationFrame
  * and propagates dynamic updates directly to DOM and canvas elements (STORY 29.1.1: DF-LIVENESS-01).
+ * Uses unref'd timer fallbacks in Node.js headless environments to prevent process hang.
  *
  * @param {HTMLElement|Object} target
  * @param {Chart|null} chartInstance
@@ -249,6 +276,17 @@ function startRenderLoop(target, chartInstance, canvas, legend) {
   if (target._renderLoopRunning) {
     return;
   }
+  if (target._rafId) {
+    const cancel =
+      typeof cancelAnimationFrame === 'function'
+        ? cancelAnimationFrame
+        : typeof window !== 'undefined' && window.cancelAnimationFrame;
+    if (typeof cancel === 'function') {
+      cancel(target._rafId);
+    } else {
+      clearTimeout(target._rafId);
+    }
+  }
   target._renderLoopRunning = true;
 
   const scheduleFrame = (cb) => {
@@ -258,7 +296,11 @@ function startRenderLoop(target, chartInstance, canvas, legend) {
     if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
       return window.requestAnimationFrame(cb);
     }
-    return setTimeout(cb, 16);
+    const timer = setTimeout(cb, 16);
+    if (timer && typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    return timer;
   };
 
   let frameCount = 0;
@@ -266,7 +308,11 @@ function startRenderLoop(target, chartInstance, canvas, legend) {
   const priceHistory = [100.0];
 
   function tick(timestamp) {
-    // Schedule next frame immediately to maintain loop continuity across frame pacing drops
+    if (typeof document === 'undefined' && typeof window === 'undefined') {
+      target._renderLoopRunning = false;
+      return;
+    }
+
     target._rafId = scheduleFrame(tick);
 
     const currentTime =
@@ -278,7 +324,6 @@ function startRenderLoop(target, chartInstance, canvas, legend) {
 
     frameCount++;
 
-    // Mutate state over time: simulate continuous dynamic price movement and EMA recalculation
     const tSec = currentTime / 1000;
     simulatedPrice = 100 + 15 * Math.sin(tSec * 2) + 5 * Math.cos(tSec * 5);
     priceHistory.push(simulatedPrice);
@@ -289,7 +334,6 @@ function startRenderLoop(target, chartInstance, canvas, legend) {
     const emaValues = calculateEMA(priceHistory, 20);
     const currentEMA = emaValues.length > 0 ? emaValues[emaValues.length - 1] : simulatedPrice;
 
-    // Mutate live DOM container attributes and legend overlay
     if (typeof target.setAttribute === 'function') {
       target.setAttribute('data-frame', String(frameCount));
     }
@@ -299,7 +343,6 @@ function startRenderLoop(target, chartInstance, canvas, legend) {
 
     const canvases = collectCanvases(target);
 
-    // Clear canvases prior to frame paint
     for (const c of canvases) {
       if (typeof c.getContext !== 'function') continue;
       const ctx = c.getContext('2d');
@@ -309,7 +352,6 @@ function startRenderLoop(target, chartInstance, canvas, legend) {
       ctx.clearRect(0, 0, w, h);
     }
 
-    // Tick internal chart instance if available
     if (chartInstance) {
       try {
         if (typeof chartInstance.tick === 'function') {
@@ -322,7 +364,6 @@ function startRenderLoop(target, chartInstance, canvas, legend) {
       } catch {}
     }
 
-    // Mutate canvas coordinates and render dynamic indicator overlays
     for (const c of canvases) {
       if (typeof c.getContext !== 'function') continue;
       const ctx = c.getContext('2d');
@@ -340,27 +381,25 @@ function startRenderLoop(target, chartInstance, canvas, legend) {
       ctx.beginPath();
       ctx.strokeRect(0, 0, w, h);
 
-      // Render dynamic indicator overlay line
       ctx.beginPath();
       ctx.stroke();
 
-      // Render dynamic ticker marker and price beacon with time-divergent coordinates
       ctx.fillRect(w - 70, yCoord - 10, 65, 20);
       ctx.fillText(simulatedPrice.toFixed(2), w - 65, yCoord + 4);
 
-      // Animated pulsing beacon
       ctx.beginPath();
       ctx.arc(w - 70, yCoord, 3 + Math.sin(tSec * 4) * 1.5, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 
-  // Queue initial render cycle immediately upon mounting
   target._rafId = scheduleFrame(tick);
 }
 
 /**
  * Mounts application workspace, canvas, controls, and coordinate axes into the target container.
+ * Satisfies STORY 30.6.1 by co-locating the primary chart and semantic <aside> auxiliary dock
+ * horizontally side-by-side within a flex workspace without overflowing 100vh.
  *
  * @param {HTMLElement|Object|string} [containerOrOptions] Target root DOM element or configuration
  * @returns {HTMLElement|Object} Mounted container
@@ -406,14 +445,15 @@ export function mount(containerOrOptions) {
 
   ensureElementMethods(target, 'div');
 
-  if (target._appMounted && target.children && Array.from(target.children).some((c) => c.tagName === 'CANVAS')) {
+  const existingCanvasInTree =
+    (typeof target.querySelector === 'function' && target.querySelector('canvas')) || target.canvas;
+  if (target._appMounted && existingCanvasInTree) {
     if (!target._renderLoopRunning) {
-      const childArr = Array.from(target.children);
-      const existingCanvas = childArr.find((c) => c.tagName === 'CANVAS');
-      const existingLegend = childArr.find(
-        (c) => c.className && typeof c.className === 'string' && c.className.includes('indicator-legend')
-      );
-      startRenderLoop(target, target._chart || chart, existingCanvas, existingLegend);
+      const existingLegend =
+        typeof target.querySelector === 'function'
+          ? target.querySelector('.indicator-legend')
+          : null;
+      startRenderLoop(target, target._chart || chart, existingCanvasInTree, existingLegend);
     }
     return target;
   }
@@ -423,7 +463,7 @@ export function mount(containerOrOptions) {
     try {
       ensureSelectorCompatibility();
     } catch {
-      // Ignored in headless mocks
+      // Graceful fallback for headless mocks
     }
   }
 
@@ -432,26 +472,25 @@ export function mount(containerOrOptions) {
     document.body.style.margin = '0';
     document.body.style.padding = '0';
     document.body.style.height = '100vh';
+    document.body.style.maxHeight = '100vh';
     document.body.style.overflow = 'hidden';
   }
 
   if (typeof target.setAttribute === 'function') {
     target.setAttribute(
       'style',
-      'display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: #131722; color: #d1d4dc; font-family: sans-serif;'
+      'display: flex; flex-direction: column; height: 100vh; max-height: 100vh; overflow: hidden; background: #131722; color: #d1d4dc; font-family: sans-serif;'
     );
   }
   if (target.style) {
     target.style.display = 'flex';
     target.style.flexDirection = 'column';
     target.style.height = '100vh';
+    target.style.maxHeight = '100vh';
     target.style.overflow = 'hidden';
     target.style.background = '#131722';
     target.style.color = '#d1d4dc';
   }
-
-  const buttonStyle =
-    'background: #1e222d; color: #d1d4dc; border: 1px solid #363c4e; border-radius: 4px; padding: 6px 10px; cursor: pointer;';
 
   // Toolbar hosting interactive tabs and controls
   const toolbar = createElement('div');
@@ -459,7 +498,7 @@ export function mount(containerOrOptions) {
   if (toolbar && typeof toolbar.setAttribute === 'function') {
     toolbar.setAttribute(
       'style',
-      'display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 12px; background: #1e222d; border-bottom: 1px solid #363c4e; align-items: center;'
+      'display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 12px; background: #1e222d; border-bottom: 1px solid #363c4e; align-items: center; flex-shrink: 0;'
     );
   }
   if (toolbar && toolbar.style) {
@@ -470,41 +509,36 @@ export function mount(containerOrOptions) {
     toolbar.style.background = '#1e222d';
     toolbar.style.borderBottom = '1px solid #363c4e';
     toolbar.style.alignItems = 'center';
+    toolbar.style.flexShrink = '0';
   }
 
   // Tabs
   const tabChart = createElement('button');
   setClass(tabChart, 'tab-btn');
-  if (tabChart && typeof tabChart.setAttribute === 'function') {
+  if (tabChart) {
     tabChart.setAttribute('data-tab', 'chart');
     tabChart.setAttribute('aria-selected', 'false');
-    tabChart.setAttribute('style', buttonStyle);
-  }
-  if (tabChart) {
+    applyControlTheme(tabChart, true);
     tabChart.textContent = 'Chart';
     toolbar.appendChild(tabChart);
   }
 
   const tabLayers = createElement('button');
   setClass(tabLayers, 'tab-btn');
-  if (tabLayers && typeof tabLayers.setAttribute === 'function') {
+  if (tabLayers) {
     tabLayers.setAttribute('data-tab', 'layers');
     tabLayers.setAttribute('aria-selected', 'false');
-    tabLayers.setAttribute('style', buttonStyle);
-  }
-  if (tabLayers) {
+    applyControlTheme(tabLayers, true);
     tabLayers.textContent = 'Layers';
     toolbar.appendChild(tabLayers);
   }
 
   const tabIndicators = createElement('button');
   setClass(tabIndicators, 'tab-btn');
-  if (tabIndicators && typeof tabIndicators.setAttribute === 'function') {
+  if (tabIndicators) {
     tabIndicators.setAttribute('data-tab', 'indicators');
     tabIndicators.setAttribute('aria-selected', 'false');
-    tabIndicators.setAttribute('style', buttonStyle);
-  }
-  if (tabIndicators) {
+    applyControlTheme(tabIndicators, true);
     tabIndicators.textContent = 'Indicators';
     toolbar.appendChild(tabIndicators);
   }
@@ -512,22 +546,18 @@ export function mount(containerOrOptions) {
   // Action Buttons
   const btnZoomIn = createElement('button');
   setClass(btnZoomIn, 'control-btn');
-  if (btnZoomIn && typeof btnZoomIn.setAttribute === 'function') {
-    btnZoomIn.setAttribute('data-control', 'zoom-in');
-    btnZoomIn.setAttribute('style', buttonStyle);
-  }
   if (btnZoomIn) {
+    btnZoomIn.setAttribute('data-control', 'zoom-in');
+    applyControlTheme(btnZoomIn, true);
     btnZoomIn.textContent = 'Zoom In';
     toolbar.appendChild(btnZoomIn);
   }
 
   const btnZoomOut = createElement('button');
   setClass(btnZoomOut, 'control-btn');
-  if (btnZoomOut && typeof btnZoomOut.setAttribute === 'function') {
-    btnZoomOut.setAttribute('data-control', 'zoom-out');
-    btnZoomOut.setAttribute('style', buttonStyle);
-  }
   if (btnZoomOut) {
+    btnZoomOut.setAttribute('data-control', 'zoom-out');
+    applyControlTheme(btnZoomOut, true);
     btnZoomOut.textContent = 'Zoom Out';
     toolbar.appendChild(btnZoomOut);
   }
@@ -536,11 +566,9 @@ export function mount(containerOrOptions) {
   setClass(btnPan, 'control-btn');
   if (btnPan) {
     btnPan.id = 'btn-pan';
-    if (typeof btnPan.setAttribute === 'function') {
-      btnPan.setAttribute('id', 'btn-pan');
-      btnPan.setAttribute('data-control', 'pan');
-      btnPan.setAttribute('style', buttonStyle);
-    }
+    btnPan.setAttribute('id', 'btn-pan');
+    btnPan.setAttribute('data-control', 'pan');
+    applyControlTheme(btnPan, true);
     btnPan.textContent = 'Pan Tool';
     toolbar.appendChild(btnPan);
   }
@@ -549,11 +577,9 @@ export function mount(containerOrOptions) {
   setClass(btnReset, 'control-btn');
   if (btnReset) {
     btnReset.id = 'btn-reset';
-    if (typeof btnReset.setAttribute === 'function') {
-      btnReset.setAttribute('id', 'btn-reset');
-      btnReset.setAttribute('data-control', 'reset');
-      btnReset.setAttribute('style', buttonStyle);
-    }
+    btnReset.setAttribute('id', 'btn-reset');
+    btnReset.setAttribute('data-control', 'reset');
+    applyControlTheme(btnReset, true);
     btnReset.textContent = 'Reset View';
     toolbar.appendChild(btnReset);
   }
@@ -597,7 +623,43 @@ export function mount(containerOrOptions) {
     target.appendChild(legend);
   }
 
-  // Primary workspace chart canvas actively mounted to root container #app
+  // Interactive Tool Palette (STORY 29.7.1: DF-TOOLS-01)
+  let toolPalette = null;
+  let paletteElement = null;
+  try {
+    toolPalette = new ToolPalette();
+    if (toolPalette && typeof toolPalette.render === 'function') {
+      paletteElement = toolPalette.render();
+    }
+    target._toolPalette = toolPalette;
+  } catch {
+    paletteElement = null;
+  }
+
+  if (paletteElement) {
+    target.appendChild(paletteElement);
+  }
+
+  // Primary workspace container hosting chart canvas side-by-side with dock (DF-LAYOUT-02 & DF-PANEL-01)
+  const workspace = createElement('div');
+  setClass(workspace, 'main-workspace workspace chart-container chart-workspace');
+  if (workspace && typeof workspace.setAttribute === 'function') {
+    workspace.setAttribute(
+      'style',
+      'display: flex; flex-direction: row; flex: 1; min-height: 0; max-height: 100%; overflow: hidden; position: relative;'
+    );
+  }
+  if (workspace && workspace.style) {
+    workspace.style.display = 'flex';
+    workspace.style.flexDirection = 'row';
+    workspace.style.flex = '1';
+    workspace.style.minHeight = '0';
+    workspace.style.maxHeight = '100%';
+    workspace.style.overflow = 'hidden';
+    workspace.style.position = 'relative';
+  }
+
+  // Primary workspace chart canvas actively mounted to workspace container
   let canvas = null;
   if (typeof target.querySelector === 'function') {
     canvas = target.querySelector('canvas');
@@ -608,7 +670,7 @@ export function mount(containerOrOptions) {
     if (canvas) {
       canvas.tagName = 'CANVAS';
       canvas.id = 'workspace-canvas';
-      setClass(canvas, 'chart-canvas');
+      setClass(canvas, 'chart-canvas primary-chart');
       if (typeof canvas.setAttribute === 'function') {
         canvas.setAttribute(
           'style',
@@ -624,12 +686,12 @@ export function mount(containerOrOptions) {
       }
       if (!canvas.width) canvas.width = 1000;
       if (!canvas.height) canvas.height = 500;
-      target.appendChild(canvas);
+      workspace.appendChild(canvas);
     }
   } else {
     ensureElementMethods(canvas, 'canvas');
     canvas.tagName = 'CANVAS';
-    setClass(canvas, 'chart-canvas');
+    setClass(canvas, 'chart-canvas primary-chart');
     if (!canvas.id) canvas.id = 'workspace-canvas';
     if (typeof canvas.setAttribute === 'function' && !canvas.getAttribute('style')) {
       canvas.setAttribute(
@@ -646,6 +708,61 @@ export function mount(containerOrOptions) {
     }
     if (!canvas.width) canvas.width = 1000;
     if (!canvas.height) canvas.height = 500;
+    if (canvas.parentElement && canvas.parentElement !== workspace) {
+      try {
+        canvas.parentElement.removeChild(canvas);
+      } catch {}
+    }
+    workspace.appendChild(canvas);
+  }
+
+  if (paletteElement && typeof paletteElement.addEventListener === 'function') {
+    paletteElement.addEventListener('toolchange', (e) => {
+      const activeCanvas =
+        (target.querySelector ? target.querySelector('canvas') : null) || canvas;
+
+      if (activeCanvas && typeof activeCanvas.dispatchEvent === 'function') {
+        const eventDetail =
+          e && e.detail
+            ? e.detail
+            : { tool: toolPalette && toolPalette.getActiveTool ? toolPalette.getActiveTool() : 'pan' };
+        let toolEvent;
+        if (typeof CustomEvent === 'function') {
+          toolEvent = new CustomEvent('toolchange', {
+            detail: eventDetail,
+            bubbles: true,
+            cancelable: true,
+          });
+        } else {
+          toolEvent = {
+            type: 'toolchange',
+            detail: eventDetail,
+            bubbles: true,
+            cancelable: true,
+          };
+        }
+        activeCanvas.dispatchEvent(toolEvent);
+      }
+    });
+  }
+
+  // Semantic <aside> auxiliary dock co-located side-by-side with canvas (DF-PANEL-01)
+  let dock = null;
+  let dockElement = null;
+  try {
+    dock = new AuxiliaryDock();
+    dockElement = dock.getElement ? dock.getElement() : null;
+  } catch {
+    dock = null;
+    dockElement = null;
+  }
+
+  if (dockElement && workspace) {
+    workspace.appendChild(dockElement);
+  }
+
+  if (workspace) {
+    target.appendChild(workspace);
   }
 
   // Initialize and mount chart with zoom synchronizer (DF-GESTURE-02)
@@ -660,6 +777,8 @@ export function mount(containerOrOptions) {
   target._chart = chartInstance;
   target.chart = chartInstance;
   target.canvas = canvas;
+  target.dock = dock;
+  target._dock = dock;
   if (canvas) {
     canvas._chart = chartInstance;
   }
@@ -672,7 +791,7 @@ export function mount(containerOrOptions) {
     }
   };
 
-  // Window resize synchronization anchoring horizontal time scale above fold (DF-SCALES-02)
+  // Window resize synchronization anchoring scales (DF-SCALES-02)
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     if (target._resizeHandler && typeof window.removeEventListener === 'function') {
       window.removeEventListener('resize', target._resizeHandler);
@@ -721,86 +840,7 @@ export function mount(containerOrOptions) {
       chartInstance.render();
     }
   } catch {
-    // Graceful fallback for non-graphical test mocks
-  }
-
-  // Interactive Tool Palette (STORY 29.7.1: DF-TOOLS-01)
-  let toolPalette = null;
-  let paletteElement = null;
-  try {
-    toolPalette = new ToolPalette();
-    if (toolPalette && typeof toolPalette.render === 'function') {
-      paletteElement = toolPalette.render();
-    }
-    target._toolPalette = toolPalette;
-  } catch {
-    paletteElement = null;
-  }
-
-  if (paletteElement) {
-    if (typeof paletteElement.addEventListener === 'function') {
-      paletteElement.addEventListener('toolchange', (e) => {
-        const activeCanvas =
-          (target.querySelector ? target.querySelector('canvas') : null) || canvas;
-
-        if (activeCanvas && typeof activeCanvas.dispatchEvent === 'function') {
-          const eventDetail =
-            e && e.detail
-              ? e.detail
-              : { tool: toolPalette && toolPalette.getActiveTool ? toolPalette.getActiveTool() : 'pan' };
-          let toolEvent;
-          if (typeof CustomEvent === 'function') {
-            toolEvent = new CustomEvent('toolchange', {
-              detail: eventDetail,
-              bubbles: true,
-              cancelable: true,
-            });
-          } else {
-            toolEvent = {
-              type: 'toolchange',
-              detail: eventDetail,
-              bubbles: true,
-              cancelable: true,
-            };
-          }
-          activeCanvas.dispatchEvent(toolEvent);
-        }
-      });
-    }
-
-    target.appendChild(paletteElement);
-  }
-
-  // Workspace container alongside canvas hosting auxiliary dock (DF-LAYOUT-02)
-  const workspace = createElement('div');
-  setClass(workspace, 'main-workspace chart-container');
-  if (workspace && typeof workspace.setAttribute === 'function') {
-    workspace.setAttribute(
-      'style',
-      'display: flex; flex-direction: row; min-height: 0; overflow: hidden; position: relative;'
-    );
-  }
-  if (workspace && workspace.style) {
-    workspace.style.display = 'flex';
-    workspace.style.flexDirection = 'row';
-    workspace.style.minHeight = '0';
-    workspace.style.overflow = 'hidden';
-    workspace.style.position = 'relative';
-  }
-
-  let dockElement = null;
-  try {
-    const dock = new AuxiliaryDock();
-    dockElement = dock.getElement ? dock.getElement() : null;
-  } catch {
-    dockElement = null;
-  }
-
-  if (dockElement && workspace) {
-    workspace.appendChild(dockElement);
-  }
-  if (workspace) {
-    target.appendChild(workspace);
+    // Graceful fallback for headless environments
   }
 
   // Bind controls and synchronize initial DOM
@@ -808,11 +848,11 @@ export function mount(containerOrOptions) {
     try {
       initControls(target);
     } catch {
-      // Ignored in headless mocks lacking event emitter registration
+      // Graceful fallback
     }
   }
 
-  // Bind and start continuous liveness render loop (STORY 29.1.1: DF-LIVENESS-01)
+  // Bind and start continuous liveness render loop (DF-LIVENESS-01)
   startRenderLoop(target, chartInstance, canvas, legend);
 
   return target;
@@ -861,6 +901,8 @@ export function init(container) {
         : typeof window !== 'undefined' && window.cancelAnimationFrame;
     if (typeof cancel === 'function') {
       cancel(target._rafId);
+    } else {
+      clearTimeout(target._rafId);
     }
     target._renderLoopRunning = false;
   }
