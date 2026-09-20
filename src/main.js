@@ -360,7 +360,7 @@ export function mountApp(containerOrOptions = {}, options = {}) {
       canvas = container.querySelector('canvas');
     }
     if (!canvas && container && Array.isArray(container.children)) {
-      canvas = container.children.find((c) => c && c.tagName === 'CANVAS');
+      canvas = Array.from(container.children).find((c) => c && c.tagName === 'CANVAS');
     }
     if (!canvas && typeof document !== 'undefined') {
       canvas =

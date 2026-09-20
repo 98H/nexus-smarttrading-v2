@@ -272,7 +272,7 @@ describe('STORY 28.4.1: Resolve MISSING_HORIZONTAL_TIME_AXIS (Defect ID: DF-SCAL
       initFn();
 
       // Verify canvas is mounted inside #app
-      const mountedCanvas = appContainer.children.find((c) => c.tagName === 'CANVAS');
+      const mountedCanvas = Array.from(appContainer.children).find((c) => c.tagName === 'CANVAS');
       assert.ok(mountedCanvas, 'Active entrypoint src/main.js must mount a canvas into document.getElementById("app")');
 
       const ctx = mountedCanvas.getContext('2d');
