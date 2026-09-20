@@ -95,9 +95,40 @@ export function mountApp(container, options = {}) {
   let mutationCount = 0;
   let lastMutationTimestamp = Date.now();
 
-  const tickerEl = resolveElement(root, 'price-ticker');
-  const orderBookEl = resolveElement(root, 'order-book');
-  const clockEl = resolveElement(root, 'clock-tick');
+  let tickerEl = resolveElement(root, 'price-ticker') || resolveElement(root, 'ticker');
+  let orderBookEl = resolveElement(root, 'order-book') || resolveElement(root, 'orderbook');
+  let clockEl =
+    resolveElement(root, 'clock-tick') ||
+    resolveElement(root, 'clock') ||
+    resolveElement(root, 'timestamp');
+
+  // In browser environment, construct elements if missing
+  if (typeof document !== 'undefined' && typeof root.appendChild === 'function') {
+    if (!tickerEl) {
+      try {
+        const el = document.createElement('div');
+        el.id = 'price-ticker';
+        root.appendChild(el);
+        tickerEl = el;
+      } catch {}
+    }
+    if (!orderBookEl) {
+      try {
+        const el = document.createElement('div');
+        el.id = 'order-book';
+        root.appendChild(el);
+        orderBookEl = el;
+      } catch {}
+    }
+    if (!clockEl) {
+      try {
+        const el = document.createElement('div');
+        el.id = 'clock-tick';
+        root.appendChild(el);
+        clockEl = el;
+      } catch {}
+    }
+  }
 
   // Baseline initial state
   if (tickerEl) {
@@ -111,7 +142,18 @@ export function mountApp(container, options = {}) {
   }
 
   let chart = options.chart || null;
-  const canvasEl = resolveCanvas(root);
+  let canvasEl = resolveCanvas(root);
+
+  if (!chart && !canvasEl && typeof document !== 'undefined' && typeof root.appendChild === 'function') {
+    try {
+      const createdCanvas = document.createElement('canvas');
+      createdCanvas.id = 'chart-canvas';
+      createdCanvas.width = options.width || 800;
+      createdCanvas.height = options.height || 600;
+      root.appendChild(createdCanvas);
+      canvasEl = createdCanvas;
+    } catch {}
+  }
 
   if (!chart && canvasEl) {
     chart = new Chart(canvasEl, options.chartOptions || options);
@@ -124,9 +166,15 @@ export function mountApp(container, options = {}) {
     mutationCount++;
     lastMutationTimestamp = Date.now();
 
-    const currentTicker = resolveElement(root, 'price-ticker');
-    const currentOrderBook = resolveElement(root, 'order-book');
-    const currentClock = resolveElement(root, 'clock-tick');
+    const currentTicker =
+      resolveElement(root, 'price-ticker') || resolveElement(root, 'ticker') || tickerEl;
+    const currentOrderBook =
+      resolveElement(root, 'order-book') || resolveElement(root, 'orderbook') || orderBookEl;
+    const currentClock =
+      resolveElement(root, 'clock-tick') ||
+      resolveElement(root, 'clock') ||
+      resolveElement(root, 'timestamp') ||
+      clockEl;
 
     if (currentTicker) {
       const price = (50000 + mutationCount * 1.5).toFixed(2);
