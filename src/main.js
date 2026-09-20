@@ -52,22 +52,44 @@ function createHeader(doc, options = {}) {
   header.setAttribute('class', 'app-header header top-nav');
   header.setAttribute('data-testid', 'app-header');
 
+  header.style.display = 'flex';
+  header.style.alignItems = 'center';
+  header.style.justifyContent = 'space-between';
+  header.style.height = '48px';
+  header.style.flexShrink = '0';
+  header.style.padding = '0 16px';
+  header.style.background = '#131722';
+  header.style.borderBottom = '1px solid #2a2e39';
+  header.style.boxSizing = 'border-box';
+
   const title = doc.createElement('h1');
   title.setAttribute('class', 'app-title title');
   title.setAttribute('data-testid', 'app-title');
   title.textContent = options.title || 'SmartTrading';
+  title.style.margin = '0';
+  title.style.fontSize = '18px';
+  title.style.color = '#d1d4dc';
   header.appendChild(title);
 
   const liveBadge = doc.createElement('span');
   liveBadge.setAttribute('class', 'live-indicator live-status');
   liveBadge.setAttribute('data-testid', 'live-status');
   liveBadge.textContent = '● LIVE';
+  liveBadge.style.color = '#26a69a';
+  liveBadge.style.fontSize = '12px';
+  liveBadge.style.fontWeight = 'bold';
   header.appendChild(liveBadge);
 
   const tickerSelect = doc.createElement('select');
   tickerSelect.setAttribute('class', 'ticker-control ticker');
   tickerSelect.setAttribute('data-testid', 'ticker-select');
   tickerSelect.setAttribute('name', 'ticker');
+  tickerSelect.style.background = '#1e222d';
+  tickerSelect.style.color = '#d1d4dc';
+  tickerSelect.style.border = '1px solid #363c4e';
+  tickerSelect.style.borderRadius = '4px';
+  tickerSelect.style.padding = '6px 10px';
+  tickerSelect.style.cursor = 'pointer';
 
   const tickers = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'AAPL', 'MSFT'];
   tickers.forEach((t) => {
@@ -82,6 +104,8 @@ function createHeader(doc, options = {}) {
   const timeframeControls = doc.createElement('div');
   timeframeControls.setAttribute('class', 'timeframe-controls');
   timeframeControls.setAttribute('data-testid', 'timeframe-controls');
+  timeframeControls.style.display = 'flex';
+  timeframeControls.style.gap = '4px';
 
   const timeframes = ['1m', '5m', '15m', '1h', '4h', '1d'];
   timeframes.forEach((tf) => {
@@ -89,6 +113,12 @@ function createHeader(doc, options = {}) {
     btn.setAttribute('class', 'timeframe-btn');
     btn.setAttribute('data-timeframe', tf);
     btn.textContent = tf;
+    btn.style.background = '#1e222d';
+    btn.style.color = '#d1d4dc';
+    btn.style.border = '1px solid #363c4e';
+    btn.style.borderRadius = '4px';
+    btn.style.padding = '6px 10px';
+    btn.style.cursor = 'pointer';
     timeframeControls.appendChild(btn);
   });
   header.appendChild(timeframeControls);
@@ -110,6 +140,10 @@ function createToolPalette(doc, onSelectTool, initialTool = 'crosshair') {
   palette.setAttribute('data-testid', 'tool-palette');
   palette.setAttribute('role', 'toolbar');
   palette.setAttribute('aria-label', 'Interactive Tool Palette');
+  palette.style.display = 'flex';
+  palette.style.flexDirection = 'column';
+  palette.style.gap = '6px';
+  palette.style.padding = '8px';
 
   const tools = [
     { id: 'crosshair', name: 'Crosshair', label: 'Crosshair' },
@@ -130,6 +164,8 @@ function createToolPalette(doc, onSelectTool, initialTool = 'crosshair') {
         btn.classList.add('selected');
         btn.setAttribute('aria-pressed', 'true');
         btn.setAttribute('data-active', 'true');
+        btn.style.background = '#2962ff';
+        btn.style.borderColor = '#2962ff';
         if (btn.dataset) {
           btn.dataset.active = 'true';
         }
@@ -138,6 +174,8 @@ function createToolPalette(doc, onSelectTool, initialTool = 'crosshair') {
         btn.classList.remove('selected');
         btn.setAttribute('aria-pressed', 'false');
         btn.setAttribute('data-active', 'false');
+        btn.style.background = '#1e222d';
+        btn.style.borderColor = '#363c4e';
         if (btn.dataset) {
           btn.dataset.active = 'false';
         }
@@ -155,6 +193,14 @@ function createToolPalette(doc, onSelectTool, initialTool = 'crosshair') {
     btn.setAttribute('data-testid', `tool-${tool.id}`);
     btn.setAttribute('aria-label', tool.label);
     btn.textContent = tool.name;
+
+    btn.style.background = '#1e222d';
+    btn.style.color = '#d1d4dc';
+    btn.style.border = '1px solid #363c4e';
+    btn.style.borderRadius = '4px';
+    btn.style.padding = '6px 10px';
+    btn.style.cursor = 'pointer';
+    btn.style.fontSize = '12px';
 
     btn.addEventListener('click', (e) => {
       if (e && typeof e.preventDefault === 'function') {
@@ -215,49 +261,48 @@ export function mountApp(container, options = {}) {
   }
 
   const doc = target.ownerDocument || (typeof document !== 'undefined' ? document : null);
+  const win = typeof window !== 'undefined' ? window : globalThis.window;
   const isFullDom =
     doc &&
     typeof doc.createElement === 'function' &&
     typeof doc.createElement('div').setAttribute === 'function';
 
-  // Resolve or mount the target canvas element
-  let canvas =
-    target.tagName === 'CANVAS'
-      ? target
-      : target.querySelector
-      ? target.querySelector('canvas')
-      : null;
-
-  if (!canvas && doc && typeof doc.createElement === 'function') {
-    canvas = doc.createElement('canvas');
-    if (typeof canvas.setAttribute === 'function') {
-      canvas.setAttribute('data-testid', 'chart-canvas');
-      canvas.setAttribute('class', 'chart-canvas');
+  // Enforce 100vh layout with overflow hidden on viewport root (DF-LAYOUT-02)
+  if (doc) {
+    if (doc.documentElement && doc.documentElement.style) {
+      doc.documentElement.style.height = '100vh';
+      doc.documentElement.style.overflow = 'hidden';
+      doc.documentElement.style.margin = '0';
+      doc.documentElement.style.padding = '0';
     }
-    canvas.id = 'chart-canvas';
-
-    const width = (opts && opts.width) || target.clientWidth || 800;
-    const height = (opts && opts.height) || target.clientHeight || 600;
-    canvas.width = width;
-    canvas.height = height;
-
-    if (typeof target.appendChild === 'function') {
-      target.appendChild(canvas);
+    if (doc.body && doc.body.style) {
+      doc.body.style.height = '100vh';
+      doc.body.style.overflow = 'hidden';
+      doc.body.style.margin = '0';
+      doc.body.style.padding = '0';
+      doc.body.style.boxSizing = 'border-box';
     }
   }
 
-  let activeTool = (opts && (opts.toolMode || opts.tool)) || 'crosshair';
+  if (target && target.style) {
+    target.style.height = '100vh';
+    target.style.maxHeight = '100vh';
+    target.style.overflow = 'hidden';
+    target.style.display = 'flex';
+    target.style.flexDirection = 'column';
+    target.style.margin = '0';
+    target.style.padding = '0';
+    target.style.boxSizing = 'border-box';
+  }
 
-  // Assemble navigation header
+  // Mount or resolve top navigation header
   let header = null;
   let liveStatus = null;
   if (isFullDom && target.tagName !== 'CANVAS') {
     header = target.querySelector ? target.querySelector('header') : null;
     if (!header) {
       header = createHeader(doc, opts);
-      if (typeof target.insertBefore === 'function' && canvas && canvas.parentElement === target) {
-        target.insertBefore(header, canvas);
-      } else if (typeof target.appendChild === 'function') {
+      if (typeof target.appendChild === 'function') {
         target.appendChild(header);
       }
     }
@@ -300,39 +345,203 @@ export function mountApp(container, options = {}) {
     }
   }
 
-  // Mount interactive tool palette
-  let toolPaletteObj = null;
-  let palette = target.querySelector
-    ? target.querySelector('[data-testid="tool-palette"]') || target.querySelector('.tool-palette')
-    : null;
+  // Mount or resolve primary flex-row workspace container (DF-LAYOUT-02)
+  let workspace = null;
+  if (isFullDom && target.tagName !== 'CANVAS') {
+    workspace =
+      target.querySelector('[data-testid="workspace"]') ||
+      target.querySelector('.workspace-container') ||
+      target.querySelector('.workspace') ||
+      target.querySelector('main');
 
-  if (!palette && isFullDom && target.tagName !== 'CANVAS') {
-    toolPaletteObj = createToolPalette(
-      doc,
-      (selectedTool) => {
-        activeTool = selectedTool;
-        if (chart) {
-          if (typeof chart.setToolMode === 'function') {
-            chart.setToolMode(selectedTool);
-          } else if (typeof chart.setMode === 'function') {
-            chart.setMode(selectedTool);
-          }
-        }
-      },
-      activeTool
-    );
-    palette = toolPaletteObj.palette;
+    if (!workspace && doc) {
+      workspace = doc.createElement('main');
+      workspace.setAttribute('class', 'workspace-container workspace');
+      workspace.setAttribute('data-testid', 'workspace');
+      if (typeof target.appendChild === 'function') {
+        target.appendChild(workspace);
+      }
+    }
 
-    if (typeof target.insertBefore === 'function' && canvas && canvas.parentElement === target) {
-      target.insertBefore(palette, canvas);
-    } else if (typeof target.appendChild === 'function') {
-      target.appendChild(palette);
+    if (workspace && workspace.style) {
+      workspace.style.display = 'flex';
+      workspace.style.flexDirection = 'row';
+      workspace.style.flex = '1 1 0%';
+      workspace.style.minHeight = '0';
+      workspace.style.maxHeight = '100%';
+      workspace.style.height = '100%';
+      workspace.style.overflow = 'hidden';
+      workspace.style.boxSizing = 'border-box';
+      workspace.style.width = '100%';
     }
   }
 
-  // Mount auxiliary dock alongside primary canvas
+  const workspaceHost = workspace || target;
+
+  // Mount tools side panel containing tool palette toolbar
+  let toolPaletteObj = null;
+  let palette = null;
+  let toolsPanel = null;
+  let activeTool = (opts && (opts.toolMode || opts.tool)) || 'crosshair';
+
+  if (isFullDom && target.tagName !== 'CANVAS') {
+    toolsPanel =
+      workspaceHost.querySelector('[data-testid="tools-panel"]') ||
+      workspaceHost.querySelector('.tools-panel') ||
+      workspaceHost.querySelector('aside.tools') ||
+      workspaceHost.querySelector('.side-panel-tools');
+
+    if (!toolsPanel && doc) {
+      toolsPanel = doc.createElement('aside');
+      toolsPanel.setAttribute('class', 'tools-panel side-panel-tools');
+      toolsPanel.setAttribute('data-testid', 'tools-panel');
+      if (typeof workspaceHost.appendChild === 'function') {
+        workspaceHost.appendChild(toolsPanel);
+      }
+    }
+
+    if (toolsPanel && toolsPanel.style) {
+      toolsPanel.style.display = 'flex';
+      toolsPanel.style.flexDirection = 'column';
+      toolsPanel.style.flexShrink = '0';
+      toolsPanel.style.minHeight = '0';
+      toolsPanel.style.height = '100%';
+      toolsPanel.style.overflow = 'hidden';
+      toolsPanel.style.background = '#131722';
+      toolsPanel.style.borderRight = '1px solid #2a2e39';
+      toolsPanel.style.boxSizing = 'border-box';
+    }
+
+    palette = toolsPanel
+      ? toolsPanel.querySelector('[data-testid="tool-palette"]') || toolsPanel.querySelector('.tool-palette')
+      : null;
+
+    if (!palette && doc) {
+      toolPaletteObj = createToolPalette(
+        doc,
+        (selectedTool) => {
+          activeTool = selectedTool;
+          if (chart) {
+            if (typeof chart.setToolMode === 'function') {
+              chart.setToolMode(selectedTool);
+            } else if (typeof chart.setMode === 'function') {
+              chart.setMode(selectedTool);
+            }
+          }
+        },
+        activeTool
+      );
+      palette = toolPaletteObj.palette;
+      if (toolsPanel && typeof toolsPanel.appendChild === 'function') {
+        toolsPanel.appendChild(palette);
+      }
+    }
+  }
+
+  // Mount or resolve chart area container and canvas
+  let chartArea = null;
+  if (isFullDom && target.tagName !== 'CANVAS') {
+    chartArea =
+      workspaceHost.querySelector('[data-testid="chart-area"]') ||
+      workspaceHost.querySelector('.chart-area') ||
+      workspaceHost.querySelector('.chart-container');
+
+    if (!chartArea && doc) {
+      chartArea = doc.createElement('div');
+      chartArea.setAttribute('class', 'chart-area chart-container');
+      chartArea.setAttribute('data-testid', 'chart-area');
+      if (typeof workspaceHost.appendChild === 'function') {
+        workspaceHost.appendChild(chartArea);
+      }
+    }
+
+    if (chartArea && chartArea.style) {
+      chartArea.style.display = 'flex';
+      chartArea.style.flexDirection = 'column';
+      chartArea.style.flex = '1 1 0%';
+      chartArea.style.minWidth = '0';
+      chartArea.style.minHeight = '0';
+      chartArea.style.overflow = 'hidden';
+      chartArea.style.position = 'relative';
+      chartArea.style.height = '100%';
+      chartArea.style.boxSizing = 'border-box';
+    }
+  }
+
+  const canvasHost = chartArea || workspaceHost;
+
+  // Resolve or mount chart canvas element inside workspace hierarchy
+  let canvas =
+    target.tagName === 'CANVAS'
+      ? target
+      : canvasHost.querySelector
+      ? canvasHost.querySelector('canvas')
+      : null;
+
+  if (!canvas && doc && typeof doc.createElement === 'function') {
+    canvas = doc.createElement('canvas');
+    if (typeof canvas.setAttribute === 'function') {
+      canvas.setAttribute('data-testid', 'chart-canvas');
+      canvas.setAttribute('class', 'chart-canvas');
+    }
+    canvas.id = 'chart-canvas';
+
+    const width = (opts && opts.width) || canvasHost.clientWidth || 800;
+    const height = (opts && opts.height) || canvasHost.clientHeight || 600;
+    canvas.width = width;
+    canvas.height = height;
+
+    if (canvas.style) {
+      canvas.style.display = 'block';
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+      canvas.style.flex = '1 1 0%';
+      canvas.style.minHeight = '0';
+    }
+
+    if (typeof canvasHost.appendChild === 'function') {
+      canvasHost.appendChild(canvas);
+    }
+  } else if (canvas && canvas.parentElement === target && chartArea && canvasHost === chartArea) {
+    chartArea.appendChild(canvas);
+  }
+
+  // Mount moving average indicator legend element (DF-OVERLAYS-01)
+  let indicatorLegend = null;
+  if (canvasHost && doc && !canvasHost.querySelector('.indicator-legend')) {
+    indicatorLegend = doc.createElement('div');
+    indicatorLegend.setAttribute('class', 'indicator-legend');
+    indicatorLegend.setAttribute('data-testid', 'indicator-legend');
+    indicatorLegend.style.position = 'absolute';
+    indicatorLegend.style.top = '10px';
+    indicatorLegend.style.left = '10px';
+    indicatorLegend.style.zIndex = '10';
+    indicatorLegend.style.color = '#2962ff';
+    indicatorLegend.style.fontSize = '12px';
+    indicatorLegend.style.fontFamily = 'monospace';
+    indicatorLegend.style.pointerEvents = 'none';
+
+    const legendTitle = doc.createElement('span');
+    legendTitle.textContent = 'EMA 20 ';
+    indicatorLegend.appendChild(legendTitle);
+
+    const legendVal = doc.createElement('span');
+    legendVal.setAttribute('class', 'indicator-value');
+    legendVal.textContent = '--';
+    indicatorLegend.appendChild(legendVal);
+
+    if (typeof canvasHost.appendChild === 'function') {
+      canvasHost.appendChild(indicatorLegend);
+    }
+  }
+
+  // Mount auxiliary dock alongside chart area horizontally
   let dock = null;
-  let dockElement = target.querySelector ? target.querySelector('aside') : null;
+  let dockElement = workspaceHost.querySelector
+    ? workspaceHost.querySelector('aside.auxiliary-dock') ||
+      workspaceHost.querySelector('aside.dock') ||
+      workspaceHost.querySelector('[data-testid="orders-panel"]')
+    : null;
 
   if (!dockElement && isFullDom && target.tagName !== 'CANVAS') {
     const dockOpts = {
@@ -344,8 +553,8 @@ export function mountApp(container, options = {}) {
     dockElement = dock.getElement();
     if (dockElement) {
       dockElement.__dockInstance = dock;
-      if (typeof target.appendChild === 'function') {
-        target.appendChild(dockElement);
+      if (typeof workspaceHost.appendChild === 'function') {
+        workspaceHost.appendChild(dockElement);
       }
     }
   } else if (dockElement && dockElement.__dockInstance) {
@@ -395,6 +604,9 @@ export function mountApp(container, options = {}) {
             }
           },
         });
+        if (indicatorLegend) {
+          chart.legendElement = indicatorLegend;
+        }
         canvas.__chartCanvas = chart;
       }
     } catch (_) {}
@@ -435,14 +647,56 @@ export function mountApp(container, options = {}) {
     chart.startAnimationLoop();
   }
 
+  // Bind responsive canvas auto-resize listeners preserving side-by-side geometry without scrolling
+  const handleResize = () => {
+    if (!canvas) return;
+
+    const winWidth = (win && win.innerWidth) || 1280;
+    const winHeight = (win && win.innerHeight) || 800;
+
+    const headerHeight = (header && (header.offsetHeight || header.clientHeight)) || 48;
+    const toolsWidth = (toolsPanel && (toolsPanel.offsetWidth || toolsPanel.clientWidth)) || 48;
+    const dockWidth =
+      (dockElement && (dockElement.offsetWidth || dockElement.clientWidth)) ||
+      (dock && dock.isCollapsed() ? 40 : 280);
+
+    const availableWidth = Math.max(
+      300,
+      (chartArea && chartArea.clientWidth) || winWidth - toolsWidth - dockWidth
+    );
+    const availableHeight = Math.max(
+      200,
+      (chartArea && chartArea.clientHeight) || winHeight - headerHeight
+    );
+
+    canvas.width = availableWidth;
+    canvas.height = availableHeight;
+
+    if (innerChart && typeof innerChart.resize === 'function') {
+      innerChart.resize(availableWidth, availableHeight);
+    }
+
+    if (chart && typeof chart.render === 'function') {
+      chart.render();
+    }
+  };
+
+  if (win && typeof win.addEventListener === 'function') {
+    win.addEventListener('resize', handleResize);
+  }
+
   // Application instance
   const appInstance = {
     chart,
     canvas,
     container: target,
+    workspace,
+    toolsPanel,
+    chartArea,
     palette,
     dock,
     innerChart,
+    handleResize,
     getActiveTool() {
       return activeTool;
     },
@@ -485,6 +739,9 @@ export function mountApp(container, options = {}) {
       return this.chart && typeof this.chart.render === 'function' ? this.chart.render(...args) : undefined;
     },
     destroy() {
+      if (win && typeof win.removeEventListener === 'function') {
+        win.removeEventListener('resize', handleResize);
+      }
       if (this.chart && typeof this.chart.destroy === 'function') {
         this.chart.destroy();
       }
@@ -494,6 +751,12 @@ export function mountApp(container, options = {}) {
     },
     unmount() {
       this.destroy();
+      if (workspace && workspace.parentElement) {
+        workspace.parentElement.removeChild(workspace);
+      }
+      if (toolsPanel && toolsPanel.parentElement) {
+        toolsPanel.parentElement.removeChild(toolsPanel);
+      }
       if (dockElement && dockElement.parentElement) {
         dockElement.parentElement.removeChild(dockElement);
       }
