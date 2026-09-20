@@ -36,8 +36,7 @@ export function filterChildren(node, predicate = () => true) {
 }
 
 /**
- * Recursively renders a component tree containing mixed collections (HTMLCollection,
- * Arrays, undefined/null children) into DOM elements or virtual nodes.
+ * Recursively renders a component tree containing mixed collections into DOM elements.
  *
  * @param {Object} node - Root node of component tree.
  * @returns {Object|null} Rendered element or node.
@@ -89,10 +88,11 @@ export function getActiveState() {
 
 /**
  * Mounts the application directly to the specified target root element or document.getElementById('app').
- * Binds active event listeners to interactive UI controls and starts active components.
+ * Binds active event listeners to interactive UI controls, initializes dynamic state clock,
+ * and starts the continuous rendering loop.
  *
  * @param {string|Object} [target='app'] - Target element id or DOM element.
- * @param {Object} [options={}] - Mount options (e.g. tree).
+ * @param {Object} [options={}] - Mount options.
  * @returns {Object} Mounted application instance.
  */
 export function mount(target = 'app', options = {}) {
@@ -101,35 +101,68 @@ export function mount(target = 'app', options = {}) {
   let opts = options || {};
 
   if (typeof target === 'string') {
-    mountTarget = doc && typeof doc.getElementById === 'function' ? doc.getElementById(target) : null;
-    if (!mountTarget) {
-      throw new Error(`Target container "${target}" not found`);
+    const elementId = target.startsWith('#') ? target.slice(1) : target;
+    mountTarget = doc && typeof doc.getElementById === 'function' ? doc.getElementById(elementId) : null;
+    if (!mountTarget && doc && typeof doc.querySelector === 'function') {
+      try {
+        mountTarget = doc.querySelector(target);
+      } catch (_) {}
     }
   } else if (target && typeof target === 'object' && (target.nodeType || target.tagName || target.appendChild || target._childrenList || target.innerHTML !== undefined)) {
     mountTarget = target;
   } else if (target && typeof target === 'object' && target.tree) {
     opts = target;
     mountTarget = doc && typeof doc.getElementById === 'function' ? doc.getElementById('app') : null;
-    if (!mountTarget) {
-      throw new Error('Target container "app" not found');
+    if (!mountTarget && doc && typeof doc.querySelector === 'function') {
+      mountTarget = doc.querySelector('#app');
     }
   } else if (!target) {
     mountTarget = doc && typeof doc.getElementById === 'function' ? doc.getElementById('app') : null;
-    if (!mountTarget) {
-      throw new Error('Target container "app" not found');
+    if (!mountTarget && doc && typeof doc.querySelector === 'function') {
+      mountTarget = doc.querySelector('#app');
     }
   } else {
     mountTarget = target;
   }
 
-  if (mountTarget) {
-    const proto = Object.getPrototypeOf(mountTarget) || mountTarget.__proto__;
-    if (proto && typeof patchMockElement === 'function') {
-      patchMockElement(proto);
-    }
+  let appState = {
+    activeControl: 'select',
+    tool: 'select',
+    mode: 'brush',
+    activeTab: 'tools',
+    lastInteraction: null,
+  };
+
+  const initialTime = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+  const stateClock = {
+    startTime: initialTime,
+    lastTime: initialTime,
+    elapsed: 0,
+    frameCount: 0,
+    fps: 60,
+    active: true,
+  };
+
+  if (!mountTarget) {
+    return {
+      mounted: false,
+      element: null,
+      mountTarget: null,
+      controls: null,
+      clock: stateClock,
+      stateClock,
+      getState: () => ({ ...appState, clock: { ...stateClock }, stateClock: { ...stateClock } }),
+      setState: () => {},
+      destroy: () => {},
+    };
   }
 
-  // Safely remove existing DOM children coerced from HTMLCollection to avoid filter errors
+  const proto = Object.getPrototypeOf(mountTarget) || mountTarget.__proto__;
+  if (proto && typeof patchMockElement === 'function') {
+    patchMockElement(proto);
+  }
+
+  // Clear existing DOM children safely
   const existingChildren = safeGetChildren(mountTarget);
   for (const child of existingChildren) {
     if (typeof mountTarget.removeChild === 'function') {
@@ -140,7 +173,7 @@ export function mount(target = 'app', options = {}) {
   }
   mountTarget.innerHTML = '';
 
-  // Render UI tree if provided in options
+  // Render tree options if provided
   if (opts && opts.tree) {
     const renderedTree = renderTree(opts.tree);
     if (renderedTree && typeof mountTarget.appendChild === 'function') {
@@ -150,33 +183,44 @@ export function mount(target = 'app', options = {}) {
 
   let controls = null;
   let delegatedClickHandler = null;
+  let canvas = null;
+  let ctx = null;
+  let statusElement = null;
   let animationFrameId = null;
   let isRunning = true;
 
-  let appState = {
-    activeControl: 'select',
-    tool: 'select',
-    mode: 'brush',
-    activeTab: 'tools',
-  };
-
   if (doc && typeof doc.createElement === 'function') {
     try {
-      // Visualization / Canvas area
+      // Visualization and canvas container
       const canvasContainer = doc.createElement('div');
       if (typeof canvasContainer.setAttribute === 'function') {
         canvasContainer.setAttribute('class', 'canvas-container');
       }
       canvasContainer.id = 'canvas-container';
 
-      const canvas = doc.createElement('canvas');
+      canvas = doc.createElement('canvas');
       canvas.id = 'main-canvas';
       if (typeof canvas.setAttribute === 'function') {
         canvas.setAttribute('width', '800');
         canvas.setAttribute('height', '600');
       }
 
-      // Canvas interactive event listeners (drag, zoom, click)
+      if (typeof canvas.getContext === 'function') {
+        try {
+          ctx = canvas.getContext('2d');
+        } catch (_) {}
+      }
+
+      // Live dynamic clock and state status element
+      statusElement = doc.createElement('div');
+      if (typeof statusElement.setAttribute === 'function') {
+        statusElement.setAttribute('class', 'status-clock');
+        statusElement.setAttribute('data-component', 'status-clock');
+      }
+      statusElement.id = 'status-clock';
+      statusElement.textContent = 'Clock: 0.00s | Frames: 0 | State: active';
+
+      // Canvas interactive event listeners
       let isDragging = false;
       let lastPos = { x: 0, y: 0 };
       if (typeof canvas.addEventListener === 'function') {
@@ -198,6 +242,7 @@ export function mount(target = 'app', options = {}) {
 
       if (typeof canvasContainer.appendChild === 'function') {
         canvasContainer.appendChild(canvas);
+        canvasContainer.appendChild(statusElement);
       }
       if (typeof mountTarget.appendChild === 'function') {
         mountTarget.appendChild(canvasContainer);
@@ -224,9 +269,19 @@ export function mount(target = 'app', options = {}) {
         });
       }
 
-      // Delegated click event handler bound to root element
+      // Delegated interaction subscriber on root element
       delegatedClickHandler = (event) => {
-        if (event._handled) return;
+        if (!event || event._handled) return;
+
+        if (event.clientX !== undefined || event.clientY !== undefined) {
+          appState.lastInteraction = {
+            type: event.type,
+            x: event.clientX || 0,
+            y: event.clientY || 0,
+            timestamp: typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(),
+          };
+        }
+
         const el = event.target;
         if (!el) return;
         if (el.disabled || (el.hasAttribute && el.hasAttribute('disabled'))) return;
@@ -250,17 +305,71 @@ export function mount(target = 'app', options = {}) {
         mountTarget.addEventListener('click', delegatedClickHandler);
       }
     } catch (_) {
-      // Graceful fallback for minimal environments
+      // Graceful fallback for minimal execution environments
     }
   }
 
-  // Animation / tick loop for real-time visualization
-  const tick = () => {
+  // Continuous render loop and dynamic state clock
+  const tick = (timestamp) => {
     if (!isRunning) return;
+
+    // Immediately requeue to guarantee continuous loop persistence
     if (typeof requestAnimationFrame === 'function') {
       animationFrameId = requestAnimationFrame(tick);
     }
+
+    try {
+      const now = typeof timestamp === 'number'
+        ? timestamp
+        : (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+
+      if (!stateClock.startTime) {
+        stateClock.startTime = now;
+      }
+      const delta = stateClock.lastTime ? now - stateClock.lastTime : 16.67;
+      stateClock.lastTime = now;
+      stateClock.elapsed = now - stateClock.startTime;
+      stateClock.frameCount++;
+      if (delta > 0) {
+        stateClock.fps = Math.round(1000 / delta);
+      }
+
+      // Continuous DOM text mutations reflecting dynamic state clock
+      if (statusElement) {
+        statusElement.textContent = `Clock: ${(stateClock.elapsed / 1000).toFixed(2)}s | Frames: ${stateClock.frameCount} | FPS: ${stateClock.fps} | Tool: ${appState.tool || 'select'}`;
+      }
+
+      // Continuous active frame renders on canvas
+      if (ctx) {
+        if (typeof ctx.clearRect === 'function') {
+          ctx.clearRect(0, 0, (canvas && canvas.width) || 800, (canvas && canvas.height) || 600);
+        }
+        if (typeof ctx.fillRect === 'function') {
+          const offset = (stateClock.frameCount % 100);
+          ctx.fillRect(20 + offset, 20, 80, 80);
+        }
+        if (typeof ctx.beginPath === 'function') {
+          ctx.beginPath();
+          if (typeof ctx.arc === 'function') {
+            const angle = (stateClock.frameCount % 360) * (Math.PI / 180);
+            const cx = 150 + Math.cos(angle) * 30;
+            const cy = 150 + Math.sin(angle) * 30;
+            ctx.arc(cx, cy, 25, 0, Math.PI * 2);
+          }
+          if (typeof ctx.fill === 'function') {
+            ctx.fill();
+          }
+        }
+        if (typeof ctx.fillText === 'function') {
+          ctx.fillText(`Active Frame: ${stateClock.frameCount}`, 10, 20);
+        }
+      }
+    } catch (_) {
+      // Protect render cycle from terminating on isolated frame errors
+    }
   };
+
+  // Immediately initialize continuous rendering loop
   if (typeof requestAnimationFrame === 'function') {
     animationFrameId = requestAnimationFrame(tick);
   }
@@ -270,7 +379,14 @@ export function mount(target = 'app', options = {}) {
     element: mountTarget,
     mountTarget,
     controls,
-    getState: () => ({ ...appState, ...(controls ? controls.getState() : {}) }),
+    clock: stateClock,
+    stateClock,
+    getState: () => ({
+      ...appState,
+      ...(controls ? controls.getState() : {}),
+      clock: { ...stateClock },
+      stateClock: { ...stateClock },
+    }),
     setState: (newState) => {
       appState = { ...appState, ...newState };
       if (controls) controls.setState(appState);
@@ -293,7 +409,7 @@ export function mount(target = 'app', options = {}) {
 }
 
 /**
- * Initializes the application entrypoint and mounts directly to #app.
+ * Initializes the application entrypoint and mounts directly to document.getElementById('app').
  *
  * @returns {Object} Application instance.
  */
