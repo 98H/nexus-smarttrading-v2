@@ -62,7 +62,6 @@ class MockCanvasRenderingContext2D {
 
 class MockCanvasElement {
   constructor() {
-    this.tagName = 'CANVAS';
     this.listeners = new Map();
     this.ctx = new MockCanvasRenderingContext2D();
     this.width = 800;
