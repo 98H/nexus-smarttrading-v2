@@ -13,6 +13,7 @@ import {
   renderControls,
   ensureSelectorCompatibility,
 } from './controls.js';
+import { AuxiliaryDock, createAuxiliaryDock } from './dock.js';
 
 export {
   initControls,
@@ -22,7 +23,23 @@ export {
   bindControls,
   renderControls,
   ensureSelectorCompatibility,
+  AuxiliaryDock,
+  createAuxiliaryDock,
 };
+
+/**
+ * Helper to sync class attribute and classList for DOM and MockDOM environments.
+ *
+ * @param {HTMLElement|Object} element
+ * @param {string} className
+ */
+function setClass(element, className) {
+  element.setAttribute('class', className);
+  if (element.classList && typeof element.classList.add === 'function') {
+    const classes = className.split(/\s+/).filter(Boolean);
+    element.classList.add(...classes);
+  }
+}
 
 /**
  * Returns current application state snapshot.
@@ -109,25 +126,45 @@ export function mount(container) {
   ensureSelectorCompatibility();
 
   // Enforce 100vh responsive flex layout with overflow hidden (DF-LAYOUT-02)
+  if (typeof document !== 'undefined' && document.body && document.body.style) {
+    document.body.style.margin = '0';
+    document.body.style.padding = '0';
+    document.body.style.height = '100vh';
+    document.body.style.overflow = 'hidden';
+  }
+
   target.setAttribute(
     'style',
     'display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: #131722; color: #d1d4dc; font-family: sans-serif;'
   );
+  target.style.display = 'flex';
+  target.style.flexDirection = 'column';
+  target.style.height = '100vh';
+  target.style.overflow = 'hidden';
+  target.style.background = '#131722';
+  target.style.color = '#d1d4dc';
 
   const buttonStyle =
     'background: #1e222d; color: #d1d4dc; border: 1px solid #363c4e; border-radius: 4px; padding: 6px 10px; cursor: pointer;';
 
   // Toolbar hosting interactive tabs and controls
   const toolbar = document.createElement('div');
-  toolbar.setAttribute('class', 'toolbar-controls');
+  setClass(toolbar, 'toolbar-controls');
   toolbar.setAttribute(
     'style',
     'display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 12px; background: #1e222d; border-bottom: 1px solid #363c4e; align-items: center;'
   );
+  toolbar.style.display = 'flex';
+  toolbar.style.flexWrap = 'wrap';
+  toolbar.style.gap = '8px';
+  toolbar.style.padding = '8px 12px';
+  toolbar.style.background = '#1e222d';
+  toolbar.style.borderBottom = '1px solid #363c4e';
+  toolbar.style.alignItems = 'center';
 
   // Tabs
   const tabChart = document.createElement('button');
-  tabChart.setAttribute('class', 'tab-btn');
+  setClass(tabChart, 'tab-btn');
   tabChart.setAttribute('data-tab', 'chart');
   tabChart.setAttribute('aria-selected', 'false');
   tabChart.setAttribute('style', buttonStyle);
@@ -135,7 +172,7 @@ export function mount(container) {
   toolbar.appendChild(tabChart);
 
   const tabLayers = document.createElement('button');
-  tabLayers.setAttribute('class', 'tab-btn');
+  setClass(tabLayers, 'tab-btn');
   tabLayers.setAttribute('data-tab', 'layers');
   tabLayers.setAttribute('aria-selected', 'false');
   tabLayers.setAttribute('style', buttonStyle);
@@ -143,7 +180,7 @@ export function mount(container) {
   toolbar.appendChild(tabLayers);
 
   const tabIndicators = document.createElement('button');
-  tabIndicators.setAttribute('class', 'tab-btn');
+  setClass(tabIndicators, 'tab-btn');
   tabIndicators.setAttribute('data-tab', 'indicators');
   tabIndicators.setAttribute('aria-selected', 'false');
   tabIndicators.setAttribute('style', buttonStyle);
@@ -152,14 +189,14 @@ export function mount(container) {
 
   // Action Buttons
   const btnZoomIn = document.createElement('button');
-  btnZoomIn.setAttribute('class', 'control-btn');
+  setClass(btnZoomIn, 'control-btn');
   btnZoomIn.setAttribute('data-control', 'zoom-in');
   btnZoomIn.setAttribute('style', buttonStyle);
   btnZoomIn.textContent = 'Zoom In';
   toolbar.appendChild(btnZoomIn);
 
   const btnZoomOut = document.createElement('button');
-  btnZoomOut.setAttribute('class', 'control-btn');
+  setClass(btnZoomOut, 'control-btn');
   btnZoomOut.setAttribute('data-control', 'zoom-out');
   btnZoomOut.setAttribute('style', buttonStyle);
   btnZoomOut.textContent = 'Zoom Out';
@@ -168,7 +205,7 @@ export function mount(container) {
   const btnPan = document.createElement('button');
   btnPan.id = 'btn-pan';
   btnPan.setAttribute('id', 'btn-pan');
-  btnPan.setAttribute('class', 'control-btn');
+  setClass(btnPan, 'control-btn');
   btnPan.setAttribute('data-control', 'pan');
   btnPan.setAttribute('style', buttonStyle);
   btnPan.textContent = 'Pan Tool';
@@ -177,15 +214,18 @@ export function mount(container) {
   const btnReset = document.createElement('button');
   btnReset.id = 'btn-reset';
   btnReset.setAttribute('id', 'btn-reset');
-  btnReset.setAttribute('class', 'control-btn');
+  setClass(btnReset, 'control-btn');
   btnReset.setAttribute('data-control', 'reset');
   btnReset.setAttribute('style', buttonStyle);
   btnReset.textContent = 'Reset View';
   toolbar.appendChild(btnReset);
 
   const zoomIndicator = document.createElement('span');
-  zoomIndicator.setAttribute('class', 'zoom-level-indicator');
+  setClass(zoomIndicator, 'zoom-level-indicator');
   zoomIndicator.setAttribute('style', 'color: #d1d4dc; font-size: 13px; margin-left: 8px;');
+  zoomIndicator.style.color = '#d1d4dc';
+  zoomIndicator.style.fontSize = '13px';
+  zoomIndicator.style.marginLeft = '8px';
   zoomIndicator.textContent = '100%';
   toolbar.appendChild(zoomIndicator);
 
@@ -193,44 +233,52 @@ export function mount(container) {
 
   // Main workspace flex-row hosting chart and auxiliary dock horizontally side-by-side (DF-LAYOUT-02)
   const workspace = document.createElement('div');
-  workspace.setAttribute('class', 'main-workspace');
+  setClass(workspace, 'main-workspace chart-container');
   workspace.setAttribute(
     'style',
-    'flex: 1; min-height: 0; display: flex; flex-direction: row; overflow: hidden;'
+    'display: flex; flex-direction: row; flex: 1; min-height: 0; overflow: hidden; position: relative;'
   );
+  workspace.style.display = 'flex';
+  workspace.style.flexDirection = 'row';
+  workspace.style.flex = '1';
+  workspace.style.minHeight = '0';
+  workspace.style.overflow = 'hidden';
+  workspace.style.position = 'relative';
 
-  const chartContainer = document.createElement('div');
-  chartContainer.setAttribute('class', 'chart-container');
-  chartContainer.setAttribute(
-    'style',
-    'flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column;'
-  );
-
-  // Indicator legend (DF-OVERLAYS-01)
+  // Indicator legend overlay (DF-OVERLAYS-01)
   const legend = document.createElement('div');
-  legend.setAttribute('class', 'indicator-legend');
+  setClass(legend, 'indicator-legend');
   legend.setAttribute(
     'style',
     'position: absolute; top: 10px; left: 10px; color: #d1d4dc; font-size: 12px; z-index: 10;'
   );
+  legend.style.position = 'absolute';
+  legend.style.top = '10px';
+  legend.style.left = '10px';
+  legend.style.color = '#d1d4dc';
+  legend.style.fontSize = '12px';
+  legend.style.zIndex = '10';
   legend.textContent = 'EMA (20): 0.00';
-  chartContainer.appendChild(legend);
+  workspace.appendChild(legend);
 
+  // Primary workspace canvas
   const canvas = document.createElement('canvas');
-  canvas.setAttribute('class', 'chart-canvas');
-  canvas.setAttribute('style', 'flex: 1; width: 100%; height: 100%;');
-  chartContainer.appendChild(canvas);
-
-  workspace.appendChild(chartContainer);
-
-  const dock = document.createElement('div');
-  dock.setAttribute('class', 'auxiliary-dock');
-  dock.setAttribute(
+  setClass(canvas, 'chart-canvas');
+  canvas.setAttribute(
     'style',
-    'width: 280px; background: #1e222d; border-left: 1px solid #363c4e; display: flex; flex-direction: column; padding: 12px;'
+    'flex: 1; min-height: 0; width: 100%; height: 100%; display: block;'
   );
-  dock.textContent = 'Dock Panel';
-  workspace.appendChild(dock);
+  canvas.style.flex = '1';
+  canvas.style.minHeight = '0';
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  canvas.style.display = 'block';
+  workspace.appendChild(canvas);
+
+  // Semantic <aside class="auxiliary-dock"> alongside canvas
+  const dock = new AuxiliaryDock();
+  const dockElement = dock.getElement();
+  workspace.appendChild(dockElement);
 
   target.appendChild(workspace);
 
@@ -252,7 +300,7 @@ export function mountApp(container) {
 
 // Automatic mount guard when loaded into an active browser document
 if (typeof document !== 'undefined') {
-  const mountTarget = document.getElementById('app');
+  const mountTarget = document.getElementById('app') || document.body;
   if (mountTarget && !mountTarget.__nexus_mounted) {
     mountTarget.__nexus_mounted = true;
     if (typeof mountApp === 'function') mountApp(mountTarget);

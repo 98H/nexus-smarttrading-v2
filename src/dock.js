@@ -6,6 +6,20 @@
  */
 
 /**
+ * Helper to sync class attribute and classList for DOM and MockDOM environments.
+ *
+ * @param {HTMLElement|Object} element
+ * @param {string} className
+ */
+function setClass(element, className) {
+  element.setAttribute('class', className);
+  if (element.classList && typeof element.classList.add === 'function') {
+    const classes = className.split(/\s+/).filter(Boolean);
+    element.classList.add(...classes);
+  }
+}
+
+/**
  * Formats a panel identifier into an accessible title.
  *
  * @param {string} id - Panel identifier
@@ -71,8 +85,8 @@ export class AuxiliaryDock {
 
     // Root semantic <aside> dock landmark
     const aside = doc.createElement('aside');
-    aside.setAttribute(
-      'class',
+    setClass(
+      aside,
       'auxiliary-dock dock complementary-dock orders orders-panel side-panel-orders'
     );
     aside.setAttribute('data-testid', 'orders-panel');
@@ -82,7 +96,7 @@ export class AuxiliaryDock {
       this.options.ariaLabel || 'Auxiliary Workflow Dock'
     );
     aside.setAttribute('data-collapsed', this.collapsed ? 'true' : 'false');
-    if (this.collapsed) {
+    if (this.collapsed && aside.classList && typeof aside.classList.add === 'function') {
       aside.classList.add('collapsed');
     }
 
@@ -102,7 +116,7 @@ export class AuxiliaryDock {
 
     // Dock toolbar / header
     const header = doc.createElement('div');
-    header.setAttribute('class', 'dock-header');
+    setClass(header, 'dock-header');
     header.style.display = 'flex';
     header.style.alignItems = 'center';
     header.style.justifyContent = 'space-between';
@@ -111,7 +125,7 @@ export class AuxiliaryDock {
     header.style.flexShrink = '0';
 
     const title = doc.createElement('h2');
-    title.setAttribute('class', 'dock-title');
+    setClass(title, 'dock-title');
     title.textContent = this.options.title || 'Workflow Dock';
     title.style.margin = '0';
     title.style.fontSize = '14px';
@@ -123,7 +137,7 @@ export class AuxiliaryDock {
     // Collapse / Expand toggle control (DF-THEME-01)
     const toggleBtn = doc.createElement('button');
     toggleBtn.setAttribute('type', 'button');
-    toggleBtn.setAttribute('class', 'dock-toggle-btn toggle-dock-btn');
+    setClass(toggleBtn, 'dock-toggle-btn toggle-dock-btn');
     toggleBtn.setAttribute('data-action', 'toggle-dock');
     toggleBtn.setAttribute('aria-expanded', this.collapsed ? 'false' : 'true');
     toggleBtn.setAttribute(
@@ -132,6 +146,9 @@ export class AuxiliaryDock {
     );
     toggleBtn.textContent = this.collapsed ? '◀' : '▶';
 
+    const controlStyle =
+      'background: #1e222d; color: #d1d4dc; border: 1px solid #363c4e; border-radius: 4px; padding: 6px 10px; cursor: pointer;';
+    toggleBtn.setAttribute('style', controlStyle);
     toggleBtn.style.background = '#1e222d';
     toggleBtn.style.color = '#d1d4dc';
     toggleBtn.style.border = '1px solid #363c4e';
@@ -153,7 +170,7 @@ export class AuxiliaryDock {
     // Panel container hosting secondary workflows within viewport bounds
     const panelContainer = doc.createElement('div');
     panelContainer.setAttribute('data-panel-container', 'true');
-    panelContainer.setAttribute('class', 'dock-panel-container dock-panels');
+    setClass(panelContainer, 'dock-panel-container dock-panels');
     panelContainer.style.flex = '1 1 0%';
     panelContainer.style.minHeight = '0';
     panelContainer.style.overflowY = 'auto';
@@ -186,7 +203,7 @@ export class AuxiliaryDock {
     const doc = this.doc;
     const panel = doc.createElement('section');
     panel.setAttribute('data-panel', panelId);
-    panel.setAttribute('class', `dock-panel dock-panel-${panelId} side-panel-${panelId}`);
+    setClass(panel, `dock-panel dock-panel-${panelId} side-panel-${panelId}`);
     panel.setAttribute('role', 'region');
     panel.style.background = '#1e222d';
     panel.style.border = '1px solid #2a2e39';
@@ -199,11 +216,11 @@ export class AuxiliaryDock {
     panel.setAttribute('aria-label', titleText);
 
     const header = doc.createElement('div');
-    header.setAttribute('class', 'panel-header');
+    setClass(header, 'panel-header');
     header.style.marginBottom = '6px';
 
     const title = doc.createElement('h3');
-    title.setAttribute('class', 'panel-title');
+    setClass(title, 'panel-title');
     title.textContent = titleText;
     title.style.margin = '0';
     title.style.fontSize = '12px';
@@ -212,28 +229,34 @@ export class AuxiliaryDock {
     panel.appendChild(header);
 
     const content = doc.createElement('div');
-    content.setAttribute('class', 'panel-content');
+    setClass(content, 'panel-content');
+
+    const buttonStyle =
+      'background: #1e222d; color: #d1d4dc; border: 1px solid #363c4e; border-radius: 4px; padding: 6px 10px; cursor: pointer; flex: 1;';
+    const inputStyle =
+      'background: #1e222d; color: #d1d4dc; border: 1px solid #363c4e; border-radius: 4px; padding: 6px 10px;';
 
     if (panelId === 'order-execution') {
       panel.setAttribute('data-testid', 'order-execution-panel');
       const form = doc.createElement('div');
-      form.setAttribute('class', 'order-form');
+      setClass(form, 'order-form');
       form.style.display = 'flex';
       form.style.flexDirection = 'column';
       form.style.gap = '6px';
 
       const sideButtons = doc.createElement('div');
-      sideButtons.setAttribute('class', 'order-side-controls');
+      setClass(sideButtons, 'order-side-controls');
       sideButtons.style.display = 'flex';
       sideButtons.style.gap = '6px';
 
       const buyBtn = doc.createElement('button');
       buyBtn.setAttribute('type', 'button');
-      buyBtn.setAttribute('class', 'btn-buy');
+      setClass(buyBtn, 'btn-buy');
       buyBtn.setAttribute('data-side', 'buy');
       buyBtn.textContent = 'Buy / Long';
+      buyBtn.setAttribute('style', buttonStyle);
       buyBtn.style.background = '#1e222d';
-      buyBtn.style.color = '#26a69a';
+      buyBtn.style.color = '#d1d4dc';
       buyBtn.style.border = '1px solid #363c4e';
       buyBtn.style.borderRadius = '4px';
       buyBtn.style.padding = '6px 10px';
@@ -242,11 +265,12 @@ export class AuxiliaryDock {
 
       const sellBtn = doc.createElement('button');
       sellBtn.setAttribute('type', 'button');
-      sellBtn.setAttribute('class', 'btn-sell');
+      setClass(sellBtn, 'btn-sell');
       sellBtn.setAttribute('data-side', 'sell');
       sellBtn.textContent = 'Sell / Short';
+      sellBtn.setAttribute('style', buttonStyle);
       sellBtn.style.background = '#1e222d';
-      sellBtn.style.color = '#ef5350';
+      sellBtn.style.color = '#d1d4dc';
       sellBtn.style.border = '1px solid #363c4e';
       sellBtn.style.borderRadius = '4px';
       sellBtn.style.padding = '6px 10px';
@@ -259,9 +283,10 @@ export class AuxiliaryDock {
 
       const qtyInput = doc.createElement('input');
       qtyInput.setAttribute('type', 'number');
-      qtyInput.setAttribute('class', 'order-qty-input');
+      setClass(qtyInput, 'order-qty-input');
       qtyInput.setAttribute('placeholder', 'Quantity');
       qtyInput.setAttribute('aria-label', 'Order Quantity');
+      qtyInput.setAttribute('style', inputStyle);
       qtyInput.style.background = '#1e222d';
       qtyInput.style.color = '#d1d4dc';
       qtyInput.style.border = '1px solid #363c4e';
@@ -272,7 +297,7 @@ export class AuxiliaryDock {
       content.appendChild(form);
     } else if (panelId === 'watchlist') {
       const list = doc.createElement('ul');
-      list.setAttribute('class', 'watchlist-list');
+      setClass(list, 'watchlist-list');
       list.style.listStyle = 'none';
       list.style.margin = '0';
       list.style.padding = '0';
@@ -280,7 +305,7 @@ export class AuxiliaryDock {
       const symbols = ['BTC-USD', 'ETH-USD', 'SOL-USD'];
       symbols.forEach((sym) => {
         const item = doc.createElement('li');
-        item.setAttribute('class', 'watchlist-item');
+        setClass(item, 'watchlist-item');
         item.setAttribute('data-symbol', sym);
         item.textContent = sym;
         item.style.padding = '4px 0';
@@ -291,10 +316,10 @@ export class AuxiliaryDock {
       content.appendChild(list);
     } else if (panelId === 'inspector') {
       const inspectorView = doc.createElement('div');
-      inspectorView.setAttribute('class', 'inspector-view');
+      setClass(inspectorView, 'inspector-view');
 
       const inspectorStatus = doc.createElement('p');
-      inspectorStatus.setAttribute('class', 'inspector-status');
+      setClass(inspectorStatus, 'inspector-status');
       inspectorStatus.textContent = 'No drawing or tool selected';
       inspectorStatus.style.margin = '0';
       inspectorStatus.style.color = '#848e9c';
@@ -302,6 +327,13 @@ export class AuxiliaryDock {
       inspectorView.appendChild(inspectorStatus);
 
       content.appendChild(inspectorView);
+    } else {
+      const defaultContent = doc.createElement('div');
+      setClass(defaultContent, 'panel-default-content');
+      defaultContent.textContent = `${titleText} Content`;
+      defaultContent.style.color = '#848e9c';
+      defaultContent.style.fontSize = '12px';
+      content.appendChild(defaultContent);
     }
 
     panel.appendChild(content);
@@ -352,10 +384,14 @@ export class AuxiliaryDock {
     if (this.element) {
       this.element.setAttribute('data-collapsed', this.collapsed ? 'true' : 'false');
       if (this.collapsed) {
-        this.element.classList.add('collapsed');
+        if (this.element.classList && typeof this.element.classList.add === 'function') {
+          this.element.classList.add('collapsed');
+        }
         this.element.style.width = '40px';
       } else {
-        this.element.classList.remove('collapsed');
+        if (this.element.classList && typeof this.element.classList.remove === 'function') {
+          this.element.classList.remove('collapsed');
+        }
         this.element.style.width = this.options.width || '280px';
       }
     }
