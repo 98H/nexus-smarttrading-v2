@@ -7,7 +7,8 @@
  * STORY 29.7.1 (DF-TOOLS-01), STORY 29.2.1 (DF-GESTURE-01),
  * STORY 29.3.1 (DF-GESTURE-02), STORY 29.6.1 (DF-SCALES-02),
  * STORY 29.5.1 (DF-SCALES-01), STORY 30.6.1 (DF-PANEL-01),
- * and STORY 30.3.1 (DF-CONTROL-01: INACTIVE_UI_CONTROLS).
+ * STORY 30.3.1 (DF-CONTROL-01: INACTIVE_UI_CONTROLS),
+ * and STORY 30.1.1 (DF-CRASH-01: UNCAUGHT_JAVASCRIPT_EXCEPTION).
  */
 
 import {
@@ -39,6 +40,8 @@ let appState = {
 
 export let state = appState;
 
+let currentContainer = null;
+
 export {
   initControls,
   getControlState,
@@ -54,6 +57,141 @@ export {
 };
 
 /**
+ * Standard read-only element properties that must not be assigned directly.
+ */
+const READ_ONLY_ELEMENT_PROPERTIES = new Set([
+  'tagName',
+  'nodeName',
+  'nodeType',
+  'isConnected',
+  'parentNode',
+  'parentElement',
+  'children',
+  'childNodes',
+  'firstChild',
+  'lastChild',
+  'previousSibling',
+  'nextSibling',
+  'attributes',
+  'namespaceURI',
+  'prefix',
+  'localName',
+  'baseURI',
+  'ownerDocument',
+  'classList',
+  'dataset',
+  'shadowRoot',
+  'assignedSlot',
+]);
+
+/**
+ * Checks whether an element property is read-only (getter-only or non-writable).
+ *
+ * @param {Element|Object} el
+ * @param {string} key
+ * @returns {boolean}
+ */
+export function isReadOnlyProperty(el, key) {
+  if (READ_ONLY_ELEMENT_PROPERTIES.has(key)) {
+    return true;
+  }
+  if (!el || typeof el !== 'object') return false;
+
+  let current = el;
+  while (current) {
+    const desc = Object.getOwnPropertyDescriptor(current, key);
+    if (desc) {
+      if (typeof desc.get === 'function' && typeof desc.set !== 'function') {
+        return true;
+      }
+      if (desc.writable === false) {
+        return true;
+      }
+      return false;
+    }
+    current = Object.getPrototypeOf(current);
+  }
+  return false;
+}
+
+/**
+ * Safely assigns a property or attribute to an Element, filtering out read-only properties.
+ *
+ * @param {Element|Object} el
+ * @param {string|Object} keyOrProps
+ * @param {*} [value]
+ * @returns {Element|Object}
+ */
+export function safeSetProperty(el, keyOrProps, value) {
+  if (!el) return el;
+  if (typeof keyOrProps === 'object' && keyOrProps !== null) {
+    return applyProps(el, keyOrProps);
+  }
+
+  const key = String(keyOrProps);
+  if (isReadOnlyProperty(el, key)) {
+    return el;
+  }
+
+  if (key === 'className' || key === 'class') {
+    setClass(el, String(value));
+  } else if (key === 'style') {
+    if (typeof value === 'object' && value !== null && el.style) {
+      Object.assign(el.style, value);
+    } else if (typeof el.setAttribute === 'function') {
+      el.setAttribute('style', String(value));
+    }
+  } else if (key === 'id') {
+    el.id = String(value);
+    if (typeof el.setAttribute === 'function') {
+      el.setAttribute('id', String(value));
+    }
+  } else if (key.startsWith('data-') || key.startsWith('aria-')) {
+    if (typeof el.setAttribute === 'function') {
+      el.setAttribute(key, String(value));
+    }
+    if (key in el) {
+      try {
+        el[key] = value;
+      } catch {}
+    }
+  } else if (key in el) {
+    try {
+      el[key] = value;
+    } catch {
+      if (typeof el.setAttribute === 'function') {
+        el.setAttribute(key, String(value));
+      }
+    }
+  } else if (typeof el.setAttribute === 'function') {
+    el.setAttribute(key, String(value));
+  } else {
+    try {
+      el[key] = value;
+    } catch {}
+  }
+  return el;
+}
+
+/**
+ * Safely applies a dictionary of properties to an Element, validating against read-only keys.
+ *
+ * @param {Element|Object} el
+ * @param {Object} props
+ * @returns {Element|Object}
+ */
+export function applyProps(el, props) {
+  if (!el || !props || typeof props !== 'object') return el;
+  for (const [key, value] of Object.entries(props)) {
+    safeSetProperty(el, key, value);
+  }
+  return el;
+}
+
+export const setProps = applyProps;
+export const setAttributes = applyProps;
+
+/**
  * Ensures standard DOM event listener and attribute APIs exist on element mocks.
  *
  * @param {Object} el
@@ -63,8 +201,15 @@ export {
 function ensureElementMethods(el, tag = '') {
   if (!el) return el;
 
-  if (!el.tagName) {
-    el.tagName = (tag || (typeof el.getContext === 'function' ? 'canvas' : 'div')).toUpperCase();
+  if (el.tagName === undefined) {
+    try {
+      const inferredTag = (tag || (typeof el.getContext === 'function' ? 'canvas' : 'div')).toUpperCase();
+      Object.defineProperty(el, 'tagName', {
+        value: inferredTag,
+        configurable: true,
+        writable: true,
+      });
+    } catch {}
   }
 
   if (typeof el.addEventListener !== 'function') {
@@ -180,20 +325,32 @@ function patchSelectorCompatibility(root) {
 }
 
 /**
- * Safely creates an element and ensures necessary DOM methods exist.
+ * Safely creates an element and ensures necessary DOM methods exist without assigning to read-only tagName.
+ * Supports string tag names or descriptor objects.
  *
- * @param {string} tag
+ * @param {string|Object} tagOrDescriptor
  * @returns {HTMLElement|Object}
  */
-function createElement(tag) {
+export function createElement(tagOrDescriptor) {
   if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
     return null;
   }
-  const el = document.createElement(tag);
-  if (el && !el.tagName) {
-    el.tagName = tag.toUpperCase();
+  let tag = 'div';
+  let props = null;
+
+  if (typeof tagOrDescriptor === 'string') {
+    tag = tagOrDescriptor;
+  } else if (tagOrDescriptor && typeof tagOrDescriptor === 'object') {
+    tag = tagOrDescriptor.tagName || tagOrDescriptor.tag || 'div';
+    props = tagOrDescriptor;
   }
-  return ensureElementMethods(el, tag);
+
+  const el = document.createElement(tag);
+  ensureElementMethods(el, tag);
+  if (props) {
+    applyProps(el, props);
+  }
+  return el;
 }
 
 /**
@@ -669,6 +826,7 @@ export function mount(containerOrOptions) {
     throw new Error('Target container #app was not found in the DOM');
   }
 
+  currentContainer = target;
   ensureElementMethods(target, 'div');
   patchSelectorCompatibility(target);
 
@@ -934,7 +1092,6 @@ export function mount(containerOrOptions) {
   if (!canvas) {
     canvas = createElement('canvas');
     if (canvas) {
-      canvas.tagName = 'CANVAS';
       canvas.id = 'workspace-canvas';
       setClass(canvas, 'chart-canvas primary-chart');
       if (typeof canvas.setAttribute === 'function') {
@@ -956,7 +1113,6 @@ export function mount(containerOrOptions) {
     }
   } else {
     ensureElementMethods(canvas, 'canvas');
-    canvas.tagName = 'CANVAS';
     setClass(canvas, 'chart-canvas primary-chart');
     if (!canvas.id) canvas.id = 'workspace-canvas';
     if (!canvas.width) canvas.width = 1000;
@@ -1098,6 +1254,73 @@ export function mount(containerOrOptions) {
  */
 export function mountApp(container) {
   return mount(container);
+}
+
+/**
+ * Updates properties and dimensions of active components and canvas elements.
+ *
+ * @param {Object} [props={}]
+ */
+export function update(props = {}) {
+  const container =
+    currentContainer ||
+    (typeof document !== 'undefined' &&
+      (document.getElementById('app') || (document.querySelector && document.querySelector('#app'))));
+  if (!container) return;
+
+  const canvas =
+    (typeof container.querySelector === 'function' &&
+      (container.querySelector('CANVAS') || container.querySelector('canvas'))) ||
+    container.canvas;
+
+  if (props && typeof props === 'object') {
+    if (canvas) {
+      applyProps(canvas, props);
+      const chartInstance = container._chart || chart;
+      if (
+        chartInstance &&
+        typeof chartInstance.resize === 'function' &&
+        props.width !== undefined &&
+        props.height !== undefined
+      ) {
+        chartInstance.resize(props.width, props.height);
+      }
+    }
+  }
+}
+
+/**
+ * Component renderer helper creating elements from component/vdom descriptors.
+ *
+ * @param {Object} descriptor
+ * @returns {HTMLElement|Object}
+ */
+export function renderComponent(descriptor) {
+  if (!descriptor || typeof descriptor !== 'object') return null;
+  return createElement(descriptor);
+}
+
+/**
+ * Flexible render entrypoint supporting mounting or updating component trees.
+ *
+ * @param {HTMLElement|Object|string} [targetOrProps]
+ * @returns {HTMLElement|Object}
+ */
+export function render(targetOrProps) {
+  if (
+    typeof targetOrProps === 'string' ||
+    (targetOrProps && (targetOrProps.nodeType || targetOrProps.appendChild || targetOrProps.children))
+  ) {
+    return mount(targetOrProps);
+  }
+  if (targetOrProps && typeof targetOrProps === 'object') {
+    if (targetOrProps.tagName && !currentContainer) {
+      return renderComponent(targetOrProps);
+    }
+    update(targetOrProps);
+    return currentContainer;
+  }
+  return mount();
 }
 
 /**
