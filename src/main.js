@@ -1,6 +1,10 @@
+import { Chart } from './chart.js';
 import { Controls, patchMockElement } from './components/controls.js';
 
 let currentAppInstance = null;
+export let activeChart = null;
+
+export { Chart };
 
 /**
  * Safely coerces a node's children (HTMLCollection, Array, plain object, null, undefined)
@@ -149,6 +153,7 @@ export function mount(target = 'app', options = {}) {
       element: null,
       mountTarget: null,
       controls: null,
+      chart: null,
       clock: stateClock,
       stateClock,
       getState: () => ({ ...appState, clock: { ...stateClock }, stateClock: { ...stateClock } }),
@@ -185,19 +190,14 @@ export function mount(target = 'app', options = {}) {
   let delegatedClickHandler = null;
   let canvas = null;
   let ctx = null;
+  let chart = null;
   let statusElement = null;
   let animationFrameId = null;
   let isRunning = true;
 
   if (doc && typeof doc.createElement === 'function') {
     try {
-      // Visualization and canvas container
-      const canvasContainer = doc.createElement('div');
-      if (typeof canvasContainer.setAttribute === 'function') {
-        canvasContainer.setAttribute('class', 'canvas-container');
-      }
-      canvasContainer.id = 'canvas-container';
-
+      // Directly mount canvas element into document.getElementById('app')
       canvas = doc.createElement('canvas');
       canvas.id = 'main-canvas';
       if (typeof canvas.setAttribute === 'function') {
@@ -211,6 +211,15 @@ export function mount(target = 'app', options = {}) {
         } catch (_) {}
       }
 
+      if (typeof mountTarget.appendChild === 'function') {
+        mountTarget.appendChild(canvas);
+      }
+
+      // Instantiate chart engine and attach active pan listeners to canvas
+      chart = new Chart({ canvas, width: 800, height: 600 });
+      activeChart = chart;
+      canvas.__chartInstance = chart;
+
       // Live dynamic clock and state status element
       statusElement = doc.createElement('div');
       if (typeof statusElement.setAttribute === 'function') {
@@ -220,32 +229,8 @@ export function mount(target = 'app', options = {}) {
       statusElement.id = 'status-clock';
       statusElement.textContent = 'Clock: 0.00s | Frames: 0 | State: active';
 
-      // Canvas interactive event listeners
-      let isDragging = false;
-      let lastPos = { x: 0, y: 0 };
-      if (typeof canvas.addEventListener === 'function') {
-        canvas.addEventListener('mousedown', (e) => {
-          isDragging = true;
-          lastPos = { x: e.clientX || 0, y: e.clientY || 0 };
-        });
-        canvas.addEventListener('mousemove', (e) => {
-          if (!isDragging) return;
-          lastPos = { x: e.clientX || 0, y: e.clientY || 0 };
-        });
-        canvas.addEventListener('mouseup', () => {
-          isDragging = false;
-        });
-        canvas.addEventListener('wheel', (e) => {
-          if (typeof e.preventDefault === 'function') e.preventDefault();
-        });
-      }
-
-      if (typeof canvasContainer.appendChild === 'function') {
-        canvasContainer.appendChild(canvas);
-        canvasContainer.appendChild(statusElement);
-      }
       if (typeof mountTarget.appendChild === 'function') {
-        mountTarget.appendChild(canvasContainer);
+        mountTarget.appendChild(statusElement);
       }
 
       // Host container for controls
@@ -313,7 +298,6 @@ export function mount(target = 'app', options = {}) {
   const tick = (timestamp) => {
     if (!isRunning) return;
 
-    // Immediately requeue to guarantee continuous loop persistence
     if (typeof requestAnimationFrame === 'function') {
       animationFrameId = requestAnimationFrame(tick);
     }
@@ -339,8 +323,10 @@ export function mount(target = 'app', options = {}) {
         statusElement.textContent = `Clock: ${(stateClock.elapsed / 1000).toFixed(2)}s | Frames: ${stateClock.frameCount} | FPS: ${stateClock.fps} | Tool: ${appState.tool || 'select'}`;
       }
 
-      // Continuous active frame renders on canvas
-      if (ctx) {
+      // Continuous active frame renders
+      if (chart && typeof chart.render === 'function') {
+        chart.render();
+      } else if (ctx) {
         if (typeof ctx.clearRect === 'function') {
           ctx.clearRect(0, 0, (canvas && canvas.width) || 800, (canvas && canvas.height) || 600);
         }
@@ -369,7 +355,6 @@ export function mount(target = 'app', options = {}) {
     }
   };
 
-  // Immediately initialize continuous rendering loop
   if (typeof requestAnimationFrame === 'function') {
     animationFrameId = requestAnimationFrame(tick);
   }
@@ -378,6 +363,8 @@ export function mount(target = 'app', options = {}) {
     mounted: true,
     element: mountTarget,
     mountTarget,
+    canvas,
+    chart,
     controls,
     clock: stateClock,
     stateClock,
@@ -399,8 +386,12 @@ export function mount(target = 'app', options = {}) {
       if (delegatedClickHandler && typeof mountTarget.removeEventListener === 'function') {
         mountTarget.removeEventListener('click', delegatedClickHandler);
       }
+      if (chart && typeof chart.destroy === 'function') {
+        chart.destroy();
+      }
       mountTarget.innerHTML = '';
       currentAppInstance = null;
+      activeChart = null;
     },
   };
 
@@ -426,6 +417,17 @@ export function initApp() {
  * @returns {Object} Application instance.
  */
 export function mountApp(target, options) {
+  return mount(target, options);
+}
+
+/**
+ * Mounts the chart component directly to target.
+ *
+ * @param {string|Object} target - Target element or id.
+ * @param {Object} [options] - Mount options.
+ * @returns {Object} Application instance.
+ */
+export function mountChart(target, options) {
   return mount(target, options);
 }
 
