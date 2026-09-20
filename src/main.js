@@ -1,7 +1,7 @@
 /**
  * SmartTrading-V2 — Application Entrypoint
  * Bootstraps the active financial candlestick chart directly into the #app container,
- * providing comprehensive data series, interactive controls, and viewport rendering.
+ * providing structured UI hierarchy with a dedicated header and workspace.
  */
 
 import {
@@ -55,6 +55,7 @@ function createElementSafe(tag, attrs = {}) {
       children: [],
       attributes: {},
       style: {},
+      textContent: '',
       appendChild(child) {
         this.children.push(child);
         return child;
@@ -64,11 +65,64 @@ function createElementSafe(tag, attrs = {}) {
         if (idx !== -1) this.children.splice(idx, 1);
         return child;
       },
+      contains(target) {
+        if (!target) return false;
+        if (this === target) return true;
+        for (const child of this.children) {
+          if (child === target || (child.contains && child.contains(target))) {
+            return true;
+          }
+        }
+        return false;
+      },
       querySelector(sel) {
-        if (sel === 'canvas') {
-          return this.children.find((c) => c.tagName === 'CANVAS') || null;
+        const match = (node) => {
+          if (!node || !node.tagName) return false;
+          if (sel.startsWith('.')) {
+            return node.className && node.className.split(/\s+/).includes(sel.slice(1));
+          }
+          if (sel.startsWith('#')) {
+            return node.id === sel.slice(1);
+          }
+          if (sel.startsWith('[data-testid="') && sel.endsWith('"]')) {
+            const testId = sel.slice(14, -2);
+            return (node.attributes && node.attributes['data-testid'] === testId) ||
+                   (node.getAttribute && node.getAttribute('data-testid') === testId);
+          }
+          return node.tagName.toLowerCase() === sel.toLowerCase();
+        };
+
+        const queue = [...this.children];
+        while (queue.length > 0) {
+          const item = queue.shift();
+          if (match(item)) return item;
+          if (item.children) queue.push(...item.children);
         }
         return null;
+      },
+      querySelectorAll(sel) {
+        const results = [];
+        const match = (node) => {
+          if (!node || !node.tagName) return false;
+          if (sel.includes(',')) {
+            return sel.split(',').map((s) => s.trim()).some((s) => {
+              if (s.startsWith('.')) return node.className && node.className.split(/\s+/).includes(s.slice(1));
+              return node.tagName.toLowerCase() === s.toLowerCase();
+            });
+          }
+          if (sel.startsWith('.')) {
+            return node.className && node.className.split(/\s+/).includes(sel.slice(1));
+          }
+          return node.tagName.toLowerCase() === sel.toLowerCase();
+        };
+
+        const queue = [...this.children];
+        while (queue.length > 0) {
+          const item = queue.shift();
+          if (match(item)) results.push(item);
+          if (item.children) queue.push(...item.children);
+        }
+        return results;
       },
     };
   }
@@ -84,7 +138,7 @@ function createElementSafe(tag, attrs = {}) {
 }
 
 /**
- * Mounts the trading application and renders the full-width candlestick series
+ * Mounts the trading application with a semantic layout (header, workspace housing chart and side panel)
  * directly into the target container (#app).
  *
  * @param {HTMLElement|Object|string} [target] - Target container element or selector
@@ -128,32 +182,123 @@ export function mountApp(target, options = {}) {
     throw new Error('Target container #app not found (app container missing)');
   }
 
-  // 1. Locate or create the active canvas element directly in the #app container
-  let canvas = null;
-  if (typeof container.querySelector === 'function') {
-    canvas = container.querySelector('canvas');
-  }
-  if (!canvas && Array.isArray(container.children)) {
-    canvas = container.children.find((c) => c.tagName === 'CANVAS');
+  // Destroy any existing chart instance on re-mounting
+  if (container.__nexus_app && typeof container.__nexus_app.destroy === 'function') {
+    container.__nexus_app.destroy();
   }
 
-  if (!canvas) {
-    if (typeof opts.createCanvas === 'function') {
-      canvas = opts.createCanvas();
-    } else {
-      canvas = createElementSafe('canvas', {
-        width: opts.width || 1000,
-        height: opts.height || 500,
-        class: 'chart-canvas active-chart',
+  // Clear container to ensure clean structural hierarchy without duplicate/uncontained siblings
+  if (typeof container.replaceChildren === 'function') {
+    container.replaceChildren();
+  } else if (typeof container.innerHTML !== 'undefined') {
+    container.innerHTML = '';
+  } else if (Array.isArray(container.children)) {
+    container.children = [];
+  }
+
+  // 1. Structured Application Header (<header>, [data-testid="app-header"])
+  const headerElement = createElementSafe('header', {
+    class: 'app-header chart-toolbar',
+    'data-testid': 'app-header',
+  });
+
+  // Application Title
+  const titleElement = createElementSafe('h1', {
+    class: 'app-title title',
+    'data-testid': 'app-title',
+  });
+  titleElement.textContent = opts.title || 'SmartTrading V2';
+  headerElement.appendChild(titleElement);
+
+  // Ticker Selector
+  const tickerSelector = createElementSafe('select', {
+    class: 'ticker-selector ticker-control',
+    'data-testid': 'ticker-selector',
+  });
+  const tickers = opts.tickers || ['BTC/USD', 'ETH/USD', 'SOL/USD'];
+  tickers.forEach((t) => {
+    const opt = createElementSafe('option', { value: t });
+    opt.textContent = t;
+    tickerSelector.appendChild(opt);
+  });
+  if (typeof tickerSelector.addEventListener === 'function') {
+    tickerSelector.addEventListener('change', (e) => {
+      if (typeof opts.onTickerChange === 'function') opts.onTickerChange(e);
+    });
+  }
+  headerElement.appendChild(tickerSelector);
+
+  // Timeframe Controls
+  const timeframes = opts.timeframes || ['1m', '5m', '15m', '1h', '1d'];
+  let currentTimeframe = opts.initialTimeframe || opts.timeframe || opts.defaultTimeframe || '1m';
+
+  const timeframeControls = createElementSafe('div', {
+    class: 'timeframe-controls timeframes',
+    'data-testid': 'timeframe-controls',
+  });
+
+  const buttons = [];
+  timeframes.forEach((tf) => {
+    const btn = createElementSafe('button', {
+      class: `timeframe-btn ${tf === currentTimeframe ? 'active' : ''}`,
+      'data-timeframe': tf,
+    });
+    btn.textContent = tf;
+
+    if (typeof btn.addEventListener === 'function') {
+      btn.addEventListener('click', () => {
+        currentTimeframe = tf;
+        buttons.forEach((b) => {
+          const bTf = (b.attributes && b.attributes['data-timeframe']) || (b.getAttribute && b.getAttribute('data-timeframe'));
+          if (bTf === tf) {
+            setAttr(b, 'class', 'timeframe-btn active');
+          } else {
+            setAttr(b, 'class', 'timeframe-btn');
+          }
+        });
+        if (chart && typeof chart.setTimeframe === 'function') {
+          chart.setTimeframe(tf);
+        }
       });
     }
 
-    canvas.width = canvas.width || opts.width || 1000;
-    canvas.height = canvas.height || opts.height || 500;
-    container.appendChild(canvas);
+    timeframeControls.appendChild(btn);
+    buttons.push(btn);
+  });
+  headerElement.appendChild(timeframeControls);
+
+  // 2. Structured Workspace Container (<main>, [data-testid="workspace"])
+  const workspaceContainer = createElementSafe('main', {
+    class: 'workspace-container workspace',
+    'data-testid': 'workspace',
+  });
+
+  // Chart area container housing the canvas
+  const chartArea = createElementSafe('div', {
+    class: 'chart-container chart-workspace',
+    'data-testid': 'chart-area',
+  });
+
+  let canvas = null;
+  if (typeof opts.createCanvas === 'function') {
+    canvas = opts.createCanvas();
+  } else if (opts.canvas) {
+    canvas = opts.canvas;
+  } else {
+    canvas = createElementSafe('canvas', {
+      width: opts.width || 1000,
+      height: opts.height || 500,
+      class: 'chart-canvas active-chart',
+      'data-testid': 'chart-canvas',
+    });
   }
 
-  // Provide fallback 2D context for headless environments if missing
+  canvas.width = canvas.width || opts.width || 1000;
+  canvas.height = canvas.height || opts.height || 500;
+  chartArea.appendChild(canvas);
+  workspaceContainer.appendChild(chartArea);
+
+  // Fallback 2D context for headless test environments
   if (typeof canvas.getContext !== 'function') {
     const drawCalls = [];
     const ctx = {
@@ -170,71 +315,36 @@ export function mountApp(target, options = {}) {
     canvas.getContext = (type) => (type === '2d' ? ctx : null);
   }
 
-  // 2. Toolbar & Controls Setup (Timeframe selection, ticker control)
-  const timeframes = opts.timeframes || ['1m', '5m', '15m', '1h', '1d'];
-  let currentTimeframe =
-    opts.initialTimeframe || opts.timeframe || opts.defaultTimeframe || '1m';
+  // Side panel container (<aside>, [data-testid="side-panel"])
+  const sidePanel = createElementSafe('aside', {
+    class: 'side-panel tools-panel',
+    'data-testid': 'side-panel',
+  });
 
-  let toolbar = null;
-  if (container.children && Array.isArray(container.children)) {
-    toolbar = container.children.find(
-      (c) => c.tagName === 'NAV' || c.tagName === 'HEADER' || (c.attributes && c.attributes.class === 'chart-toolbar')
-    );
-  }
+  const ordersPanel = createElementSafe('div', {
+    class: 'orders-panel panel-section',
+    'data-testid': 'orders-panel',
+  });
 
-  const buttons = [];
-  if (!toolbar && typeof document !== 'undefined' && typeof document.createElement === 'function') {
-    toolbar = createElementSafe('header', { class: 'top-nav chart-toolbar timeframe-controls' });
+  const ordersTitle = createElementSafe('h2', { class: 'panel-title' });
+  ordersTitle.textContent = 'Orders & Tools';
+  ordersPanel.appendChild(ordersTitle);
 
-    const titleEl = createElementSafe('h1', { class: 'app-title' });
-    titleEl.textContent = opts.title || 'SmartTrading V2';
-    toolbar.appendChild(titleEl);
+  const tradeActions = createElementSafe('div', { class: 'trade-actions' });
+  const buyBtn = createElementSafe('button', { class: 'btn btn-buy', 'data-testid': 'buy-button' });
+  buyBtn.textContent = 'Buy / Long';
+  const sellBtn = createElementSafe('button', { class: 'btn btn-sell', 'data-testid': 'sell-button' });
+  sellBtn.textContent = 'Sell / Short';
+  tradeActions.appendChild(buyBtn);
+  tradeActions.appendChild(sellBtn);
+  ordersPanel.appendChild(tradeActions);
 
-    const tickerSelect = createElementSafe('select', { class: 'ticker-control' });
-    const tickers = opts.tickers || ['BTC/USD', 'ETH/USD', 'SOL/USD'];
-    tickers.forEach((t) => {
-      const opt = createElementSafe('option', { value: t });
-      opt.textContent = t;
-      tickerSelect.appendChild(opt);
-    });
+  sidePanel.appendChild(ordersPanel);
+  workspaceContainer.appendChild(sidePanel);
 
-    if (typeof tickerSelect.addEventListener === 'function') {
-      tickerSelect.addEventListener('change', (e) => {
-        if (typeof opts.onTickerChange === 'function') opts.onTickerChange(e);
-      });
-    }
-    toolbar.appendChild(tickerSelect);
-
-    timeframes.forEach((tf) => {
-      const btn = createElementSafe('button', {
-        class: `timeframe-btn ${tf === currentTimeframe ? 'active' : ''}`,
-        'data-timeframe': tf,
-      });
-      btn.textContent = tf;
-
-      if (typeof btn.addEventListener === 'function') {
-        btn.addEventListener('click', () => {
-          currentTimeframe = tf;
-          buttons.forEach((b) => {
-            const bTf = (b.attributes && b.attributes['data-timeframe']) || (b.getAttribute && b.getAttribute('data-timeframe'));
-            if (bTf === tf) {
-              setAttr(b, 'class', 'timeframe-btn active');
-            } else {
-              setAttr(b, 'class', 'timeframe-btn');
-            }
-          });
-          if (chart && typeof chart.setTimeframe === 'function') {
-            chart.setTimeframe(tf);
-          }
-        });
-      }
-
-      toolbar.appendChild(btn);
-      buttons.push(btn);
-    });
-
-    container.appendChild(toolbar);
-  }
+  // Mount only semantic structural children into root container
+  container.appendChild(headerElement);
+  container.appendChild(workspaceContainer);
 
   // 3. Generate comprehensive candlestick data series (STORY 1.2.1: 50 to 100 points)
   const candleCount = opts.candleCount || 75;
@@ -245,7 +355,7 @@ export function mountApp(target, options = {}) {
         ? opts.data
         : generateCandleSeries({ count: candleCount });
 
-  // 4. Initialize Core Chart Engine and trigger full-width series rendering
+  // 4. Initialize Core Chart Engine
   const chart = new Chart(canvas, {
     candles,
     candleCount,
@@ -269,11 +379,23 @@ export function mountApp(target, options = {}) {
     getChart: () => chart,
     container,
     canvas,
-    toolbar,
+    toolbar: headerElement,
+    header: headerElement,
+    workspace: workspaceContainer,
+    chartArea,
+    sidePanel,
     buttons,
     getTimeframe: () => (chart && typeof chart.getTimeframe === 'function' ? chart.getTimeframe() : currentTimeframe),
     setTimeframe: (tf) => {
       currentTimeframe = tf;
+      buttons.forEach((b) => {
+        const bTf = (b.attributes && b.attributes['data-timeframe']) || (b.getAttribute && b.getAttribute('data-timeframe'));
+        if (bTf === tf) {
+          setAttr(b, 'class', 'timeframe-btn active');
+        } else {
+          setAttr(b, 'class', 'timeframe-btn');
+        }
+      });
       if (chart && typeof chart.setTimeframe === 'function') {
         chart.setTimeframe(tf);
       }
@@ -291,6 +413,7 @@ export function mountApp(target, options = {}) {
     },
   };
 
+  container.__nexus_app = appInstance;
   return appInstance;
 }
 

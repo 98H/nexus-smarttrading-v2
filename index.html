@@ -14,25 +14,131 @@
       display: flex;
       flex-direction: column;
     }
-    #app { flex: 1; display: flex; flex-direction: column; }
+    #app {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+    .app-header {
+      height: 52px;
+      background: #0f172a;
+      border-bottom: 1px solid #1e293b;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+    .app-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #38bdf8;
+      margin-right: 8px;
+    }
+    .ticker-selector {
+      background: #1e293b;
+      color: #f8fafc;
+      border: 1px solid #334155;
+      border-radius: 4px;
+      padding: 6px 12px;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    .timeframe-controls {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-left: auto;
+    }
+    .timeframe-btn {
+      background: #1e293b;
+      color: #94a3b8;
+      border: 1px solid #334155;
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: all 0.15s ease-in-out;
+    }
+    .timeframe-btn:hover {
+      color: #f8fafc;
+      border-color: #64748b;
+    }
+    .timeframe-btn.active {
+      background: #0284c7;
+      color: #ffffff;
+      border-color: #38bdf8;
+      font-weight: 600;
+    }
+    .workspace-container {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+      position: relative;
+    }
+    .chart-container {
+      flex: 1;
+      position: relative;
+      background: #080b11;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .chart-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .side-panel {
+      width: 280px;
+      background: #0b0f19;
+      border-left: 1px solid #1e293b;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+    .panel-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .panel-title {
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #64748b;
+    }
+    .trade-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .btn {
+      flex: 1;
+      padding: 8px 12px;
+      border-radius: 4px;
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-buy {
+      background: #10b981;
+      color: #ffffff;
+    }
+    .btn-sell {
+      background: #ef4444;
+      color: #ffffff;
+    }
   </style>
 </head>
 <body>
   <div id="app"></div>
-  <script type="module">
-  import * as App from '/src/main.js';
-  const mountTarget = document.getElementById('app') || document.body;
-  if (typeof App.mountApp === 'function') {
-    App.mountApp(mountTarget);
-  } else if (typeof App.mount === 'function') {
-    App.mount(mountTarget);
-  } else if (typeof App.default === 'function') {
-    App.default(mountTarget);
-  } else if (App.default && typeof App.default.mount === 'function') {
-    App.default.mount(mountTarget);
-  } else if (App.default && typeof App.default.mountApp === 'function') {
-    App.default.mountApp(mountTarget);
-  }
-</script>
+  <script type="module" src="/src/main.js"></script>
 </body>
 </html>
