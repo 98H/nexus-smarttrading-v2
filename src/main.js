@@ -14,7 +14,7 @@ import {
 } from './chart.js';
 
 /**
- * Mounts the candlestick chart application into a target container.
+ * Mounts the candlestick chart application into a target container and binds gestures.
  *
  * @param {HTMLElement} [container] - Mount container element (defaults to #app)
  * @returns {Chart|null} Initialized chart instance
@@ -36,10 +36,18 @@ export function mountApp(container) {
     timeScaleHeight: 30,
   });
 
+  const canvas =
+    chart.canvas || (mountTarget.querySelector ? mountTarget.querySelector('canvas') : null);
+  if (canvas && typeof chart.bindPanGestures === 'function') {
+    chart.bindPanGestures(canvas);
+  }
+
   chart.render();
   chart.start();
 
+  chart.chart = chart;
   mountTarget.__chart = chart;
+  mountTarget.chart = chart;
   mountTarget.__nexus_mounted = true;
   return chart;
 }
@@ -65,6 +73,16 @@ export function init(container) {
 }
 
 /**
+ * Alternative initialization hook.
+ *
+ * @param {HTMLElement} [container] - Target DOM container
+ * @returns {Chart|null} Initialized chart instance
+ */
+export function initialize(container) {
+  return mountApp(container);
+}
+
+/**
  * Unmounts and tears down the chart engine from the container.
  *
  * @param {HTMLElement} [container] - Target DOM container
@@ -75,6 +93,7 @@ export function destroy(container) {
   if (mountTarget && mountTarget.__chart) {
     mountTarget.__chart.destroy();
     mountTarget.__chart = null;
+    mountTarget.chart = null;
     mountTarget.__nexus_mounted = false;
   }
 }
