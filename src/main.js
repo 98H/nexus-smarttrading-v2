@@ -458,6 +458,31 @@ function createDOMElement(tagName, attributes = {}) {
     element.setAttribute(key, value);
   }
 
+  if (tagName.toLowerCase() === 'canvas') {
+    element.width = Number(attributes.width) || 800;
+    element.height = Number(attributes.height) || 400;
+    const drawCalls = [];
+    const ctx = {
+      canvas: element,
+      drawCalls,
+      clearRect: (x, y, w, h) => drawCalls.push({ type: 'clearRect', x, y, w, h }),
+      fillRect: (x, y, w, h) => drawCalls.push({ type: 'fillRect', x, y, w, h }),
+      strokeRect: (x, y, w, h) => drawCalls.push({ type: 'strokeRect', x, y, w, h }),
+      beginPath: () => drawCalls.push({ type: 'beginPath' }),
+      moveTo: (x, y) => drawCalls.push({ type: 'moveTo', x, y }),
+      lineTo: (x, y) => drawCalls.push({ type: 'lineTo', x, y }),
+      stroke: () => drawCalls.push({ type: 'stroke' }),
+      fill: () => drawCalls.push({ type: 'fill' }),
+      save: () => drawCalls.push({ type: 'save' }),
+      restore: () => drawCalls.push({ type: 'restore' }),
+      setTransform: (a, b, c, d, e, f) => drawCalls.push({ type: 'setTransform', a, b, c, d, e, f }),
+    };
+    element.getContext = (contextId) => {
+      if (contextId === '2d') return ctx;
+      return null;
+    };
+  }
+
   patchMockElement(element);
   return element;
 }
@@ -662,11 +687,56 @@ export function mountApp(container, options = {}) {
     chart = new Chart(canvasEl, chartConfig);
   }
 
+<<<<<<< HEAD
   if (toolbarEl && chart) {
     initToolbar({
       toolbarElement: toolbarEl,
       chartInstance: chart,
       rawCandles,
+=======
+  if (canvasEl && chart) {
+    canvasEl.chart = chart;
+    canvasEl.__chart = chart;
+  }
+
+  if (buttons && buttons.length > 0) {
+    buttons.forEach((btn) => {
+      const tf = btn.getAttribute('data-timeframe');
+      const isActive = tf === activeTimeframe;
+      if (isActive) {
+        btn.classList.add('active');
+        btn.setAttribute('aria-pressed', 'true');
+      } else {
+        btn.classList.remove('active');
+        btn.setAttribute('aria-pressed', 'false');
+      }
+
+      btn.addEventListener('click', () => {
+        if (activeTimeframe === tf) return;
+        activeTimeframe = tf;
+
+        const currentButtons =
+          (toolbarEl &&
+            typeof toolbarEl.querySelectorAll === 'function' &&
+            toolbarEl.querySelectorAll('button[data-timeframe]')) ||
+          buttons;
+
+        currentButtons.forEach((b) => {
+          const isTarget = b.getAttribute('data-timeframe') === tf;
+          if (isTarget) {
+            b.classList.add('active');
+            b.setAttribute('aria-pressed', 'true');
+          } else {
+            b.classList.remove('active');
+            b.setAttribute('aria-pressed', 'false');
+          }
+        });
+
+        if (chart && typeof chart.setTimeframe === 'function') {
+          chart.setTimeframe(tf);
+        }
+      });
+>>>>>>> task/story-ba5c3a1e
     });
   }
 
@@ -728,7 +798,9 @@ export function mountApp(container, options = {}) {
 
   return {
     chart,
+    canvas: canvasEl,
     getChart: () => chart,
+    getCanvas: () => canvasEl,
     container: root,
     getMutationCount: () => mutationCount,
     getLastMutationTimestamp: () => lastMutationTimestamp,
@@ -756,6 +828,7 @@ export function mountApp(container, options = {}) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 export const mount = mountApp;
 export const init = mountApp;
@@ -767,6 +840,8 @@ export const initApp = mountApp;
 =======
 =======
 >>>>>>> task/story-aef278d5
+=======
+>>>>>>> task/story-ba5c3a1e
 export const mount = mountApp;
 
 export function initApp(container, options = {}) {
@@ -776,12 +851,15 @@ export function initApp(container, options = {}) {
 export const init = initApp;
 export const initialize = initApp;
 
+<<<<<<< HEAD
+=======
+// Browser Auto-Mount Bootstrap Guard
+>>>>>>> task/story-ba5c3a1e
 if (typeof document !== 'undefined') {
-  const mountTarget =
-    (typeof document.getElementById === 'function' ? document.getElementById('app') : null) ||
-    document.body;
+  const mountTarget = document.getElementById('app') || document.body;
   if (mountTarget && !mountTarget.__nexus_mounted) {
     mountTarget.__nexus_mounted = true;
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -812,3 +890,9 @@ if (typeof document !== 'undefined') {
   }
 }
 >>>>>>> task/story-aef278d5
+=======
+    if (typeof mountApp === 'function') mountApp(mountTarget);
+    else if (typeof mount === 'function') mount(mountTarget);
+  }
+}
+>>>>>>> task/story-ba5c3a1e
