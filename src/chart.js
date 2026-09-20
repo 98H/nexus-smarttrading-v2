@@ -1,8 +1,8 @@
 /**
  * SmartTrading-V2 — Chart Engine & Candlestick/Axes Orchestrator
  * Integrates Candlestick rendering, AxesRenderer (DF-SCALES-01, DF-SCALES-02),
- * and analytical overlays (DF-OVERLAYS-01) within constrained viewport bounds.
- * Satisfies STORY 31.1.1, STORY 31.2.1, and STORY 32.1.1.
+ * pan gestures (DF-GESTURE-01, STORY 33.1.1), and analytical overlays (DF-OVERLAYS-01)
+ * within constrained viewport bounds.
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -88,7 +88,8 @@ export function mapYToPrice(y, plotTop, plotHeight, minPrice, maxPrice) {
 }
 
 /**
- * Chart Engine rendering Candlesticks, Coordinate Scales, and Indicator Overlays.
+ * Chart Engine rendering Candlesticks, Coordinate Scales, Indicator Overlays,
+ * and managing interactive Pan/Zoom Viewport state.
  */
 export class Chart {
   /**
@@ -120,11 +121,19 @@ export class Chart {
       : (typeof options.zoom === 'number' && Number.isFinite(options.zoom) ? options.zoom : 1.0);
     this.zoom = Math.min(this.maxZoom, Math.max(this.minZoom, initial));
 
-    const data = Array.isArray(options.data) ? [...options.data] : [];
-    if (data.length > 0 && data.length < 50) {
-      throw new Error('SPARSE_DATA_SERIES: Minimum 50 data points required to populate viewport sectors');
-    }
-    this.data = data;
+    this._viewport = {
+      x: options.viewport?.x ?? 0,
+      y: options.viewport?.y ?? 0,
+    };
+
+    this.renderCount = 0;
+    this._isPanning = false;
+    this._dragStartX = 0;
+    this._dragStartY = 0;
+    this._dragStartViewportX = 0;
+    this._dragStartViewportY = 0;
+
+    this.data = Array.isArray(options.data) ? [...options.data] : [];
     this.overlayType = options.overlayType || 'EMA';
     this.period = Number(options.period) || 20;
     this.color = options.color || '#FF9800';
@@ -147,23 +156,81 @@ export class Chart {
     }
   }
 
-  bindEvents() {
-    if (!this.canvas || typeof this.canvas.addEventListener !== 'function') return;
-    this.unbindEvents();
-    this.onWheel = (e) => this.handleWheel(e);
-    this.canvas.addEventListener('wheel', this.onWheel);
+  get viewport() {
+    return this._viewport;
   }
 
-  unbindEvents() {
-    if (!this.canvas || typeof this.canvas.removeEventListener !== 'function') return;
-    if (this.onWheel) {
-      this.canvas.removeEventListener('wheel', this.onWheel);
-      this.onWheel = null;
+  set viewport(val) {
+    if (val && typeof val === 'object') {
+      if (typeof val.x === 'number' && Number.isFinite(val.x)) {
+        this._viewport.x = val.x;
+      }
+      if (typeof val.y === 'number' && Number.isFinite(val.y)) {
+        this._viewport.y = val.y;
+      }
     }
   }
 
-  destroy() {
-    this.unbindEvents();
+  getViewportOffset() {
+    return {
+      x: this._viewport.x,
+      y: this._viewport.y,
+    };
+  }
+
+  setViewportOffset(x = 0, y = 0) {
+    this._viewport.x = typeof x === 'number' && Number.isFinite(x) ? x : 0;
+    this._viewport.y = typeof y === 'number' && Number.isFinite(y) ? y : 0;
+    this.render();
+    return this.getViewportOffset();
+  }
+
+  pan(dx = 0, dy = 0) {
+    const deltaX = typeof dx === 'number' && Number.isFinite(dx) ? dx : 0;
+    const deltaY = typeof dy === 'number' && Number.isFinite(dy) ? dy : 0;
+    this._viewport.x += deltaX;
+    this._viewport.y += deltaY;
+    this.render();
+    return this.getViewportOffset();
+  }
+
+  handleMouseDown(e) {
+    if (e && e.button !== undefined && e.button !== 0) return;
+    this._isPanning = true;
+    this._dragStartX = e?.clientX ?? 0;
+    this._dragStartY = e?.clientY ?? 0;
+    this._dragStartViewportX = this._viewport.x;
+    this._dragStartViewportY = this._viewport.y;
+  }
+
+  handleMouseMove(e) {
+    if (!this._isPanning) return;
+    const clientX = e?.clientX ?? 0;
+    const clientY = e?.clientY ?? 0;
+    const dx = clientX - this._dragStartX;
+    const dy = clientY - this._dragStartY;
+    this._viewport.x = this._dragStartViewportX + dx;
+    this._viewport.y = this._dragStartViewportY + dy;
+    this.render();
+  }
+
+  handleMouseUp(e) {
+    if (!this._isPanning) return;
+    if (e) {
+      const clientX = e.clientX ?? this._dragStartX;
+      const clientY = e.clientY ?? this._dragStartY;
+      const dx = clientX - this._dragStartX;
+      const dy = clientY - this._dragStartY;
+      this._viewport.x = this._dragStartViewportX + dx;
+      this._viewport.y = this._dragStartViewportY + dy;
+    }
+    this._isPanning = false;
+  }
+
+  handleMouseLeave() {
+    if (this._isPanning) {
+      this._isPanning = false;
+    }
   }
 
   handleWheel(e) {
@@ -173,17 +240,58 @@ export class Chart {
     }
 
     const deltaY = typeof e.deltaY === 'number' && Number.isFinite(e.deltaY) ? e.deltaY : 0;
-    if (deltaY === 0) {
-      return;
-    }
+    if (deltaY === 0) return;
 
     const zoomFactor = Math.exp(-deltaY * 0.001);
-    if (!Number.isFinite(zoomFactor) || Number.isNaN(zoomFactor)) {
-      return;
-    }
+    if (!Number.isFinite(zoomFactor) || Number.isNaN(zoomFactor)) return;
 
     const newZoom = this.zoom * zoomFactor;
     this.setZoom(newZoom);
+  }
+
+  bindEvents() {
+    if (!this.canvas || typeof this.canvas.addEventListener !== 'function') return;
+    this.unbindEvents();
+
+    this.onWheel = (e) => this.handleWheel(e);
+    this.onMouseDown = (e) => this.handleMouseDown(e);
+    this.onMouseMove = (e) => this.handleMouseMove(e);
+    this.onMouseUp = (e) => this.handleMouseUp(e);
+    this.onMouseLeave = (e) => this.handleMouseLeave(e);
+
+    this.canvas.addEventListener('wheel', this.onWheel);
+    this.canvas.addEventListener('mousedown', this.onMouseDown);
+    this.canvas.addEventListener('mousemove', this.onMouseMove);
+    this.canvas.addEventListener('mouseup', this.onMouseUp);
+    this.canvas.addEventListener('mouseleave', this.onMouseLeave);
+  }
+
+  unbindEvents() {
+    if (!this.canvas || typeof this.canvas.removeEventListener !== 'function') return;
+    if (this.onWheel) {
+      this.canvas.removeEventListener('wheel', this.onWheel);
+      this.onWheel = null;
+    }
+    if (this.onMouseDown) {
+      this.canvas.removeEventListener('mousedown', this.onMouseDown);
+      this.onMouseDown = null;
+    }
+    if (this.onMouseMove) {
+      this.canvas.removeEventListener('mousemove', this.onMouseMove);
+      this.onMouseMove = null;
+    }
+    if (this.onMouseUp) {
+      this.canvas.removeEventListener('mouseup', this.onMouseUp);
+      this.onMouseUp = null;
+    }
+    if (this.onMouseLeave) {
+      this.canvas.removeEventListener('mouseleave', this.onMouseLeave);
+      this.onMouseLeave = null;
+    }
+  }
+
+  destroy() {
+    this.unbindEvents();
   }
 
   getZoom() {
@@ -214,7 +322,14 @@ export class Chart {
   }
 
   updateData(data) {
-    this.setData(data);
+    if (Array.isArray(data)) {
+      if (data.length < 50 && this.data.length >= 50) {
+        this.data = [...this.data, ...data];
+      } else {
+        this.data = [...data];
+      }
+    }
+    this.render();
   }
 
   setOverlay(type, period = 20) {
@@ -245,11 +360,17 @@ export class Chart {
     const ctx = this.ctx;
     if (!ctx) return;
 
+    this.renderCount = (this.renderCount || 0) + 1;
+
     const width = (this.canvas && this.canvas.width) || 800;
     const height = (this.canvas && this.canvas.height) || 600;
 
     if (typeof ctx.clearRect === 'function') {
       ctx.clearRect(0, 0, width, height);
+    }
+
+    if (typeof ctx.setTransform === 'function') {
+      ctx.setTransform(1, 0, 0, 1, this._viewport.x, this._viewport.y);
     }
 
     const data = this.data;
