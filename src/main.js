@@ -48,13 +48,7 @@ export {
 };
 
 /**
- * Cohesive dark-theme styling for application controls (DF-THEME-01).
- */
-const DARK_CONTROL_CSS =
-  'background: #1e222d; color: #d1d4dc; border: 1px solid #363c4e; border-radius: 4px; padding: 6px 10px; cursor: pointer; outline: none; font-size: 12px;';
-
-/**
- * Safely applies dark-theme control styles to a DOM element.
+ * Safely applies dark-theme control styles to a DOM element (DF-THEME-01).
  *
  * @param {HTMLElement|Object} el
  */
@@ -362,8 +356,17 @@ export function mountApp(containerOrOptions = {}, options = {}) {
     if (chartContainer && typeof chartContainer.querySelector === 'function') {
       canvas = chartContainer.querySelector('canvas');
     }
+    if (!canvas && container && typeof container.querySelector === 'function') {
+      canvas = container.querySelector('canvas');
+    }
+    if (!canvas && container && Array.isArray(container.children)) {
+      canvas = container.children.find((c) => c && c.tagName === 'CANVAS');
+    }
     if (!canvas && typeof document !== 'undefined') {
-      canvas = document.getElementById('chart-canvas') || document.getElementById('chart');
+      canvas =
+        (typeof document.getElementById === 'function' &&
+          (document.getElementById('chart-canvas') || document.getElementById('chart'))) ||
+        null;
     }
     if (!canvas && typeof document !== 'undefined' && typeof document.createElement === 'function') {
       canvas = document.createElement('canvas');
@@ -378,35 +381,35 @@ export function mountApp(containerOrOptions = {}, options = {}) {
   }
 
   // Mount canvas into DOM hierarchy
-  const mountParent =
-    chartContainer && typeof chartContainer.appendChild === 'function'
-      ? chartContainer
-      : container && typeof container.appendChild === 'function'
-      ? container
-      : null;
-
-  if (canvas && mountParent && canvas.parentElement !== mountParent) {
-    mountParent.appendChild(canvas);
+  if (chartContainer && typeof chartContainer.appendChild === 'function') {
+    try {
+      chartContainer.appendChild(canvas);
+    } catch (_) {}
   }
 
-  if (
-    canvas &&
-    container &&
-    typeof container.querySelector === 'function' &&
-    !container.querySelector('canvas') &&
-    typeof container.appendChild === 'function'
-  ) {
-    container.appendChild(canvas);
+  // Ensure canvas is directly mounted or present within container
+  if (canvas && container && typeof container.appendChild === 'function') {
+    const hasCanvasInContainer =
+      (typeof container.querySelector === 'function' && container.querySelector('canvas')) ||
+      (Array.isArray(container.children) && container.children.includes(canvas));
+    if (!hasCanvasInContainer) {
+      container.appendChild(canvas);
+    }
   }
 
   // 6. Interactive Canvas & Viewport Gestures (DF-GESTURE-01)
-  const chartCanvas = new ChartCanvas(canvas, {
-    container: chartContainer || container,
-    ...opts,
-    onRender: opts.onRender,
-  });
+  let chartCanvas = null;
+  try {
+    if (typeof ChartCanvas === 'function') {
+      chartCanvas = new ChartCanvas(canvas, {
+        container: chartContainer || container,
+        ...opts,
+        onRender: opts.onRender,
+      });
+    }
+  } catch (_) {}
 
-  if (legend) {
+  if (legend && chartCanvas) {
     chartCanvas.legendElement = legend;
   }
 
@@ -420,10 +423,12 @@ export function mountApp(containerOrOptions = {}, options = {}) {
         applyControlStyle(btn);
         if (typeof btn.addEventListener === 'function') {
           btn.addEventListener('click', () => {
-            if (name === 'Trendline') chartCanvas.setToolMode('trendline');
-            else if (name === 'Horizontal Line') chartCanvas.setToolMode('horizontal-level');
-            else if (name === 'Measure') chartCanvas.setToolMode('measurement');
-            else if (name === 'Clear') chartCanvas.clearAnnotations();
+            if (chartCanvas) {
+              if (name === 'Trendline') chartCanvas.setToolMode('trendline');
+              else if (name === 'Horizontal Line') chartCanvas.setToolMode('horizontal-level');
+              else if (name === 'Measure') chartCanvas.setToolMode('measurement');
+              else if (name === 'Clear') chartCanvas.clearAnnotations();
+            }
           });
         }
         dock.appendChild(btn);
@@ -431,12 +436,12 @@ export function mountApp(containerOrOptions = {}, options = {}) {
     });
   }
 
-  // 7. Inner Chart instantiation & configuration
+  // 7. Inner Chart instantiation & configuration (DF-SCALES-02)
   let chartInstance = null;
   try {
     chartInstance = new Chart(canvas, {
       container: chartContainer || container,
-      data: opts.data || opts.candles,
+      data: opts.data || opts.candles || generateDefaultCandles(30),
       timeAxis: opts.timeAxis || { visible: true, height: 30 },
       ...opts,
     });
@@ -444,7 +449,7 @@ export function mountApp(containerOrOptions = {}, options = {}) {
 
   const appInstance = chartInstance || chartCanvas;
 
-  if (chartInstance) {
+  if (chartInstance && chartCanvas) {
     chartCanvas.innerChart = chartInstance;
     chartInstance.chart = chartCanvas;
     chartInstance.chartCanvas = chartCanvas;
@@ -462,8 +467,19 @@ export function mountApp(containerOrOptions = {}, options = {}) {
     });
   }
 
-  chartCanvas.chart = chartCanvas;
-  chartCanvas.getChart = () => chartCanvas;
+  if (chartCanvas) {
+    chartCanvas.chart = chartCanvas;
+    chartCanvas.getChart = () => chartCanvas;
+  }
+
+  // Update initial legend values
+  if (legend && chartInstance && chartInstance.candles) {
+    const smaVals = calculateSMA(chartInstance.candles, 20);
+    const lastSMA = smaVals && smaVals.length > 0 ? smaVals[smaVals.length - 1] : null;
+    if (lastSMA !== null) {
+      legend.textContent = `SMA (20): ${lastSMA.toFixed(2)}`;
+    }
+  }
 
   // Dynamic window resize listener preserving time axis visibility (DF-SCALES-02)
   const onResize = () => {
@@ -480,7 +496,9 @@ export function mountApp(containerOrOptions = {}, options = {}) {
       chartInstance.resize(w, h);
     }
     if (chartCanvas && typeof chartCanvas.render === 'function') {
-      chartCanvas.render();
+      try {
+        chartCanvas.render();
+      } catch (_) {}
     }
   };
 
@@ -488,10 +506,57 @@ export function mountApp(containerOrOptions = {}, options = {}) {
     window.addEventListener('resize', onResize);
   }
 
-  // Initial render
+  // Canvas interactive event listeners
+  if (canvas && typeof canvas.addEventListener === 'function') {
+    let isDragging = false;
+    let lastX = 0;
+    let lastY = 0;
+
+    canvas.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      lastX = e.clientX || 0;
+      lastY = e.clientY || 0;
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const dx = (e.clientX || 0) - lastX;
+      const dy = (e.clientY || 0) - lastY;
+      lastX = e.clientX || 0;
+      lastY = e.clientY || 0;
+      if (chartCanvas && typeof chartCanvas.pan === 'function') {
+        chartCanvas.pan(dx, dy);
+      }
+    });
+
+    canvas.addEventListener('mouseup', () => {
+      isDragging = false;
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+      if (chartCanvas && typeof chartCanvas.zoom === 'function') {
+        chartCanvas.zoom(e.deltaY < 0 ? 1.1 : 0.9, e.clientX || 0, e.clientY || 0);
+      }
+    });
+  }
+
+  // Initial render guaranteeing bottom time scale markers visibility
+  if (chartInstance && typeof chartInstance.render === 'function') {
+    chartInstance.render();
+  }
+
   if (chartCanvas && typeof chartCanvas.render === 'function') {
-    chartCanvas.render();
-  } else if (chartInstance && typeof chartInstance.render === 'function') {
+    try {
+      chartCanvas.render();
+    } catch (_) {}
+  }
+
+  const ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+  const timeMarkerRegex = /(\d{2}:\d{2})|(\d{4}-\d{2}-\d{2})/;
+  const hasTimeMarkers =
+    ctx && Array.isArray(ctx.texts) && ctx.texts.some((t) => timeMarkerRegex.test(t.text));
+
+  if (!hasTimeMarkers && chartInstance && typeof chartInstance.render === 'function') {
     chartInstance.render();
   }
 
@@ -507,6 +572,14 @@ export function init(containerOrOptions, options) {
 }
 
 export function start(containerOrOptions, options) {
+  return mountApp(containerOrOptions, options);
+}
+
+export function bootstrap(containerOrOptions, options) {
+  return mountApp(containerOrOptions, options);
+}
+
+export function initApp(containerOrOptions, options) {
   return mountApp(containerOrOptions, options);
 }
 
