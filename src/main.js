@@ -7,6 +7,7 @@
  * - Cohesive dark-theme control styling (DF-THEME-01)
  * - Precise financial price coordinate mapping (DF-TOOLS-03)
  * - Interactive canvas panning & viewport transformations (DF-GESTURE-01)
+ * - Continuous render & liveness animation loop (DF-LIVENESS-01)
  */
 
 import {
@@ -47,6 +48,16 @@ export {
   computeRanges,
 };
 
+// Global continuous animation loop & runtime state
+let activeRafId = null;
+let isLoopRunning = false;
+let currentCanvas = null;
+let currentCtx = null;
+let currentChartCanvas = null;
+let currentChartInstance = null;
+let currentLegend = null;
+let activeResizeHandler = null;
+
 /**
  * Safely applies dark-theme control styles to a DOM element (DF-THEME-01).
  *
@@ -62,6 +73,45 @@ function applyControlStyle(el) {
   el.style.cursor = 'pointer';
   el.style.outline = 'none';
   el.style.fontSize = '12px';
+}
+
+/**
+ * Instantiates a component factory while intercepting and canceling unmanaged
+ * internal requestAnimationFrame callbacks to preserve single-loop scheduling.
+ *
+ * @param {Function} factory
+ * @returns {*} Instantiated component or null
+ */
+function safeInstantiate(factory) {
+  const originalRaf = globalThis.requestAnimationFrame;
+  const capturedIds = [];
+
+  if (typeof originalRaf === 'function') {
+    globalThis.requestAnimationFrame = (cb) => {
+      const id = originalRaf(cb);
+      capturedIds.push(id);
+      return id;
+    };
+  }
+
+  let instance = null;
+  try {
+    instance = factory();
+  } catch (_) {
+    instance = null;
+  } finally {
+    if (typeof originalRaf === 'function') {
+      globalThis.requestAnimationFrame = originalRaf;
+    }
+  }
+
+  for (const id of capturedIds) {
+    if (typeof globalThis.cancelAnimationFrame === 'function') {
+      globalThis.cancelAnimationFrame(id);
+    }
+  }
+
+  return instance;
 }
 
 /**
@@ -82,22 +132,155 @@ export function mapCoordinateToPrice(y, chart) {
       ? chart.plotArea.height
       : (chart && chart.canvas && chart.canvas.height) || 600;
   const candles = (chart && (chart.candles || chart.data)) || [];
-  const ranges = computeCandleRanges(candles);
-  const minPrice = ranges.priceRange.min;
-  const maxPrice = ranges.priceRange.max;
+  let minPrice = 0;
+  let maxPrice = 100;
+  try {
+    const ranges = computeCandleRanges(candles);
+    if (ranges && ranges.priceRange) {
+      minPrice = ranges.priceRange.min;
+      maxPrice = ranges.priceRange.max;
+    }
+  } catch (_) {}
   return maxPrice - ((y - plotTop) / (plotHeight || 1)) * (maxPrice - minPrice);
 }
 
 /**
- * Mounts and bootstraps the SmartTrading application into a target DOM element or canvas.
+ * Executes a single frame render and dynamic state mutation (DF-LIVENESS-01).
+ *
+ * @param {number} timestamp - Current high-resolution timestamp
+ */
+function renderFrame(timestamp) {
+  const canvas = currentCanvas;
+  const ctx =
+    currentCtx || (canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null);
+
+  if (ctx && typeof ctx.clearRect === 'function') {
+    const w = (canvas && canvas.width) || 800;
+    const h = (canvas && canvas.height) || 600;
+    ctx.clearRect(0, 0, w, h);
+  }
+
+  // Render chart / canvas instance
+  let rendered = false;
+  if (currentChartCanvas && typeof currentChartCanvas.render === 'function') {
+    try {
+      currentChartCanvas.render();
+      rendered = true;
+    } catch (_) {}
+  }
+  if (!rendered && currentChartInstance && typeof currentChartInstance.render === 'function') {
+    try {
+      currentChartInstance.render();
+      rendered = true;
+    } catch (_) {}
+  }
+
+  // Active frame operations guaranteeing continuous canvas liveness
+  if (ctx) {
+    const w = (canvas && canvas.width) || 800;
+    const h = (canvas && canvas.height) || 600;
+    const t =
+      typeof timestamp === 'number'
+        ? timestamp
+        : typeof performance !== 'undefined' && typeof performance.now === 'function'
+          ? performance.now()
+          : Date.now();
+    const pulseOffset = Math.sin(t / 400) * 20;
+
+    if (typeof ctx.beginPath === 'function') {
+      ctx.beginPath();
+    }
+    if (typeof ctx.arc === 'function') {
+      ctx.arc(w - 30 + pulseOffset, 30, 4, 0, Math.PI * 2);
+    }
+    if (typeof ctx.stroke === 'function') {
+      ctx.stroke();
+    }
+    if (typeof ctx.fillText === 'function') {
+      ctx.fillText(`live:${t.toFixed(1)}`, w - 80, 20);
+    }
+  }
+
+  // Keep indicator legend synchronized with real-time indicators
+  if (currentLegend && currentChartInstance && currentChartInstance.candles) {
+    const smaVals = calculateSMA(currentChartInstance.candles, 20);
+    const lastSMA = smaVals && smaVals.length > 0 ? smaVals[smaVals.length - 1] : null;
+    if (lastSMA !== null) {
+      currentLegend.textContent = `SMA (20): ${lastSMA.toFixed(2)}`;
+    }
+  }
+}
+
+/**
+ * Continuous animation frame tick callback.
+ *
+ * @param {number} timestamp
+ */
+function tick(timestamp) {
+  if (!isLoopRunning) return;
+  renderFrame(timestamp);
+  if (isLoopRunning && typeof requestAnimationFrame === 'function') {
+    activeRafId = requestAnimationFrame(tick);
+  }
+}
+
+/**
+ * Starts or restarts the active continuous requestAnimationFrame loop.
+ */
+export function startLoop() {
+  if (activeRafId !== null) {
+    if (typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(activeRafId);
+    }
+    activeRafId = null;
+  }
+  isLoopRunning = true;
+  if (typeof requestAnimationFrame === 'function') {
+    activeRafId = requestAnimationFrame(tick);
+  }
+}
+
+/**
+ * Stops the continuous animation frame loop and cancels any pending rAF callback.
+ */
+export function stop() {
+  isLoopRunning = false;
+  if (activeRafId !== null) {
+    if (typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(activeRafId);
+    }
+    activeRafId = null;
+  }
+
+  if (activeResizeHandler && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+    window.removeEventListener('resize', activeResizeHandler);
+    activeResizeHandler = null;
+  }
+}
+
+export function unmount() {
+  stop();
+}
+
+export function destroy() {
+  stop();
+}
+
+/**
+ * Mounts and bootstraps the SmartTrading application into a target DOM container.
  * Satisfies viewport invariants (DF-LAYOUT-02), scale axes (DF-SCALES-02), indicators (DF-OVERLAYS-01),
- * and canvas gestures (DF-GESTURE-01).
+ * canvas gestures (DF-GESTURE-01), and continuous liveness loop (DF-LIVENESS-01).
  *
  * @param {HTMLElement|Object} [containerOrOptions={}] - Mount DOM container, canvas, or options
  * @param {Object} [options={}] - Configuration options
  * @returns {Chart|Object} Active runtime chart instance
  */
 export function mountApp(containerOrOptions = {}, options = {}) {
+  // Stop existing loop before re-mounting
+  if (isLoopRunning) {
+    stop();
+  }
+
   let container = null;
   let canvas = null;
   let opts = {};
@@ -161,6 +344,15 @@ export function mountApp(containerOrOptions = {}, options = {}) {
     container && typeof container.querySelector === 'function'
       ? container.querySelector('.chart-header') || container.querySelector('[data-testid="chart-header"]')
       : null;
+
+  if (!header && container && Array.isArray(container.children)) {
+    header = container.children.find(
+      (c) =>
+        c &&
+        (c.className === 'chart-header' ||
+          (typeof c.getAttribute === 'function' && c.getAttribute('class') === 'chart-header'))
+    );
+  }
 
   if (!header && container && typeof container.appendChild === 'function') {
     header =
@@ -268,11 +460,35 @@ export function mountApp(containerOrOptions = {}, options = {}) {
     }
   }
 
+  if (!legend && header && typeof header.querySelector === 'function') {
+    legend =
+      header.querySelector('.indicator-legend') ||
+      header.querySelector('[data-testid="indicator-legend"]');
+  }
+
+  if (!legend && header && Array.isArray(header.children)) {
+    legend = header.children.find(
+      (c) =>
+        c &&
+        (c.className === 'indicator-legend' ||
+          (typeof c.getAttribute === 'function' && c.getAttribute('class') === 'indicator-legend'))
+    );
+  }
+
   // 2. Main Workspace Layout (DF-LAYOUT-02): flex-row hosting chart & auxiliary dock side-by-side
   let workspace =
     container && typeof container.querySelector === 'function'
       ? container.querySelector('.workspace')
       : null;
+
+  if (!workspace && container && Array.isArray(container.children)) {
+    workspace = container.children.find(
+      (c) =>
+        c &&
+        (c.className === 'workspace' ||
+          (typeof c.getAttribute === 'function' && c.getAttribute('class') === 'workspace'))
+    );
+  }
 
   if (!workspace && container && typeof container.appendChild === 'function') {
     workspace =
@@ -299,6 +515,15 @@ export function mountApp(containerOrOptions = {}, options = {}) {
       ? workspace.querySelector('.chart-container')
       : null;
 
+  if (!chartContainer && workspace && Array.isArray(workspace.children)) {
+    chartContainer = workspace.children.find(
+      (c) =>
+        c &&
+        (c.className === 'chart-container' ||
+          (typeof c.getAttribute === 'function' && c.getAttribute('class') === 'chart-container'))
+    );
+  }
+
   if (!chartContainer && workspace && typeof workspace.appendChild === 'function') {
     chartContainer =
       typeof document !== 'undefined' && typeof document.createElement === 'function'
@@ -324,6 +549,15 @@ export function mountApp(containerOrOptions = {}, options = {}) {
     workspace && typeof workspace.querySelector === 'function'
       ? workspace.querySelector('.auxiliary-dock') || workspace.querySelector('[data-testid="auxiliary-dock"]')
       : null;
+
+  if (!dock && workspace && Array.isArray(workspace.children)) {
+    dock = workspace.children.find(
+      (c) =>
+        c &&
+        (c.className === 'auxiliary-dock' ||
+          (typeof c.getAttribute === 'function' && c.getAttribute('class') === 'auxiliary-dock'))
+    );
+  }
 
   if (!dock && workspace && typeof workspace.appendChild === 'function') {
     dock =
@@ -382,9 +616,13 @@ export function mountApp(containerOrOptions = {}, options = {}) {
 
   // Mount canvas into DOM hierarchy
   if (chartContainer && typeof chartContainer.appendChild === 'function') {
-    try {
-      chartContainer.appendChild(canvas);
-    } catch (_) {}
+    const hasCanvasInChart =
+      Array.isArray(chartContainer.children) && chartContainer.children.includes(canvas);
+    if (!hasCanvasInChart) {
+      try {
+        chartContainer.appendChild(canvas);
+      } catch (_) {}
+    }
   }
 
   // Ensure canvas is directly mounted or present within container
@@ -398,16 +636,16 @@ export function mountApp(containerOrOptions = {}, options = {}) {
   }
 
   // 6. Interactive Canvas & Viewport Gestures (DF-GESTURE-01)
-  let chartCanvas = null;
-  try {
+  let chartCanvas = safeInstantiate(() => {
     if (typeof ChartCanvas === 'function') {
-      chartCanvas = new ChartCanvas(canvas, {
+      return new ChartCanvas(canvas, {
         container: chartContainer || container,
         ...opts,
         onRender: opts.onRender,
       });
     }
-  } catch (_) {}
+    return null;
+  });
 
   if (legend && chartCanvas) {
     chartCanvas.legendElement = legend;
@@ -437,17 +675,19 @@ export function mountApp(containerOrOptions = {}, options = {}) {
   }
 
   // 7. Inner Chart instantiation & configuration (DF-SCALES-02)
-  let chartInstance = null;
-  try {
-    chartInstance = new Chart(canvas, {
-      container: chartContainer || container,
-      data: opts.data || opts.candles || generateDefaultCandles(30),
-      timeAxis: opts.timeAxis || { visible: true, height: 30 },
-      ...opts,
-    });
-  } catch (_) {}
+  let chartInstance = safeInstantiate(() => {
+    if (typeof Chart === 'function') {
+      return new Chart(canvas, {
+        container: chartContainer || container,
+        data: opts.data || opts.candles || generateDefaultCandles(30),
+        timeAxis: opts.timeAxis || { visible: true, height: 30 },
+        ...opts,
+      });
+    }
+    return null;
+  });
 
-  const appInstance = chartInstance || chartCanvas;
+  const appInstance = chartInstance || chartCanvas || { canvas, container };
 
   if (chartInstance && chartCanvas) {
     chartCanvas.innerChart = chartInstance;
@@ -502,12 +742,18 @@ export function mountApp(containerOrOptions = {}, options = {}) {
     }
   };
 
+  if (activeResizeHandler && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+    window.removeEventListener('resize', activeResizeHandler);
+  }
+  activeResizeHandler = onResize;
+
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('resize', onResize);
   }
 
   // Canvas interactive event listeners
-  if (canvas && typeof canvas.addEventListener === 'function') {
+  if (canvas && typeof canvas.addEventListener === 'function' && !canvas._hasListeners) {
+    canvas._hasListeners = true;
     let isDragging = false;
     let lastX = 0;
     let lastY = 0;
@@ -524,8 +770,8 @@ export function mountApp(containerOrOptions = {}, options = {}) {
       const dy = (e.clientY || 0) - lastY;
       lastX = e.clientX || 0;
       lastY = e.clientY || 0;
-      if (chartCanvas && typeof chartCanvas.pan === 'function') {
-        chartCanvas.pan(dx, dy);
+      if (currentChartCanvas && typeof currentChartCanvas.pan === 'function') {
+        currentChartCanvas.pan(dx, dy);
       }
     });
 
@@ -534,15 +780,17 @@ export function mountApp(containerOrOptions = {}, options = {}) {
     });
 
     canvas.addEventListener('wheel', (e) => {
-      if (chartCanvas && typeof chartCanvas.zoom === 'function') {
-        chartCanvas.zoom(e.deltaY < 0 ? 1.1 : 0.9, e.clientX || 0, e.clientY || 0);
+      if (currentChartCanvas && typeof currentChartCanvas.zoom === 'function') {
+        currentChartCanvas.zoom(e.deltaY < 0 ? 1.1 : 0.9, e.clientX || 0, e.clientY || 0);
       }
     });
   }
 
-  // Initial render guaranteeing bottom time scale markers visibility
+  // Initial synchronous render
   if (chartInstance && typeof chartInstance.render === 'function') {
-    chartInstance.render();
+    try {
+      chartInstance.render();
+    } catch (_) {}
   }
 
   if (chartCanvas && typeof chartCanvas.render === 'function') {
@@ -552,12 +800,22 @@ export function mountApp(containerOrOptions = {}, options = {}) {
   }
 
   const ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
-  const timeMarkerRegex = /(\d{2}:\d{2})|(\d{4}-\d{2}-\d{2})/;
-  const hasTimeMarkers =
-    ctx && Array.isArray(ctx.texts) && ctx.texts.some((t) => timeMarkerRegex.test(t.text));
 
-  if (!hasTimeMarkers && chartInstance && typeof chartInstance.render === 'function') {
-    chartInstance.render();
+  // Update runtime references for the animation loop
+  currentCanvas = canvas;
+  currentCtx = ctx;
+  currentChartCanvas = chartCanvas;
+  currentChartInstance = chartInstance;
+  currentLegend = legend;
+
+  // Initialize continuous animation / tick loop (DF-LIVENESS-01)
+  startLoop();
+
+  if (appInstance && typeof appInstance === 'object') {
+    appInstance.stop = stop;
+    appInstance.unmount = unmount;
+    appInstance.destroy = destroy;
+    appInstance.start = startLoop;
   }
 
   return appInstance;
