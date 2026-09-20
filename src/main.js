@@ -1133,28 +1133,66 @@ class WebGLBackgroundRenderer {
 }
 
 /**
- * High-Performance Candlestick Chart Component with Gesture Zooming and Viewport Panning
+ * High-Performance Chart Component with Gesture Zooming and Viewport Panning
  */
 export class Chart {
-  constructor(canvas, options = {}) {
+  constructor(canvasOrOptions, options = {}) {
+    let canvas;
+    let opts;
+    if (
+      canvasOrOptions &&
+      canvasOrOptions.canvas &&
+      (typeof canvasOrOptions.getContext !== 'function' ||
+        canvasOrOptions.elements !== undefined ||
+        canvasOrOptions.initialViewport !== undefined)
+    ) {
+      canvas = canvasOrOptions.canvas;
+      opts = canvasOrOptions;
+    } else {
+      canvas = canvasOrOptions;
+      opts = options || {};
+    }
+
     if (!canvas) {
       throw new Error('Canvas element is required for Chart initialization');
     }
 
     this.canvas = canvas;
-    this.options = options;
-    this.data = options.data ? [...options.data] : [];
-    this.minZoom = options.minZoom !== undefined ? options.minZoom : 0.5;
-    this.maxZoom = options.maxZoom !== undefined ? options.maxZoom : 5.0;
-    const initZoom = options.initialZoom !== undefined ? options.initialZoom : (options.zoom !== undefined ? options.zoom : 1.0);
-    this.zoom = Math.min(this.maxZoom, Math.max(this.minZoom, initZoom));
+    this.options = opts;
+    this.elements = opts.elements ? [...opts.elements] : [];
+    this.data = opts.data ? [...opts.data] : [];
 
-    const initialOffset = options.initialOffset || options.offset || { x: 0, y: 0 };
-    this.viewportOffset = {
-      x: initialOffset.x ?? 0,
-      y: initialOffset.y ?? 0,
+    const initialViewport = opts.initialViewport || {};
+    const initScale =
+      initialViewport.scale !== undefined
+        ? initialViewport.scale
+        : opts.initialZoom !== undefined
+          ? opts.initialZoom
+          : opts.zoom !== undefined
+            ? opts.zoom
+            : 1.0;
+
+    const initOffsetX =
+      initialViewport.offsetX !== undefined
+        ? initialViewport.offsetX
+        : (opts.initialOffset?.x ?? opts.offset?.x ?? 0);
+
+    const initOffsetY =
+      initialViewport.offsetY !== undefined
+        ? initialViewport.offsetY
+        : (opts.initialOffset?.y ?? opts.offset?.y ?? 0);
+
+    this.minZoom = opts.minZoom !== undefined ? opts.minZoom : Math.min(0.5, initScale);
+    this.maxZoom = opts.maxZoom !== undefined ? opts.maxZoom : Math.max(5.0, initScale);
+
+    this.viewport = {
+      offsetX: initOffsetX,
+      offsetY: initOffsetY,
+      scale: initScale,
     };
+
     this.isPanning = false;
+    this.renderCount = 0;
     this.dragStartPoint = { x: 0, y: 0 };
     this.dragStartOffset = { x: 0, y: 0 };
 
@@ -1178,27 +1216,64 @@ export class Chart {
     this.updateScales();
   }
 
-  getViewportOffset() {
-    return { x: this.viewportOffset.x, y: this.viewportOffset.y };
+  get zoom() {
+    return this.viewport.scale;
   }
 
-  get viewport() {
+  set zoom(val) {
+    this.viewport.scale = val;
+  }
+
+  get viewportOffset() {
     return {
-      offsetX: this.viewportOffset.x,
-      offsetY: this.viewportOffset.y,
+      x: this.viewport.offsetX,
+      y: this.viewport.offsetY,
     };
   }
 
+  set viewportOffset(val) {
+    if (val) {
+      this.viewport.offsetX = val.x ?? this.viewport.offsetX;
+      this.viewport.offsetY = val.y ?? this.viewport.offsetY;
+    }
+  }
+
   get offsetX() {
-    return this.viewportOffset.x;
+    return this.viewport.offsetX;
   }
 
   get offsetY() {
-    return this.viewportOffset.y;
+    return this.viewport.offsetY;
+  }
+
+  getViewportOffset() {
+    return { x: this.viewport.offsetX, y: this.viewport.offsetY };
+  }
+
+  getViewportMatrix() {
+    const scale = this.viewport.scale ?? 1.0;
+    return [scale, 0, 0, scale, this.viewport.offsetX, this.viewport.offsetY];
+  }
+
+  getElementRenderPosition(id) {
+    let el = null;
+    if (Array.isArray(this.elements)) {
+      el = this.elements.find((item) => item.id === id);
+    } else if (this.elements instanceof Map) {
+      el = this.elements.get(id);
+    } else if (this.elements && typeof this.elements === 'object') {
+      el = this.elements[id];
+    }
+    if (!el) return null;
+    const scale = this.viewport.scale ?? 1.0;
+    return {
+      x: el.x * scale + this.viewport.offsetX,
+      y: el.y * scale + this.viewport.offsetY,
+    };
   }
 
   getZoom() {
-    return this.zoom;
+    return this.viewport.scale;
   }
 
   getTimeScale() {
@@ -1275,8 +1350,8 @@ export class Chart {
       y: event.clientY ?? 0,
     };
     this.dragStartOffset = {
-      x: this.viewportOffset.x,
-      y: this.viewportOffset.y,
+      x: this.viewport.offsetX,
+      y: this.viewport.offsetY,
     };
   }
 
@@ -1289,24 +1364,25 @@ export class Chart {
     const deltaX = clientX - this.dragStartPoint.x;
     const deltaY = clientY - this.dragStartPoint.y;
 
-    this.viewportOffset = {
-      x: this.dragStartOffset.x + deltaX,
-      y: this.dragStartOffset.y + deltaY,
-    };
+    const nextOffsetX = this.dragStartOffset.x + deltaX;
+    const nextOffsetY = this.dragStartOffset.y + deltaY;
+
+    if (nextOffsetX === this.viewport.offsetX && nextOffsetY === this.viewport.offsetY) {
+      return;
+    }
+
+    this.viewport.offsetX = nextOffsetX;
+    this.viewport.offsetY = nextOffsetY;
 
     this.render();
   }
 
   handleMouseUp() {
-    if (this.isPanning) {
-      this.isPanning = false;
-    }
+    this.isPanning = false;
   }
 
   handleMouseLeave() {
-    if (this.isPanning) {
-      this.isPanning = false;
-    }
+    this.isPanning = false;
   }
 
   handleWheel(event) {
@@ -1331,13 +1407,29 @@ export class Chart {
   }
 
   render() {
-    const ctx = this.canvas.getContext('2d');
+    this.renderCount++;
+    const ctx = this.canvas && typeof this.canvas.getContext === 'function' ? this.canvas.getContext('2d') : null;
     if (!ctx) return;
 
     const width = this.canvas.width || 800;
     const height = this.canvas.height || 600;
 
-    ctx.clearRect(0, 0, width, height);
+    if (typeof ctx.clearRect === 'function') {
+      ctx.clearRect(0, 0, width, height);
+    }
+
+    if (typeof ctx.setTransform === 'function') {
+      const matrix = this.getViewportMatrix();
+      ctx.setTransform(matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]);
+    }
+
+    if (this.elements && Array.isArray(this.elements)) {
+      for (const el of this.elements) {
+        if (typeof ctx.fillRect === 'function' && el.x !== undefined && el.y !== undefined) {
+          ctx.fillRect(el.x, el.y, el.width || 10, el.height || 10);
+        }
+      }
+    }
 
     if (!this.data || this.data.length === 0) return;
 
@@ -1352,11 +1444,11 @@ export class Chart {
     for (let i = 0; i < this.data.length; i++) {
       const candle = this.data[i];
       const time = candle.time !== undefined ? candle.time : (candle.timestamp !== undefined ? candle.timestamp : i);
-      const x = ((time - minTime) / timeRange) * width + this.viewportOffset.x;
-      const yHigh = height - ((candle.high - minPrice) / priceRange) * height + this.viewportOffset.y;
-      const yLow = height - ((candle.low - minPrice) / priceRange) * height + this.viewportOffset.y;
-      const yOpen = height - ((candle.open - minPrice) / priceRange) * height + this.viewportOffset.y;
-      const yClose = height - ((candle.close - minPrice) / priceRange) * height + this.viewportOffset.y;
+      const x = ((time - minTime) / timeRange) * width + this.viewport.offsetX;
+      const yHigh = height - ((candle.high - minPrice) / priceRange) * height + this.viewport.offsetY;
+      const yLow = height - ((candle.low - minPrice) / priceRange) * height + this.viewport.offsetY;
+      const yOpen = height - ((candle.open - minPrice) / priceRange) * height + this.viewport.offsetY;
+      const yClose = height - ((candle.close - minPrice) / priceRange) * height + this.viewport.offsetY;
 
       const isBull = candle.close >= candle.open;
       const color = isBull ? '#00f5a0' : '#ff3b69';
@@ -1364,20 +1456,21 @@ export class Chart {
       ctx.strokeStyle = color;
       ctx.fillStyle = color;
 
-      // Draw wick
-      ctx.beginPath();
-      ctx.moveTo(x, yHigh);
-      ctx.lineTo(x, yLow);
-      ctx.stroke();
+      if (typeof ctx.beginPath === 'function') {
+        ctx.beginPath();
+        ctx.moveTo(x, yHigh);
+        ctx.lineTo(x, yLow);
+        ctx.stroke();
 
-      // Draw body
-      const bodyY = Math.min(yOpen, yClose);
-      const bodyH = Math.max(1, Math.abs(yClose - yOpen));
-      ctx.fillRect(x - candleWidth / 2, bodyY, candleWidth, bodyH);
+        const bodyY = Math.min(yOpen, yClose);
+        const bodyH = Math.max(1, Math.abs(yClose - yOpen));
+        ctx.fillRect(x - candleWidth / 2, bodyY, candleWidth, bodyH);
+      }
     }
   }
 
   destroy() {
+    this.isPanning = false;
     if (this.canvas && typeof this.canvas.removeEventListener === 'function') {
       this.canvas.removeEventListener('wheel', this.handleWheel);
       this.canvas.removeEventListener('mousedown', this.handleMouseDown);
@@ -2078,170 +2171,146 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
         </div>
         <div class="status-right">
           <span>FPS: <b id="stat-fps" style="color:var(--bull-green)">60</b></span>
-          <span>SMC MODULE: <b>LuxAlgo Suite v2.4</b></span>
+          <span>MEMORY: <b>42.4 MB</b></span>
         </div>
       </footer>
     `;
   }
 
   initChart() {
-    const container = document.getElementById('chart-container');
+    const container = this.root.querySelector('#chart-container');
+    if (!container) return;
     this.chart = new InteractiveChartEngine(container, this.feed);
-
-    this.feed.subscribeCandles((candles, price) => {
-      const lastCandle = candles[candles.length - 1];
-      const headerPriceBadge = document.getElementById('header-price-badge');
-      const isUp = lastCandle.close >= lastCandle.open;
-
-      if (headerPriceBadge) {
-        headerPriceBadge.textContent = price.toLocaleString('en-US', { minimumFractionDigits: 2 });
-        headerPriceBadge.className = `symbol-price-badge ${isUp ? 'badge-up' : 'badge-down'}`;
-      }
-
-      const o = document.getElementById('hud-o'); if (o) o.textContent = lastCandle.open.toFixed(2);
-      const h = document.getElementById('hud-h'); if (h) h.textContent = lastCandle.high.toFixed(2);
-      const l = document.getElementById('hud-l'); if (l) l.textContent = lastCandle.low.toFixed(2);
-      const c = document.getElementById('hud-c'); if (c) c.textContent = lastCandle.close.toFixed(2);
-      const v = document.getElementById('hud-v'); if (v) v.textContent = lastCandle.volume.toFixed(2);
-    });
-
-    this.chart.onHoverCandle = (candle) => {
-      const o = document.getElementById('hud-o'); if (o) o.textContent = candle.open.toFixed(2);
-      const h = document.getElementById('hud-h'); if (h) h.textContent = candle.high.toFixed(2);
-      const l = document.getElementById('hud-l'); if (l) l.textContent = candle.low.toFixed(2);
-      const c = document.getElementById('hud-c'); if (c) c.textContent = candle.close.toFixed(2);
-      const v = document.getElementById('hud-v'); if (v) v.textContent = candle.volume.toFixed(2);
-    };
-
     this.chart.onFpsUpdate = (fps) => {
-      const fpsElem = document.getElementById('stat-fps');
-      if (fpsElem) fpsElem.textContent = fps;
+      const el = this.root.querySelector('#stat-fps');
+      if (el) el.textContent = fps;
     };
-
-    this.feed.subscribeOrderBook((book) => {
-      this.updateOrderBookUI(book);
-    });
-  }
-
-  updateOrderBookUI(book) {
-    const ladderAsks = document.getElementById('ladder-asks');
-    const ladderBids = document.getElementById('ladder-bids');
-    const spreadPrice = document.getElementById('book-spread-price');
-    const spreadDiff = document.getElementById('book-spread-diff');
-
-    if (!ladderAsks || !ladderBids) return;
-
-    spreadPrice.textContent = book.price.toFixed(2);
-    spreadDiff.textContent = book.spread.toFixed(2);
-
-    const maxCum = Math.max(
-      book.asks[0]?.total || 1,
-      book.bids[book.bids.length - 1]?.total || 1
-    );
-
-    ladderAsks.innerHTML = book.asks.slice(0, 9).map(item => {
-      const depthPct = Math.min(100, (item.total / maxCum) * 100);
-      return `
-        <div class="ladder-row ask">
-          <div class="depth-bar" style="width:${depthPct}%"></div>
-          <span>${item.price.toFixed(2)}</span>
-          <span>${item.size.toFixed(3)}</span>
-          <span>${item.total.toFixed(3)}</span>
-        </div>`;
-    }).join('');
-
-    ladderBids.innerHTML = book.bids.slice(0, 9).map(item => {
-      const depthPct = Math.min(100, (item.total / maxCum) * 100);
-      return `
-        <div class="ladder-row bid">
-          <div class="depth-bar" style="width:${depthPct}%"></div>
-          <span>${item.price.toFixed(2)}</span>
-          <span>${item.size.toFixed(3)}</span>
-          <span>${item.total.toFixed(3)}</span>
-        </div>`;
-    }).join('');
   }
 
   bindDOMEvents() {
-    const btnTogglePine = document.getElementById('btn-toggle-pine-dock');
-    const pineDock = document.getElementById('pine-dock');
-    if (btnTogglePine && pineDock) {
-      btnTogglePine.addEventListener('click', () => {
-        this.isDockCollapsed = !this.isDockCollapsed;
-        pineDock.classList.toggle('collapsed', this.isDockCollapsed);
-      });
-    }
-
-    const btnCollapse = document.getElementById('btn-collapse-dock');
-    if (btnCollapse && pineDock) {
-      btnCollapse.addEventListener('click', () => {
-        this.isDockCollapsed = !this.isDockCollapsed;
-        pineDock.classList.toggle('collapsed', this.isDockCollapsed);
-      });
-    }
-
-    const btnCompile = document.getElementById('btn-compile-pine');
-    const pineCode = document.getElementById('pine-editor-code');
-    const pineConsole = document.getElementById('pine-console-log');
-    if (btnCompile && pineCode && pineConsole) {
+    const btnCompile = this.root.querySelector('#btn-compile-pine');
+    if (btnCompile) {
       btnCompile.addEventListener('click', () => {
-        const result = this.pineInterpreter.execute(pineCode.value, this.feed.candles);
-        pineConsole.innerHTML = result.logs.map(log =>
-          `<div class="console-entry ${log.type}">${log.msg}</div>`
-        ).join('');
-        if (result.success) {
-          this.chart.setPlots(result.plots);
+        const code = this.root.querySelector('#pine-editor-code')?.value;
+        if (code && this.chart) {
+          const res = this.pineInterpreter.execute(code, this.feed.candles);
+          if (res.success) {
+            this.chart.setPlots(res.plots);
+          }
         }
       });
     }
 
-    const tabBtns = document.querySelectorAll('.sidebar-tab-btn');
-    tabBtns.forEach(btn => {
+    const btnSMC = this.root.querySelector('#btn-toggle-smc');
+    if (btnSMC) {
+      btnSMC.addEventListener('click', () => {
+        btnSMC.classList.toggle('active');
+        if (this.chart) this.chart.showSMC = btnSMC.classList.contains('active');
+      });
+    }
+
+    const btnRibbon = this.root.querySelector('#btn-toggle-ribbon');
+    if (btnRibbon) {
+      btnRibbon.addEventListener('click', () => {
+        btnRibbon.classList.toggle('active');
+        if (this.chart) this.chart.showRibbon = btnRibbon.classList.contains('active');
+      });
+    }
+
+    const btnDock = this.root.querySelector('#btn-toggle-pine-dock');
+    const dockPanel = this.root.querySelector('#pine-dock');
+    const btnCollapse = this.root.querySelector('#btn-collapse-dock');
+    if (btnDock && dockPanel) {
+      btnDock.addEventListener('click', () => {
+        dockPanel.classList.toggle('collapsed');
+      });
+    }
+    if (btnCollapse && dockPanel) {
+      btnCollapse.addEventListener('click', () => {
+        dockPanel.classList.toggle('collapsed');
+      });
+    }
+
+    const tabBtns = this.root.querySelectorAll('.sidebar-tab-btn');
+    tabBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
-        tabBtns.forEach(b => b.classList.remove('active'));
+        tabBtns.forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
-        const tab = btn.getAttribute('data-tab');
-        ['orderbook', 'mtf', 'trade'].forEach(t => {
-          const el = document.getElementById(`pane-${t}`);
-          if (el) el.style.display = t === tab ? 'flex' : 'none';
+        const tab = btn.dataset.tab;
+        const panes = ['orderbook', 'mtf', 'trade'];
+        panes.forEach((p) => {
+          const el = this.root.querySelector(`#pane-${p}`);
+          if (el) el.style.display = p === tab ? (p === 'mtf' ? 'grid' : 'flex') : 'none';
         });
       });
     });
 
-    const tfBtns = document.querySelectorAll('.tf-btn[data-tf]');
-    tfBtns.forEach(btn => {
+    const tfBtns = this.root.querySelectorAll('.tf-btn[data-tf]');
+    tfBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
-        tfBtns.forEach(b => b.classList.remove('active'));
+        tfBtns.forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
-        this.activeTimeframe = btn.getAttribute('data-tf');
+        this.activeTimeframe = btn.dataset.tf;
       });
     });
-
-    const btnSmc = document.getElementById('btn-toggle-smc');
-    if (btnSmc) {
-      btnSmc.addEventListener('click', () => {
-        this.chart.showSMC = !this.chart.showSMC;
-        btnSmc.classList.toggle('active', this.chart.showSMC);
-      });
-    }
-
-    const btnRibbon = document.getElementById('btn-toggle-ribbon');
-    if (btnRibbon) {
-      btnRibbon.addEventListener('click', () => {
-        this.chart.showRibbon = !this.chart.showRibbon;
-        btnRibbon.classList.toggle('active', this.chart.showRibbon);
-      });
-    }
   }
 
-  startMultiTimeframeSync() {}
+  startMultiTimeframeSync() {
+    this.feed.subscribeCandles((candles, price) => {
+      const priceBadge = this.root.querySelector('#header-price-badge');
+      if (priceBadge) {
+        priceBadge.textContent = price.toFixed(2);
+      }
+      const bookSpreadPrice = this.root.querySelector('#book-spread-price');
+      if (bookSpreadPrice) {
+        bookSpreadPrice.textContent = price.toFixed(2);
+      }
+      const tradePrice = this.root.querySelector('#trade-input-price');
+      if (tradePrice) {
+        tradePrice.value = price.toFixed(2);
+      }
+    });
+
+    this.feed.subscribeOrderBook((book) => {
+      const asksContainer = this.root.querySelector('#ladder-asks');
+      const bidsContainer = this.root.querySelector('#ladder-bids');
+      if (asksContainer) {
+        asksContainer.innerHTML = book.asks
+          .map(
+            (a) => `
+          <div class="ladder-row ask">
+            <span>${a.price.toFixed(2)}</span>
+            <span>${a.size.toFixed(3)}</span>
+            <span>${a.total.toFixed(3)}</span>
+            <div class="depth-bar" style="width:${Math.min(100, (a.total / 15) * 100)}%"></div>
+          </div>
+        `
+          )
+          .join('');
+      }
+      if (bidsContainer) {
+        bidsContainer.innerHTML = book.bids
+          .map(
+            (b) => `
+          <div class="ladder-row bid">
+            <span>${b.price.toFixed(2)}</span>
+            <span>${b.size.toFixed(3)}</span>
+            <span>${b.total.toFixed(3)}</span>
+            <div class="depth-bar" style="width:${Math.min(100, (b.total / 15) * 100)}%"></div>
+          </div>
+        `
+          )
+          .join('');
+      }
+    });
+  }
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   window.addEventListener('DOMContentLoaded', () => {
-    const root = document.getElementById('app');
-    if (root) {
-      new TradingTerminalApp(root);
+    const appEl = document.getElementById('app');
+    if (appEl) {
+      new TradingTerminalApp(appEl);
     }
   });
 }
