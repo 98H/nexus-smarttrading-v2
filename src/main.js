@@ -1,10 +1,10 @@
 /**
  * SmartTrading-V2 — Main Application Entrypoint
  * Mounts the financial chart workspace, active canvas rendering context,
- * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02), analytical indicator
+ * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02, STORY 33.2.1), analytical indicator
  * overlays (DF-OVERLAYS-01), live legend components, and the auxiliary dock
  * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1).
- * Resolves UNRESPONSIVE_CANVAS_PAN (STORY 33.1.1).
+ * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 33.2.1).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -222,13 +222,15 @@ export function createElement(tag, attrs = {}, children = []) {
  * Generates sequential mock price candles spanning across horizontal viewport sectors.
  */
 export function generateDefaultData(count = 75, startPrice = 100, step = 1) {
+  const baseTime = 1700000000;
   return Array.from({ length: count }, (_, i) => {
     const open = startPrice + i * step - 0.5;
     const close = startPrice + i * step;
     const high = Math.max(open, close) + 1.0;
     const low = Math.min(open, close) - 1.0;
     return {
-      timestamp: Date.now() - (count - i) * 60000,
+      time: baseTime + i * 60,
+      timestamp: (baseTime + i * 60) * 1000,
       open,
       high,
       low,
@@ -432,7 +434,7 @@ export function initApp(options = {}) {
     throw new Error('Target container was not found in the DOM');
   }
 
-  // Viewport & Layout (DF-LAYOUT-02): 100vh responsive flex layout with overflow hidden
+  // Viewport & Layout (DF-LAYOUT-02): 100vh responsive flex layout reserving full screen
   if (root.style) {
     root.style.display = 'flex';
     root.style.flexDirection = 'column';
@@ -529,7 +531,7 @@ export function initApp(options = {}) {
     },
   });
 
-  // Primary Canvas Container (STORY 31.4.1 & STORY 32.1.1)
+  // Primary Canvas Container reserving bottom margin for horizontal time axis (STORY 33.2.1)
   const chartContainer = createElement('div', {
     className: 'chart-container',
     id: 'canvas-container',
@@ -635,13 +637,33 @@ export function initApp(options = {}) {
   chartInstance.toggleDockCollapse = () => dockComponent.toggleCollapse();
 
   chartInstance.updateData = function (newCandles) {
-    const batch = Array.isArray(newCandles) ? [...newCandles] : [];
+    const batch = Array.isArray(newCandles) ? [...newCandles] : (newCandles ? [newCandles] : []);
+    if (batch.length === 0) return Promise.resolve(this);
+
     let updated;
-    if (batch.length < 50 && Array.isArray(this.data) && this.data.length >= 50) {
-      updated = [...this.data, ...batch];
+    if (Array.isArray(this.data) && this.data.length > 0 && batch.length < this.data.length) {
+      const map = new Map();
+      this.data.forEach((c) => {
+        const k = c.time ?? c.timestamp ?? c.t ?? c.date;
+        if (k !== undefined) map.set(k, c);
+      });
+      batch.forEach((c) => {
+        const k = c.time ?? c.timestamp ?? c.t ?? c.date;
+        if (k !== undefined) map.set(k, c);
+      });
+      if (map.size >= this.data.length) {
+        updated = Array.from(map.values()).sort((a, b) => {
+          const tA = a.time ?? a.timestamp ?? a.t ?? a.date ?? 0;
+          const tB = b.time ?? b.timestamp ?? b.t ?? b.date ?? 0;
+          return tA - tB;
+        });
+      } else {
+        updated = [...this.data, ...batch];
+      }
     } else {
       updated = batch;
     }
+
     this.data = updated;
     appState.data = updated;
     this.setData(updated);
@@ -833,7 +855,7 @@ export default init;
 // Browser auto-mount guard
 if (typeof document !== 'undefined') {
   const mountTarget = document.getElementById('app') || document.body;
-  if (mountTarget && !mountTarget.__nexus_mounted) {
+  if (mountTarget && !mountTarget.__nexus_mounted && mountTarget.children.length === 0) {
     mountTarget.__nexus_mounted = true;
     if (typeof mountApp === 'function') mountApp(mountTarget);
     else if (typeof mount === 'function') mount(mountTarget);

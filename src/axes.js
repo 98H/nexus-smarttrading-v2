@@ -2,7 +2,7 @@
  * SmartTrading-V2 — Coordinate Axes Renderer
  * Handles rendering of background coordinate gridlines, right-hand vertical price scale,
  * and bottom horizontal time scale across active candlestick chart areas.
- * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02), and STORY 32.1.1.
+ * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02), and STORY 33.2.1 (MISSING_HORIZONTAL_TIME_AXIS).
  */
 
 /**
@@ -23,6 +23,8 @@ export function computeRanges(candles) {
   let maxPrice = -Infinity;
   let minTime = Infinity;
   let maxTime = -Infinity;
+  let hasSeconds = false;
+  let hasMillis = false;
 
   for (let i = 0; i < candles.length; i++) {
     const c = candles[i];
@@ -45,6 +47,8 @@ export function computeRanges(candles) {
     if (low < minPrice) minPrice = low;
     if (high > maxPrice) maxPrice = high;
     if (Number.isFinite(time) && time > 0) {
+      if (time < 1e11) hasSeconds = true;
+      else hasMillis = true;
       if (time < minTime) minTime = time;
       if (time > maxTime) maxTime = time;
     }
@@ -61,6 +65,9 @@ export function computeRanges(candles) {
   if (!Number.isFinite(minTime) || !Number.isFinite(maxTime)) {
     minTime = 1700000000;
     maxTime = 1700086400;
+  } else if (hasSeconds && hasMillis) {
+    minTime = minTime >= 1e11 ? Math.floor(minTime / 1000) : minTime;
+    maxTime = maxTime >= 1e11 ? Math.floor(maxTime / 1000) : maxTime;
   } else if (minTime === maxTime) {
     const delta = minTime > 1e11 ? 60000 : 60;
     minTime -= delta;
@@ -273,6 +280,7 @@ export class AxesRenderer {
 
   /**
    * Draws a bottom horizontal time scale axis with timestamp tick marks and formatted labels.
+   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 33.2.1).
    *
    * @param {Object|Array} [range={}]
    * @param {number} [range.min=1700000000]
