@@ -2,12 +2,13 @@
  * SmartTrading-V2 — Main Application Entrypoint
  * Responsible for root application mounting, layout composition,
  * coordinate mapping, interactive control binding, pan/zoom gesture wiring,
- * auxiliary dock co-location, and continuous liveness render loops.
+ * auxiliary dock co-location, continuous liveness render loops, and
+ * interactive tool palette mounting.
  * Satisfies STORY 29.1.1 (DF-LIVENESS-01), STORY 29.4.1 (DF-GRAPHICS-01),
- * STORY 29.7.1 (DF-TOOLS-01), STORY 29.2.1 (DF-GESTURE-01),
- * STORY 29.3.1 (DF-GESTURE-02), STORY 29.6.1 (DF-SCALES-02),
- * STORY 29.5.1 (DF-SCALES-01), STORY 30.6.1 (DF-PANEL-01),
- * STORY 30.3.1 (DF-CONTROL-01: INACTIVE_UI_CONTROLS),
+ * STORY 29.7.1 & STORY 30.4.1 (DF-TOOLS-01: MISSING_INTERACTIVE_TOOL_PALETTE),
+ * STORY 29.2.1 (DF-GESTURE-01), STORY 29.3.1 (DF-GESTURE-02),
+ * STORY 29.6.1 (DF-SCALES-02), STORY 29.5.1 (DF-SCALES-01),
+ * STORY 30.6.1 (DF-PANEL-01), STORY 30.3.1 (DF-CONTROL-01: INACTIVE_UI_CONTROLS),
  * and STORY 30.1.1 (DF-CRASH-01: UNCAUGHT_JAVASCRIPT_EXCEPTION).
  */
 
@@ -22,7 +23,11 @@ import {
 } from './controls.js';
 import { AuxiliaryDock, createAuxiliaryDock } from './dock.js';
 import { Chart } from './chart.js';
-import { ToolPalette } from './components/ToolPalette.js';
+import {
+  ToolPalette,
+  REQUIRED_TOOLS,
+  patchSelectorCompatibility as patchPaletteSelectors,
+} from './tool_palette.js';
 
 export let chart = null;
 
@@ -34,7 +39,7 @@ let appState = {
   selectedControl: 'chart',
   selectedConfig: 'chart',
   zoom: 100,
-  tool: 'pan',
+  tool: 'crosshair',
   clickCount: 0,
 };
 
@@ -54,6 +59,7 @@ export {
   createAuxiliaryDock,
   Chart,
   ToolPalette,
+  REQUIRED_TOOLS,
 };
 
 /**
@@ -281,7 +287,7 @@ function ensureElementMethods(el, tag = '') {
 
 /**
  * Safely patches querySelectorAll / querySelector prototypes for simulated test DOMs
- * to support comma-separated selector grouping if not natively implemented.
+ * to support comma-separated selector grouping and compound attribute queries.
  *
  * @param {HTMLElement|Object} root
  */
@@ -291,42 +297,15 @@ function patchSelectorCompatibility(root) {
       ensureSelectorCompatibility();
     } catch {}
   }
-
-  try {
-    const proto = root ? Object.getPrototypeOf(root) : null;
-    if (proto && proto.querySelectorAll && !proto._commaSelectorPatched) {
-      proto._commaSelectorPatched = true;
-      const origQuerySelectorAll = proto.querySelectorAll;
-      proto.querySelectorAll = function (selector) {
-        if (typeof selector === 'string' && selector.includes(',')) {
-          const parts = selector.split(',').map((s) => s.trim()).filter(Boolean);
-          const matchedSet = new Set();
-          for (const part of parts) {
-            const results = origQuerySelectorAll.call(this, part);
-            for (const el of results) {
-              matchedSet.add(el);
-            }
-          }
-          return Array.from(matchedSet);
-        }
-        return origQuerySelectorAll.call(this, selector);
-      };
-
-      const origQuerySelector = proto.querySelector;
-      proto.querySelector = function (selector) {
-        if (typeof selector === 'string' && selector.includes(',')) {
-          const all = this.querySelectorAll(selector);
-          return all.length > 0 ? all[0] : null;
-        }
-        return origQuerySelector.call(this, selector);
-      };
-    }
-  } catch {}
+  if (typeof patchPaletteSelectors === 'function') {
+    try {
+      patchPaletteSelectors(root);
+    } catch {}
+  }
 }
 
 /**
  * Safely creates an element and ensures necessary DOM methods exist without assigning to read-only tagName.
- * Supports string tag names or descriptor objects.
  *
  * @param {string|Object} tagOrDescriptor
  * @returns {HTMLElement|Object}
@@ -420,7 +399,6 @@ function collectCanvases(el, out = []) {
 
 /**
  * Returns current application state snapshot.
- * Satisfies AC1 & DF-CONTROL-01.
  *
  * @returns {Object} Current state
  */
@@ -439,7 +417,6 @@ export function getState() {
 
 /**
  * Updates DOM elements visually to reflect the active selection and deactivates others.
- * Satisfies AC1 & DF-CONTROL-01 visual re-rendering.
  *
  * @param {HTMLElement|Object} activeControl
  * @param {HTMLElement|Object} rootContainer
@@ -448,7 +425,7 @@ function setActiveVisualState(activeControl, rootContainer) {
   if (!rootContainer || typeof rootContainer.querySelectorAll !== 'function') return;
 
   const allControls = rootContainer.querySelectorAll(
-    'button, [data-control], [role="tab"], .control-btn'
+    '.toolbar-controls button, .toolbar-controls [data-control], .toolbar-controls [role="tab"], .toolbar-controls .control-btn'
   );
 
   for (const ctrl of allControls) {
@@ -492,13 +469,20 @@ function setActiveVisualState(activeControl, rootContainer) {
 
 /**
  * Dispatches control action, updates internal state, and re-renders active visual indicators.
- * Satisfies AC1 & DF-CONTROL-01.
  *
  * @param {HTMLElement|Object} control
  * @param {HTMLElement|Object} rootContainer
  */
 function handleControlClick(control, rootContainer) {
   if (!control) return;
+
+  if (control.getAttribute('data-tool')) {
+    const selectedTool = control.getAttribute('data-tool');
+    if (rootContainer && rootContainer._toolPalette) {
+      rootContainer._toolPalette.setActiveTool(selectedTool);
+    }
+    return;
+  }
 
   const config =
     control.getAttribute('data-control') ||
@@ -509,7 +493,6 @@ function handleControlClick(control, rootContainer) {
     control.id ||
     (control.textContent ? control.textContent.trim().toLowerCase().replace(/\s+/g, '-') : 'control');
 
-  // Update application state
   appState.activeControl = config;
   appState.activeConfig = config;
   appState.selectedControl = config;
@@ -525,7 +508,6 @@ function handleControlClick(control, rootContainer) {
 
   state = { ...appState };
 
-  // Synchronize controls.js state if present
   if (typeof setControlState === 'function') {
     try {
       setControlState(config);
@@ -539,17 +521,14 @@ function handleControlClick(control, rootContainer) {
     } catch {}
   }
 
-  // Visual re-rendering
   setActiveVisualState(control, rootContainer);
 
-  // Invoke external reRenderControls if defined
   if (typeof reRenderControls === 'function') {
     try {
       reRenderControls(rootContainer);
     } catch {}
   }
 
-  // Handle specific chart actions
   const chartInstance = rootContainer._chart || chart;
   if (chartInstance) {
     if (config === 'zoom-in' && typeof chartInstance.zoomIn === 'function') {
@@ -647,9 +626,7 @@ export function activeChartInstance() {
 }
 
 /**
- * Initiates continuous self-sustaining render loop via requestAnimationFrame
- * and propagates dynamic updates directly to DOM and canvas elements (STORY 29.1.1: DF-LIVENESS-01).
- * Uses unref'd timer fallbacks in Node.js headless environments to prevent process hang.
+ * Initiates continuous self-sustaining render loop via requestAnimationFrame.
  *
  * @param {HTMLElement|Object} target
  * @param {Chart|null} chartInstance
@@ -782,7 +759,6 @@ function startRenderLoop(target, chartInstance, canvas, legend) {
 
 /**
  * Mounts application workspace, canvas, controls, and coordinate axes into the target container.
- * Satisfies STORY 30.6.1, STORY 30.3.1 (AC1 & AC2), DF-LAYOUT-02, and DF-CONTROL-01.
  *
  * @param {HTMLElement|Object|string} [containerOrOptions] Target root DOM element or configuration
  * @returns {HTMLElement|Object} Mounted container
@@ -823,14 +799,13 @@ export function mount(containerOrOptions) {
   }
 
   if (!target) {
-    throw new Error('Target container #app was not found in the DOM');
+    throw new Error('Target container #app not found in the DOM');
   }
 
   currentContainer = target;
   ensureElementMethods(target, 'div');
   patchSelectorCompatibility(target);
 
-  // Guard against redundant re-mount only when an active toolbar and canvas already exist in children
   const hasExistingTree =
     target.children &&
     target.children.length > 0 &&
@@ -847,7 +822,6 @@ export function mount(containerOrOptions) {
     return target;
   }
 
-  // Reset state baseline upon mounting fresh container
   appState = {
     activeControl: 'chart',
     activeTab: 'chart',
@@ -855,12 +829,11 @@ export function mount(containerOrOptions) {
     selectedControl: 'chart',
     selectedConfig: 'chart',
     zoom: 100,
-    tool: 'pan',
+    tool: 'crosshair',
     clickCount: 0,
   };
   state = { ...appState };
 
-  // Enforce 100vh responsive flex layout with overflow hidden (DF-LAYOUT-02)
   if (typeof document !== 'undefined' && document.body && document.body.style) {
     document.body.style.margin = '0';
     document.body.style.padding = '0';
@@ -905,7 +878,6 @@ export function mount(containerOrOptions) {
     toolbar.style.flexShrink = '0';
   }
 
-  // Tabs (Default active baseline is Chart tab)
   const tabChart = createElement('button');
   setClass(tabChart, 'tab-btn control-btn active');
   if (tabChart) {
@@ -951,7 +923,6 @@ export function mount(containerOrOptions) {
     toolbar.appendChild(tabIndicators);
   }
 
-  // Action Buttons
   const btnZoomIn = createElement('button');
   setClass(btnZoomIn, 'control-btn');
   if (btnZoomIn) {
@@ -1025,18 +996,33 @@ export function mount(containerOrOptions) {
 
   target.appendChild(toolbar);
 
+  // Interactive Tool Palette (STORY 30.4.1: DF-TOOLS-01)
+  let toolPalette = null;
+  try {
+    toolPalette = new ToolPalette();
+    toolPalette.mount(target);
+    target._toolPalette = toolPalette;
+    target.toolPalette = toolPalette;
+    toolPalette.onToolChange((selectedTool) => {
+      appState.tool = selectedTool;
+      state = { ...appState };
+    });
+  } catch (err) {
+    toolPalette = null;
+  }
+
   // Indicator legend overlay (DF-OVERLAYS-01)
   const legend = createElement('div');
   setClass(legend, 'indicator-legend');
   if (legend && typeof legend.setAttribute === 'function') {
     legend.setAttribute(
       'style',
-      'position: absolute; top: 50px; left: 10px; color: #d1d4dc; font-size: 12px; z-index: 10;'
+      'position: absolute; top: 90px; left: 10px; color: #d1d4dc; font-size: 12px; z-index: 10;'
     );
   }
   if (legend && legend.style) {
     legend.style.position = 'absolute';
-    legend.style.top = '50px';
+    legend.style.top = '90px';
     legend.style.left = '10px';
     legend.style.color = '#d1d4dc';
     legend.style.fontSize = '12px';
@@ -1045,23 +1031,6 @@ export function mount(containerOrOptions) {
   if (legend) {
     legend.textContent = 'EMA (20): 0.00';
     target.appendChild(legend);
-  }
-
-  // Interactive Tool Palette (STORY 29.7.1: DF-TOOLS-01)
-  let toolPalette = null;
-  let paletteElement = null;
-  try {
-    toolPalette = new ToolPalette();
-    if (toolPalette && typeof toolPalette.render === 'function') {
-      paletteElement = toolPalette.render();
-    }
-    target._toolPalette = toolPalette;
-  } catch {
-    paletteElement = null;
-  }
-
-  if (paletteElement) {
-    target.appendChild(paletteElement);
   }
 
   // Primary workspace container hosting chart canvas side-by-side with dock (DF-LAYOUT-02 & DF-PANEL-01)
@@ -1083,7 +1052,6 @@ export function mount(containerOrOptions) {
     workspace.style.position = 'relative';
   }
 
-  // Chart canvas actively mounted to workspace
   let canvas = null;
   if (typeof target.querySelector === 'function') {
     canvas = target.querySelector('canvas');
@@ -1125,7 +1093,6 @@ export function mount(containerOrOptions) {
     workspace.appendChild(canvas);
   }
 
-  // Semantic <aside> auxiliary dock co-located side-by-side with canvas (DF-PANEL-01)
   let dock = null;
   let dockElement = null;
   try {
@@ -1144,7 +1111,6 @@ export function mount(containerOrOptions) {
     target.appendChild(workspace);
   }
 
-  // Initialize and mount chart with zoom synchronizer (DF-GESTURE-02)
   const chartInstance = new Chart(canvas, {
     onZoom: (scale) => {
       if (zoomIndicator) {
@@ -1170,7 +1136,6 @@ export function mount(containerOrOptions) {
     }
   };
 
-  // Window resize synchronization anchoring scales (DF-SCALES-02)
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     if (target._resizeHandler && typeof window.removeEventListener === 'function') {
       window.removeEventListener('resize', target._resizeHandler);
@@ -1193,16 +1158,14 @@ export function mount(containerOrOptions) {
     }
   } catch {}
 
-  // Wire active click event listeners to ALL interactive UI controls (AC2 & DF-CONTROL-01)
   const interactiveControls = target.querySelectorAll(
-    'button, [data-control], [role="tab"], .control-btn'
+    '.toolbar-controls button, .toolbar-controls [data-control], .toolbar-controls [role="tab"], .toolbar-controls .control-btn'
   );
 
   for (const control of interactiveControls) {
     bindControlClickListener(control, target);
   }
 
-  // Delegated click event listener on container for dynamic and resilient control handling
   if (typeof target.addEventListener === 'function') {
     target.addEventListener('click', (event) => {
       if (event && event._controlHandled) return;
@@ -1211,6 +1174,9 @@ export function mount(containerOrOptions) {
 
       let el = evtTarget;
       while (el && el !== target) {
+        if (el.getAttribute && el.getAttribute('data-tool')) {
+          break;
+        }
         const isControl =
           el.tagName === 'BUTTON' ||
           el.getAttribute('data-control') ||
@@ -1228,7 +1194,6 @@ export function mount(containerOrOptions) {
     });
   }
 
-  // Bind controls and synchronize initial DOM
   if (typeof bindControls === 'function') {
     try {
       bindControls(target);
@@ -1240,7 +1205,6 @@ export function mount(containerOrOptions) {
     } catch {}
   }
 
-  // Start continuous self-sustaining render loop (DF-LIVENESS-01)
   startRenderLoop(target, chartInstance, canvas, legend);
 
   return target;
@@ -1324,10 +1288,10 @@ export function render(targetOrProps) {
 }
 
 /**
- * Bootstrap entrypoint alias returning active Chart instance.
+ * Bootstrap entrypoint alias returning active runtime instance.
  *
  * @param {HTMLElement|Object|string} [container]
- * @returns {Chart|Object}
+ * @returns {Object} Application runtime instance
  */
 export function init(container) {
   let target = null;
@@ -1346,7 +1310,7 @@ export function init(container) {
   }
 
   if (!target) {
-    throw new Error('Target container #app was not found in the DOM');
+    throw new Error('Target container #app not found in the DOM');
   }
 
   if (target._rafId) {
@@ -1363,14 +1327,25 @@ export function init(container) {
   }
 
   mount(target);
-  return target ? target._chart || chart : chart;
+
+  const runtime = (target && target._chart) || chart || {};
+  const activePalette = (target && target._toolPalette) || null;
+
+  runtime.toolPalette = activePalette;
+  runtime.getActiveTool = () => (activePalette ? activePalette.getActiveTool() : appState.tool);
+  runtime.setActiveTool = (tool) => {
+    if (activePalette) activePalette.setActiveTool(tool);
+    else appState.tool = tool;
+  };
+
+  return runtime;
 }
 
 /**
  * Application initialization function alias for testing and bootstrap lifecycle.
  *
  * @param {HTMLElement|Object|string} [container]
- * @returns {Chart|Object}
+ * @returns {Object} Application runtime instance
  */
 export function initApp(container) {
   return init(container);
