@@ -58,6 +58,40 @@ function ensureContextMethods(ctx) {
 }
 
 /**
+ * Generates a comprehensive default timeseries dataset spanning 50 to 100 points.
+ *
+ * @param {number} [count=60] - Number of timeseries candles to generate (50-100)
+ * @returns {Array<Object>}
+ */
+export function generateDefaultCandles(count = 60) {
+  const candles = [];
+  const baseTime = 1700000000;
+  let price = 150;
+
+  for (let i = 0; i < count; i++) {
+    const time = baseTime + i * 3600;
+    const variation = Math.sin(i * 0.2) * 5 + Math.cos(i * 0.5) * 3;
+    const open = Math.round((price + variation) * 100) / 100;
+    const change = Math.sin(i * 0.35) * 4;
+    const close = Math.round((open + change) * 100) / 100;
+    const high = Math.round((Math.max(open, close) + Math.abs(Math.sin(i)) * 3 + 1) * 100) / 100;
+    const low = Math.round((Math.min(open, close) - Math.abs(Math.cos(i)) * 3 - 1) * 100) / 100;
+
+    candles.push({
+      time,
+      timestamp: time,
+      open,
+      high,
+      low,
+      close,
+    });
+    price = close;
+  }
+
+  return candles;
+}
+
+/**
  * Formats a UNIX timestamp into a human-readable string (MM/DD HH:mm).
  *
  * @param {number} ts - Seconds or milliseconds timestamp
@@ -181,7 +215,7 @@ export function renderGrid(ctx, options = {}) {
     const min = options.minTime !== undefined ? options.minTime : (options.timeRange ? options.timeRange.min : 1700000000);
     const max = options.maxTime !== undefined ? options.maxTime : (options.timeRange ? options.timeRange.max : 1700259200);
     vTicks = [];
-    const count = 5;
+    const count = 6;
     for (let i = 0; i < count; i++) {
       vTicks.push(min + (i / (count - 1)) * (max - min || 1));
     }
@@ -434,9 +468,11 @@ export function renderChart(ctx, options = {}) {
     horizontalTicks.push(pMin + (i / (tickCount - 1)) * (pMax - pMin));
   }
 
-  const verticalTicks = data.length >= 3
-    ? data.map(c => (c.time !== undefined ? c.time : c.timestamp))
-    : [tMin, (tMin + tMax) / 2, tMax];
+  const verticalTicks = [];
+  const vCount = Math.min(6, Math.max(3, data.length));
+  for (let i = 0; i < vCount; i++) {
+    verticalTicks.push(tMin + (i / (vCount - 1)) * (tMax - tMin || 1));
+  }
 
   // 1. Background gridlines
   renderGrid(ctx, {
@@ -632,15 +668,13 @@ export class Chart {
     this.isPanning = false;
     this.renderCount = 0;
 
-    this.candles = opts.candles ||
-      opts.data || [
-        { time: 1700000000, open: 120, high: 165, low: 110, close: 155 },
-        { time: 1700018000, open: 155, high: 180, low: 145, close: 175 },
-        { time: 1700036000, open: 175, high: 195, low: 160, close: 165 },
-        { time: 1700054000, open: 165, high: 185, low: 150, close: 180 },
-        { time: 1700072000, open: 180, high: 198, low: 170, close: 190 },
-        { time: 1700086400, open: 190, high: 200, low: 175, close: 195 },
-      ];
+    const providedCandles = (Array.isArray(opts.candles) && opts.candles.length > 0)
+      ? opts.candles
+      : ((Array.isArray(opts.data) && opts.data.length > 0)
+        ? opts.data
+        : null);
+
+    this.candles = providedCandles ? providedCandles.slice() : generateDefaultCandles(60);
 
     this._timerId = null;
     this._isDragging = false;
@@ -652,6 +686,14 @@ export class Chart {
     if (opts.autoRender !== false) {
       this.render();
     }
+  }
+
+  get data() {
+    return this.candles;
+  }
+
+  set data(candles) {
+    this.setData(candles);
   }
 
   getViewportOffset() {

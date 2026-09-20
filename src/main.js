@@ -14,6 +14,7 @@ import {
   computeCandleRanges,
   AxesRenderer,
   computeRanges,
+  generateDefaultCandles,
 } from './chart.js';
 
 export {
@@ -26,6 +27,7 @@ export {
   computeCandleRanges,
   AxesRenderer,
   computeRanges,
+  generateDefaultCandles,
 };
 
 /**
@@ -47,6 +49,16 @@ export function mountApp(container, options = {}) {
   }
 
   if (!target) return null;
+
+  // Preserve existing mounted chart instance if already attached to container
+  if (target.__chart && target.querySelector && target.querySelector('canvas')) {
+    if (options && (options.candles || options.data)) {
+      target.__chart.setData(options.candles || options.data);
+    } else {
+      target.__chart.render();
+    }
+    return target.__chart;
+  }
 
   let canvas = null;
   if (target.tagName === 'CANVAS') {
@@ -90,6 +102,7 @@ export function mountApp(container, options = {}) {
     height,
     priceScaleWidth: (options && options.priceScaleWidth) !== undefined ? options.priceScaleWidth : 60,
     timeScaleHeight: (options && options.timeScaleHeight) !== undefined ? options.timeScaleHeight : 30,
+    candles: (options && (options.candles || options.data)) || generateDefaultCandles(60),
     ...options,
   });
 
@@ -123,6 +136,17 @@ export function initApp(container, options = {}) {
  * @returns {Chart|null}
  */
 export function mount(container, options = {}) {
+  return mountApp(container, options);
+}
+
+/**
+ * Canonical init alias.
+ *
+ * @param {HTMLElement|string} [container]
+ * @param {Object} [options={}]
+ * @returns {Chart|null}
+ */
+export function init(container, options = {}) {
   return mountApp(container, options);
 }
 
