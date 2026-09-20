@@ -2,7 +2,7 @@
  * SmartTrading-V2 — Chart Engine & Candlestick/Axes Orchestrator
  * Integrates Candlestick rendering, AxesRenderer (DF-SCALES-01, DF-SCALES-02),
  * and analytical overlays (DF-OVERLAYS-01) within constrained viewport bounds.
- * Satisfies STORY 31.1.1 (Resolve UNRESPONSIVE_CANVAS_ZOOM).
+ * Satisfies STORY 31.1.1 (Resolve UNRESPONSIVE_CANVAS_ZOOM) and STORY 31.2.1 (Resolve SPARSE_DATA_SERIES).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -120,7 +120,11 @@ export class Chart {
       : (typeof options.zoom === 'number' && Number.isFinite(options.zoom) ? options.zoom : 1.0);
     this.zoom = Math.min(this.maxZoom, Math.max(this.minZoom, initial));
 
-    this.data = Array.isArray(options.data) ? [...options.data] : [];
+    const data = Array.isArray(options.data) ? [...options.data] : [];
+    if (data.length > 0 && data.length < 50) {
+      throw new Error('SPARSE_DATA_SERIES: Minimum 50 data points required to populate viewport sectors');
+    }
+    this.data = data;
     this.overlayType = options.overlayType || 'EMA';
     this.period = Number(options.period) || 20;
     this.color = options.color || '#FF9800';
@@ -200,7 +204,14 @@ export class Chart {
     return this.axesRenderer;
   }
 
+  getDataSeries() {
+    return this.data;
+  }
+
   setData(data) {
+    if (Array.isArray(data) && data.length > 0 && data.length < 50) {
+      throw new Error('SPARSE_DATA_SERIES: Minimum 50 data points required to populate viewport sectors');
+    }
     this.data = Array.isArray(data) ? [...data] : [];
     this.render();
   }
@@ -267,7 +278,7 @@ export class Chart {
       updateIndicatorLegend(this.legend, latestVal);
     }
 
-    const plotArea = this.axesRenderer ? this.axesRenderer.plotArea : {
+    const plotArea = (this.axesRenderer && this.axesRenderer.plotArea) ? this.axesRenderer.plotArea : {
       top: 0,
       left: 0,
       width: Math.max(0, width - 70),
@@ -278,7 +289,7 @@ export class Chart {
     const priceMin = ranges.priceRange.min;
     const priceMax = ranges.priceRange.max;
 
-    // Draw candlestick bars reflecting active zoom scale
+    // Draw candlestick bars reflecting active zoom scale across viewport sectors
     this.drawCandles(ctx, data, plotArea, priceMin, priceMax);
 
     // Analytical indicator overlay mapping
