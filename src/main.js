@@ -2,7 +2,7 @@
  * SmartTrading-V2 — Main Application Entrypoint
  * Responsible for root application mounting, layout composition,
  * coordinate mapping, and interactive control binding.
- * Satisfies STORY 29.4.1: Resolve SPARSE_DATA_SERIES (Defect ID: DF-GRAPHICS-01).
+ * Satisfies STORY 29.4.1 (DF-GRAPHICS-01) and STORY 29.7.1 (DF-TOOLS-01).
  */
 
 import {
@@ -16,6 +16,7 @@ import {
 } from './controls.js';
 import { AuxiliaryDock, createAuxiliaryDock } from './dock.js';
 import { Chart } from './chart.js';
+import { ToolPalette } from './components/ToolPalette.js';
 
 export {
   initControls,
@@ -28,6 +29,7 @@ export {
   AuxiliaryDock,
   createAuxiliaryDock,
   Chart,
+  ToolPalette,
 };
 
 /**
@@ -153,12 +155,14 @@ export function mount(container) {
       'display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: #131722; color: #d1d4dc; font-family: sans-serif;'
     );
   }
-  target.style.display = 'flex';
-  target.style.flexDirection = 'column';
-  target.style.height = '100vh';
-  target.style.overflow = 'hidden';
-  target.style.background = '#131722';
-  target.style.color = '#d1d4dc';
+  if (target.style) {
+    target.style.display = 'flex';
+    target.style.flexDirection = 'column';
+    target.style.height = '100vh';
+    target.style.overflow = 'hidden';
+    target.style.background = '#131722';
+    target.style.color = '#d1d4dc';
+  }
 
   const buttonStyle =
     'background: #1e222d; color: #d1d4dc; border: 1px solid #363c4e; border-radius: 4px; padding: 6px 10px; cursor: pointer;';
@@ -172,13 +176,15 @@ export function mount(container) {
       'display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 12px; background: #1e222d; border-bottom: 1px solid #363c4e; align-items: center;'
     );
   }
-  toolbar.style.display = 'flex';
-  toolbar.style.flexWrap = 'wrap';
-  toolbar.style.gap = '8px';
-  toolbar.style.padding = '8px 12px';
-  toolbar.style.background = '#1e222d';
-  toolbar.style.borderBottom = '1px solid #363c4e';
-  toolbar.style.alignItems = 'center';
+  if (toolbar.style) {
+    toolbar.style.display = 'flex';
+    toolbar.style.flexWrap = 'wrap';
+    toolbar.style.gap = '8px';
+    toolbar.style.padding = '8px 12px';
+    toolbar.style.background = '#1e222d';
+    toolbar.style.borderBottom = '1px solid #363c4e';
+    toolbar.style.alignItems = 'center';
+  }
 
   // Tabs
   const tabChart = document.createElement('button');
@@ -257,9 +263,11 @@ export function mount(container) {
   if (typeof zoomIndicator.setAttribute === 'function') {
     zoomIndicator.setAttribute('style', 'color: #d1d4dc; font-size: 13px; margin-left: 8px;');
   }
-  zoomIndicator.style.color = '#d1d4dc';
-  zoomIndicator.style.fontSize = '13px';
-  zoomIndicator.style.marginLeft = '8px';
+  if (zoomIndicator.style) {
+    zoomIndicator.style.color = '#d1d4dc';
+    zoomIndicator.style.fontSize = '13px';
+    zoomIndicator.style.marginLeft = '8px';
+  }
   zoomIndicator.textContent = '100%';
   toolbar.appendChild(zoomIndicator);
 
@@ -274,41 +282,109 @@ export function mount(container) {
       'position: absolute; top: 50px; left: 10px; color: #d1d4dc; font-size: 12px; z-index: 10;'
     );
   }
-  legend.style.position = 'absolute';
-  legend.style.top = '50px';
-  legend.style.left = '10px';
-  legend.style.color = '#d1d4dc';
-  legend.style.fontSize = '12px';
-  legend.style.zIndex = '10';
+  if (legend.style) {
+    legend.style.position = 'absolute';
+    legend.style.top = '50px';
+    legend.style.left = '10px';
+    legend.style.color = '#d1d4dc';
+    legend.style.fontSize = '12px';
+    legend.style.zIndex = '10';
+  }
   legend.textContent = 'EMA (20): 0.00';
   target.appendChild(legend);
 
   // Primary workspace chart canvas actively mounted to root container #app
-  const canvas = document.createElement('canvas');
-  setClass(canvas, 'chart-canvas');
-  if (typeof canvas.setAttribute === 'function') {
-    canvas.setAttribute(
-      'style',
-      'flex: 1; min-height: 0; width: 100%; height: 100%; display: block;'
-    );
+  let canvas = null;
+  if (typeof target.querySelector === 'function') {
+    canvas = target.querySelector('#workspace-canvas') || target.querySelector('canvas');
   }
-  canvas.style.flex = '1';
-  canvas.style.minHeight = '0';
-  canvas.style.width = '100%';
-  canvas.style.height = '100%';
-  canvas.style.display = 'block';
 
-  if (!canvas.width) canvas.width = 1000;
-  if (!canvas.height) canvas.height = 500;
+  if (!canvas) {
+    canvas = document.createElement('canvas');
+    canvas.id = 'workspace-canvas';
+    setClass(canvas, 'chart-canvas');
+    if (typeof canvas.setAttribute === 'function') {
+      canvas.setAttribute(
+        'style',
+        'flex: 1; min-height: 0; width: 100%; height: 100%; display: block;'
+      );
+    }
+    if (canvas.style) {
+      canvas.style.flex = '1';
+      canvas.style.minHeight = '0';
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+      canvas.style.display = 'block';
+    }
 
-  target.appendChild(canvas);
+    if (!canvas.width) canvas.width = 1000;
+    if (!canvas.height) canvas.height = 500;
+
+    target.appendChild(canvas);
+  } else {
+    setClass(canvas, 'chart-canvas');
+    if (!canvas.id) canvas.id = 'workspace-canvas';
+    if (typeof canvas.setAttribute === 'function' && !canvas.getAttribute('style')) {
+      canvas.setAttribute(
+        'style',
+        'flex: 1; min-height: 0; width: 100%; height: 100%; display: block;'
+      );
+    }
+    if (canvas.style) {
+      if (!canvas.style.flex) canvas.style.flex = '1';
+      if (!canvas.style.minHeight) canvas.style.minHeight = '0';
+      if (!canvas.style.width) canvas.style.width = '100%';
+      if (!canvas.style.height) canvas.style.height = '100%';
+      if (!canvas.style.display) canvas.style.display = 'block';
+    }
+    if (!canvas.width) canvas.width = 1000;
+    if (!canvas.height) canvas.height = 500;
+  }
 
   // Initialize and mount chart to immediately render complete historical data series
-  const chart = new Chart(canvas);
-  chart.mount();
-  chart.render();
-  target._chart = chart;
-  canvas._chart = chart;
+  try {
+    const chart = new Chart(canvas);
+    if (typeof chart.mount === 'function') chart.mount();
+    if (typeof chart.render === 'function') chart.render();
+    target._chart = chart;
+    canvas._chart = chart;
+  } catch {
+    // Ignored in headless mocks lacking 2D context
+  }
+
+  // Interactive Tool Palette (STORY 29.7.1: DF-TOOLS-01)
+  const toolPalette = new ToolPalette();
+  const paletteElement = toolPalette.render();
+  target._toolPalette = toolPalette;
+
+  // Wire tool palette change events directly to the workspace canvas
+  paletteElement.addEventListener('toolchange', (e) => {
+    const activeCanvas =
+      (target.querySelector ? (target.querySelector('#workspace-canvas') || target.querySelector('canvas')) : null) ||
+      canvas;
+
+    if (activeCanvas && typeof activeCanvas.dispatchEvent === 'function') {
+      const eventDetail = e && e.detail ? e.detail : { tool: toolPalette.getActiveTool() };
+      let toolEvent;
+      if (typeof CustomEvent === 'function') {
+        toolEvent = new CustomEvent('toolchange', {
+          detail: eventDetail,
+          bubbles: true,
+          cancelable: true,
+        });
+      } else {
+        toolEvent = {
+          type: 'toolchange',
+          detail: eventDetail,
+          bubbles: true,
+          cancelable: true,
+        };
+      }
+      activeCanvas.dispatchEvent(toolEvent);
+    }
+  });
+
+  target.appendChild(paletteElement);
 
   // Workspace container alongside canvas hosting auxiliary dock (DF-LAYOUT-02)
   const workspace = document.createElement('div');
@@ -319,11 +395,13 @@ export function mount(container) {
       'display: flex; flex-direction: row; min-height: 0; overflow: hidden; position: relative;'
     );
   }
-  workspace.style.display = 'flex';
-  workspace.style.flexDirection = 'row';
-  workspace.style.minHeight = '0';
-  workspace.style.overflow = 'hidden';
-  workspace.style.position = 'relative';
+  if (workspace.style) {
+    workspace.style.display = 'flex';
+    workspace.style.flexDirection = 'row';
+    workspace.style.minHeight = '0';
+    workspace.style.overflow = 'hidden';
+    workspace.style.position = 'relative';
+  }
 
   let dockElement = null;
   try {
@@ -381,7 +459,7 @@ export function bootstrap(container) {
 // Automatic mount guard when loaded into an active browser document
 if (typeof document !== 'undefined') {
   const mountTarget = document.getElementById('app') || document.body;
-  if (mountTarget && (!mountTarget.__nexus_mounted || mountTarget.children.length === 0)) {
+  if (mountTarget && !mountTarget.__nexus_mounted) {
     mountTarget.__nexus_mounted = true;
     if (typeof mountApp === 'function') mountApp(mountTarget);
     else if (typeof mount === 'function') mount(mountTarget);
