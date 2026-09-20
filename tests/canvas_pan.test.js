@@ -28,7 +28,6 @@ class MockCanvasContext2D {
 class MockCanvasElement extends EventTarget {
   constructor() {
     super();
-    this.tagName = 'CANVAS';
     this.id = 'chart-canvas';
     this.width = 800;
     this.height = 600;

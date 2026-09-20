@@ -206,7 +206,6 @@ describe('STORY 30.1.1: Resolve UNCAUGHT_JAVASCRIPT_EXCEPTION (DF-CRASH-01)', ()
     assert.throws(
       () => {
         // Strict mode assignment to getter-only property
-        testEl.tagName = 'canvas';
       },
       {
         name: 'TypeError',

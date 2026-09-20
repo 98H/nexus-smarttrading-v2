@@ -245,7 +245,6 @@ export class AuxiliaryDock {
 
     // Root semantic <aside> dock landmark
     const aside = doc.createElement('aside');
-    aside.tagName = 'ASIDE';
     setClass(
       aside,
       'auxiliary-dock dock complementary-dock orders orders-panel side-panel-orders'

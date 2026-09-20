@@ -99,7 +99,6 @@ function setupDomMock() {
     createElement: (tag) => {
       if (tag.toLowerCase() === 'canvas') {
         const c = createMockCanvas(800, 600);
-        c.tagName = 'CANVAS';
         return c;
       }
       return { tagName: tag.toUpperCase(), children: [], style: {} };

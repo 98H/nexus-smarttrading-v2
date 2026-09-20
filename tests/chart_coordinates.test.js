@@ -41,7 +41,6 @@ class MockCanvasContext2D {
 
 class MockCanvasElement {
   constructor() {
-    this.tagName = 'CANVAS';
     this.id = 'chart-canvas';
     this.listeners = new Map();
     this.width = 800;
