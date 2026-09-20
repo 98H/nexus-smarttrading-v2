@@ -45,7 +45,7 @@ class MockClassList {
 
 class MockElement {
   constructor(tagName = 'div', id = '') {
-    this.tagName = tagName.toUpperCase();
+try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
     this.id = id;
     this.classList = new MockClassList();
     this.attributes = new Map();

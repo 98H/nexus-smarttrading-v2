@@ -46,7 +46,7 @@ class MockEvent {
 
 class MockElement {
   constructor(tagName = 'div') {
-    this.tagName = tagName.toUpperCase();
+try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
     this.id = '';
     this.children = [];
     this.parentElement = null;

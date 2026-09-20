@@ -14,7 +14,7 @@ const MAIN_MODULE_PATH = resolve(__dirname, '../src/main.js');
  */
 class MockDOMElement {
   constructor(tagName = 'div', id = '') {
-    this.tagName = tagName.toUpperCase();
+try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
     this.id = id;
     this.children = [];
     this._innerHTML = '';

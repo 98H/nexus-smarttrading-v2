@@ -16,7 +16,7 @@ const MAIN_JS_PATH = path.join(SRC_DIR, 'main.js');
  */
 class MockDOMElement {
   constructor(tagName = 'div') {
-    this.tagName = tagName.toUpperCase();
+try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
     this.id = '';
     this.className = '';
     this.children = [];

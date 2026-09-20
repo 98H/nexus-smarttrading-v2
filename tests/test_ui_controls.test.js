@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 // Set up a deterministic DOM simulation environment before importing the module
 class MockDOMElement {
   constructor(tagName = 'div', id = '', className = '') {
-    this.tagName = tagName.toUpperCase();
+try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
     this.id = id;
     this.className = className;
     this.classList = {

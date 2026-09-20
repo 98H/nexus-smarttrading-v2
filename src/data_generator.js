@@ -3,7 +3,7 @@
  * Produces synthetic oscillating random-walk financial price series containing
  * balanced distributions of bullish (close > open) and bearish (close < open)
  * candles with dynamic high and low wicks (resolves DF-CANDLES-01, STORY 38.4.1),
- * authentic multi-asset price regimes coherent with market depth data (STORY 52.1.1: Resolve INCOHERENT_MARKET_DATA),
+ * authentic multi-asset price regimes coherent with market depth data (STORY 52.1.1 / STORY 53.2.1: Resolve INCOHERENT_MARKET_DATA),
  * next-candle synthesis, tick generation, and live streaming utilities (STORY 39.1.1: Resolve STATIC_APPLICATION).
  */
 
@@ -42,30 +42,33 @@ export function getTickerPrice(ticker = 'BTC/USD') {
 
 /**
  * Generates market depth / order book data coherent with current ticker and price regime.
- * Satisfies STORY 52.1.1 (Resolve INCOHERENT_MARKET_DATA).
+ * Satisfies STORY 52.1.1 & STORY 53.2.1 (Resolve INCOHERENT_MARKET_DATA).
  *
- * @param {Object} [options={}]
- * @param {string} [options.ticker='BTC/USD'] Asset ticker symbol
- * @param {number} [options.initialPrice] Base market price (defaults to authentic ticker price)
- * @param {number} [options.price] Alias for initialPrice
- * @param {number} [options.basePrice] Alias for initialPrice
- * @param {number} [options.midPrice] Alias for initialPrice
- * @param {number} [options.depth=10] Number of order book levels to generate per side
- * @param {number} [options.levels] Alias for depth
- * @param {number} [options.count] Alias for depth
- * @param {number} [options.spread] Price spread between top bid and top ask
+ * @param {Object|string} [optionsOrTicker={}]
+ * @param {number} [maybePrice=null]
+ * @param {number} [maybeDepth=10]
  * @returns {{ ticker: string, symbol: string, midPrice: number, price: number, spread: number, bids: Array, asks: Array }}
  */
-export function generateMarketDepth(options = {}) {
-  const opts = options || {};
+export function generateMarketDepth(optionsOrTicker = {}, maybePrice = null, maybeDepth = 10) {
+  let opts = {};
+  if (typeof optionsOrTicker === 'string') {
+    opts = {
+      ticker: optionsOrTicker,
+      initialPrice: maybePrice,
+      depth: maybeDepth,
+    };
+  } else if (typeof optionsOrTicker === 'object' && optionsOrTicker !== null) {
+    opts = optionsOrTicker;
+  }
+
   const ticker = opts.ticker || opts.symbol || opts.pair || DEFAULT_TICKER;
-  const basePrice = typeof opts.initialPrice === 'number' && Number.isFinite(opts.initialPrice)
+  const basePrice = typeof opts.initialPrice === 'number' && Number.isFinite(opts.initialPrice) && opts.initialPrice > 0
     ? opts.initialPrice
-    : (typeof opts.price === 'number' && Number.isFinite(opts.price)
+    : (typeof opts.price === 'number' && Number.isFinite(opts.price) && opts.price > 0
       ? opts.price
-      : (typeof opts.basePrice === 'number' && Number.isFinite(opts.basePrice)
+      : (typeof opts.basePrice === 'number' && Number.isFinite(opts.basePrice) && opts.basePrice > 0
         ? opts.basePrice
-        : (typeof opts.midPrice === 'number' && Number.isFinite(opts.midPrice)
+        : (typeof opts.midPrice === 'number' && Number.isFinite(opts.midPrice) && opts.midPrice > 0
           ? opts.midPrice
           : getTickerPrice(ticker))));
 
@@ -127,9 +130,9 @@ export function generateMarketDepth(options = {}) {
 
 /**
  * Generates an oscillating candlestick series with dynamic wicks and realistic price steps.
- * Satisfies STORY 38.4.1 (Resolve SYNTHETIC_STRAIGHT_LINE_DATA) and STORY 52.1.1 (Resolve INCOHERENT_MARKET_DATA).
+ * Satisfies STORY 38.4.1 (Resolve SYNTHETIC_STRAIGHT_LINE_DATA) and STORY 53.2.1 (Resolve INCOHERENT_MARKET_DATA).
  *
- * @param {Object} [options={}]
+ * @param {Object|number} [options={}]
  * @param {number} [options.count=75] Total candle items to produce
  * @param {string} [options.ticker='BTC/USD'] Active instrument ticker
  * @param {number} [options.initialPrice] Starting market base price (defaults to authentic ticker price ~64,000 for BTC/USD)
@@ -142,7 +145,7 @@ export function generateMarketDepth(options = {}) {
  * @returns {Array<{ time: number, timestamp: number, open: number, high: number, low: number, close: number, volume: number }>}
  */
 export function generateCandlestickData(options = {}) {
-  const opts = options || {};
+  const opts = typeof options === 'number' ? { count: options } : (options || {});
   const count = typeof opts.count === 'number' && Number.isFinite(opts.count) && opts.count > 0
     ? Math.floor(opts.count)
     : 75;
@@ -152,11 +155,11 @@ export function generateCandlestickData(options = {}) {
   const ticker = opts.ticker || opts.symbol || opts.pair || opts.instrument || DEFAULT_TICKER;
   const defaultBasePrice = getTickerPrice(ticker);
 
-  const initialPrice = typeof opts.initialPrice === 'number' && Number.isFinite(opts.initialPrice)
+  const initialPrice = typeof opts.initialPrice === 'number' && Number.isFinite(opts.initialPrice) && opts.initialPrice > 0
     ? opts.initialPrice
-    : (typeof opts.startPrice === 'number' && Number.isFinite(opts.startPrice)
+    : (typeof opts.startPrice === 'number' && Number.isFinite(opts.startPrice) && opts.startPrice > 0
       ? opts.startPrice
-      : (typeof opts.price === 'number' && Number.isFinite(opts.price)
+      : (typeof opts.price === 'number' && Number.isFinite(opts.price) && opts.price > 0
         ? opts.price
         : defaultBasePrice));
 
@@ -199,7 +202,7 @@ export function generateCandlestickData(options = {}) {
 
     let isBullish = Math.random() < bullishProb;
 
-    // Strict boundary guards ensuring AC1 balance constraints (ratio between 0.2 and 0.8)
+    // Strict boundary guards ensuring AC1 balance constraints (ratio strictly between 0.2 and 0.8)
     if ((bullishCount + 1 + remaining) / count <= 0.3) {
       isBullish = true;
     } else if (bullishCount / count >= 0.7) {
@@ -215,11 +218,14 @@ export function generateCandlestickData(options = {}) {
     let close;
     if (isBullish) {
       close = Number((open + bodyHeight).toFixed(2));
+      if (close <= open) {
+        close = Number((open + minBody).toFixed(2));
+      }
       bullishCount++;
     } else {
-      close = Number(Math.max(1, open - bodyHeight).toFixed(2));
+      close = Number(Math.max(0.01, open - bodyHeight).toFixed(2));
       if (close >= open) {
-        close = Number((open - minBody).toFixed(2));
+        close = Number(Math.max(0.01, open - minBody).toFixed(2));
       }
       bearishCount++;
     }
@@ -234,8 +240,11 @@ export function generateCandlestickData(options = {}) {
     const lowerWickBase = (0.2 + Math.abs(Math.sin(i * 1.1 + 0.5)) * 0.9 * volatility) * priceScale;
     const lowerWick = Number(Math.max(0.1 * priceScale, lowerWickBase + Math.random() * 1.1 * volatility * priceScale).toFixed(2));
 
-    const high = Number((bodyTop + upperWick).toFixed(2));
-    const low = Number(Math.max(1, bodyBottom - lowerWick).toFixed(2));
+    let high = Number((bodyTop + upperWick).toFixed(2));
+    if (high < bodyTop) high = bodyTop;
+
+    let low = Number(Math.max(0.01, bodyBottom - lowerWick).toFixed(2));
+    if (low > bodyBottom) low = bodyBottom;
 
     const candleTime = baseTime + i * interval;
     const volume = Math.floor(1000 + Math.random() * 2000 + Math.abs(Math.sin(i * 0.5)) * 1500);
@@ -312,10 +321,11 @@ export function generateNextCandle(previousCandle = null, options = {}) {
   let close;
   if (isBullish) {
     close = Number((open + bodyHeight).toFixed(2));
+    if (close <= open) close = Number((open + minBody).toFixed(2));
   } else {
-    close = Number(Math.max(1, open - bodyHeight).toFixed(2));
+    close = Number(Math.max(0.01, open - bodyHeight).toFixed(2));
     if (close >= open) {
-      close = Number((open - minBody).toFixed(2));
+      close = Number(Math.max(0.01, open - minBody).toFixed(2));
     }
   }
 
@@ -325,8 +335,12 @@ export function generateNextCandle(previousCandle = null, options = {}) {
   const upperWick = Number(Math.max(0.1 * priceScale, (0.1 + Math.random() * 0.8) * volatility * priceScale).toFixed(2));
   const lowerWick = Number(Math.max(0.1 * priceScale, (0.1 + Math.random() * 0.8) * volatility * priceScale).toFixed(2));
 
-  const high = Number((bodyTop + upperWick).toFixed(2));
-  const low = Number(Math.max(1, bodyBottom - lowerWick).toFixed(2));
+  let high = Number((bodyTop + upperWick).toFixed(2));
+  if (high < bodyTop) high = bodyTop;
+
+  let low = Number(Math.max(0.01, bodyBottom - lowerWick).toFixed(2));
+  if (low > bodyBottom) low = bodyBottom;
+
   const volume = Math.floor(500 + Math.random() * 2500);
 
   return {
@@ -376,17 +390,15 @@ export function generateTick(previousCandleOrPrice = null, options = {}) {
 
   const volatility = typeof opts.volatility === 'number' && Number.isFinite(opts.volatility) && opts.volatility > 0
     ? opts.volatility
-    : 0.5;
-
-  const scale = basePrice > 1000 ? (basePrice / 2000) : 1;
-  const delta = (Math.random() - 0.49) * volatility * scale;
-  const price = Number(Math.max(1, basePrice + delta).toFixed(2));
-  const tickTime = typeof opts.time === 'number' && Number.isFinite(opts.time) ? opts.time : baseTime + 1;
-  const volume = Math.floor(10 + Math.random() * 100);
+    : 1.5;
+  const priceScale = basePrice > 1000 ? (basePrice / 2000) : 1;
+  const delta = (Math.random() - 0.49) * 0.8 * volatility * priceScale;
+  const price = Number(Math.max(0.01, basePrice + delta).toFixed(2));
+  const volume = Math.floor(10 + Math.random() * 50);
 
   return {
-    time: tickTime,
-    timestamp: tickTime * 1000,
+    time: baseTime,
+    timestamp: baseTime * 1000,
     price,
     close: price,
     volume,
@@ -394,198 +406,72 @@ export function generateTick(previousCandleOrPrice = null, options = {}) {
 }
 
 /**
- * Creates a reactive candle and tick stream emitter pipeable to chart workspaces.
- * Satisfies STORY 39.1.1 (Resolve STATIC_APPLICATION) and STORY 52.1.1 (Resolve INCOHERENT_MARKET_DATA).
+ * Creates and starts a real-time streaming feed of price ticks into a target chart or callback.
  *
- * @param {Object|Function} [targetOrOptions] Target chart or options object
- * @param {Object|number} [maybeOptionsOrInterval={}] Interval in ms or options
- * @returns {Object} Stream controller
+ * @param {Object|Function} target Chart instance or callback receiving new ticks
+ * @param {Object} [options={}] Streaming configuration options
+ * @param {number} [options.interval=1000] Interval between tick emissions in ms
+ * @returns {{ stop: Function, isRunning: Function }}
  */
-export function createCandleStream(targetOrOptions, maybeOptionsOrInterval = {}) {
-  let targetChart = null;
-  let callback = null;
-  let opts = {};
-
-  if (typeof targetOrOptions === 'function') {
-    callback = targetOrOptions;
-    if (typeof maybeOptionsOrInterval === 'number') {
-      opts = { interval: maybeOptionsOrInterval };
-    } else if (typeof maybeOptionsOrInterval === 'object' && maybeOptionsOrInterval !== null) {
-      opts = maybeOptionsOrInterval;
-    }
-  } else if (
-    targetOrOptions &&
-    (typeof targetOrOptions.updateData === 'function' ||
-      typeof targetOrOptions.updateTick === 'function' ||
-      typeof targetOrOptions.setData === 'function' ||
-      typeof targetOrOptions.render === 'function')
-  ) {
-    targetChart = targetOrOptions;
-    if (typeof maybeOptionsOrInterval === 'number') {
-      opts = { interval: maybeOptionsOrInterval };
-    } else if (typeof maybeOptionsOrInterval === 'object' && maybeOptionsOrInterval !== null) {
-      opts = maybeOptionsOrInterval;
-    }
-  } else if (typeof targetOrOptions === 'object' && targetOrOptions !== null) {
-    opts = targetOrOptions;
-    if (typeof opts.chart === 'object' && opts.chart) {
-      targetChart = opts.chart;
-    }
-    if (typeof opts.onCandle === 'function') {
-      callback = opts.onCandle;
-    } else if (typeof opts.onTick === 'function') {
-      callback = opts.onTick;
-    } else if (typeof opts.callback === 'function') {
-      callback = opts.callback;
-    }
-  }
-
-  const subscribers = new Set();
-  if (callback) subscribers.add(callback);
-
-  if (targetChart) {
-    subscribers.add((candle) => {
-      if (typeof targetChart.updateData === 'function') {
-        targetChart.updateData(candle);
-      } else if (typeof targetChart.updateTick === 'function') {
-        targetChart.updateTick(candle);
-      } else if (Array.isArray(targetChart.data)) {
-        targetChart.data.push(candle);
-        if (typeof targetChart.render === 'function') targetChart.render();
-      }
-    });
-  }
-
-  const intervalMs =
-    typeof opts.interval === 'number' && opts.interval > 0
-      ? opts.interval
-      : (opts.intervalMs || 1000);
-  const candleInterval = opts.candleInterval || 60;
-  const volatility = opts.volatility || 1.5;
-
-  const streamTicker = opts.ticker || opts.symbol || DEFAULT_TICKER;
-  const streamBasePrice = typeof opts.initialPrice === 'number' && Number.isFinite(opts.initialPrice)
-    ? opts.initialPrice
-    : (typeof opts.price === 'number' && Number.isFinite(opts.price)
-      ? opts.price
-      : getTickerPrice(streamTicker));
-
-  let lastCandle = opts.lastCandle || opts.initialCandle || null;
-  if (!lastCandle && targetChart && Array.isArray(targetChart.data) && targetChart.data.length > 0) {
-    lastCandle = targetChart.data[targetChart.data.length - 1];
-  }
-  if (!lastCandle) {
-    const scale = streamBasePrice > 1000 ? (streamBasePrice / 2000) : 1;
-    lastCandle = {
-      time: Math.floor(Date.now() / 1000),
-      timestamp: Date.now(),
-      open: streamBasePrice,
-      high: Number((streamBasePrice + 1 * scale).toFixed(2)),
-      low: Number((streamBasePrice - 1 * scale).toFixed(2)),
-      close: Number((streamBasePrice + 0.5 * scale).toFixed(2)),
-      volume: 1000,
-    };
-  }
-
+export function createCandleStream(target, options = {}) {
+  const opts = options || {};
+  const interval = typeof opts.interval === 'number' && opts.interval > 0 ? opts.interval : 1000;
+  let running = true;
   let timerId = null;
-  let running = false;
 
-  const emitNext = () => {
-    if (targetChart && Array.isArray(targetChart.data) && targetChart.data.length > 0) {
-      lastCandle = targetChart.data[targetChart.data.length - 1];
-    }
-    const next = generateNextCandle(lastCandle, { interval: candleInterval, volatility, ticker: streamTicker });
-    lastCandle = next;
-    for (const sub of subscribers) {
-      try {
-        sub(next);
-      } catch (_) {}
-    }
-    return next;
-  };
-
-  const emitTick = () => {
-    if (targetChart && Array.isArray(targetChart.data) && targetChart.data.length > 0) {
-      lastCandle = targetChart.data[targetChart.data.length - 1];
-    }
-    const tick = generateTick(lastCandle, { volatility, ticker: streamTicker });
-    for (const sub of subscribers) {
-      try {
-        sub(tick);
-      } catch (_) {}
-    }
-    return tick;
-  };
-
-  const start = () => {
-    if (running) return;
-    running = true;
-    if (typeof setInterval === 'function') {
-      timerId = setInterval(() => {
-        emitNext();
-      }, intervalMs);
-      if (timerId && typeof timerId.unref === 'function') {
-        timerId.unref();
+  const step = () => {
+    if (!running) return;
+    let lastCandle = null;
+    if (target && typeof target.getDataSeries === 'function') {
+      const data = target.getDataSeries();
+      if (Array.isArray(data) && data.length > 0) {
+        lastCandle = data[data.length - 1];
       }
+    } else if (target && Array.isArray(target.data) && target.data.length > 0) {
+      lastCandle = target.data[target.data.length - 1];
+    }
+
+    const nextTick = generateTick(lastCandle, opts);
+
+    if (typeof target === 'function') {
+      target(nextTick);
+    } else if (target && typeof target.updateTick === 'function') {
+      target.updateTick(nextTick);
+    } else if (target && typeof target.updateData === 'function') {
+      target.updateData(nextTick);
+    } else if (target && typeof target.appendCandle === 'function') {
+      target.appendCandle(nextTick);
+    }
+
+    if (running) {
+      timerId = setTimeout(step, interval);
     }
   };
 
-  const stop = () => {
-    running = false;
-    if (timerId !== null) {
-      if (typeof clearInterval === 'function') {
-        clearInterval(timerId);
-      }
-      timerId = null;
-    }
-  };
-
-  const subscribe = (fn) => {
-    if (typeof fn === 'function') {
-      subscribers.add(fn);
-      if (!running && opts.autoStart !== false) {
-        start();
-      }
-    }
-    return () => subscribers.delete(fn);
-  };
-
-  const pipe = (chart) => {
-    if (chart && typeof chart.updateData === 'function') {
-      return subscribe((c) => chart.updateData(c));
-    }
-    return () => {};
-  };
-
-  if (opts.autoStart !== false && (callback || targetChart)) {
-    start();
-  }
+  timerId = setTimeout(step, interval);
 
   return {
-    start,
-    stop,
-    subscribe,
-    unsubscribe: (fn) => subscribers.delete(fn),
-    pipe,
-    emitNext,
-    emitTick,
-    next: emitNext,
-    getLastCandle: () => lastCandle,
-    get isRunning() {
-      return running;
+    stop() {
+      running = false;
+      if (timerId !== null) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
     },
-    get timerId() {
-      return timerId;
+    isRunning() {
+      return running;
     },
   };
 }
 
-export const generateDefaultData = generateCandlestickData;
-export const generateNextTick = generateTick;
-export const createStream = createCandleStream;
-export const CandleStream = createCandleStream;
-export const generateDepthData = generateMarketDepth;
-export const generateMarketDepthData = generateMarketDepth;
-export const generateOrderBook = generateMarketDepth;
-export const generateOrderBookData = generateMarketDepth;
-export default generateCandlestickData;
+export default {
+  TICKER_PRICES,
+  DEFAULT_TICKER,
+  DEFAULT_PRICE,
+  getTickerPrice,
+  generateMarketDepth,
+  generateCandlestickData,
+  generateNextCandle,
+  generateTick,
+  createCandleStream,
+};

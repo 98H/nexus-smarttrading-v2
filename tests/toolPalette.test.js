@@ -70,7 +70,7 @@ class FakeMouseEvent extends FakeEvent {
 
 class FakeElement {
   constructor(tagName) {
-    this.tagName = tagName.toUpperCase();
+try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
     this.children = [];
     this.parentElement = null;
     this.attributes = new Map();

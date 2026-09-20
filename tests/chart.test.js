@@ -53,7 +53,7 @@ class MockCanvasRenderingContext2D {
 
 class MockHTMLElement {
   constructor(tagName = 'div', id = '') {
-    this.tagName = tagName.toUpperCase();
+try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
     this.id = id;
     this.className = '';
     this.children = [];

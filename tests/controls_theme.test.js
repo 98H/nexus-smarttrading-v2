@@ -14,7 +14,7 @@ const MAIN_PATH = path.resolve(__dirname, '../src/main.js');
  */
 class MockDOMElement {
   constructor(tagName, id = '') {
-    this.tagName = tagName.toUpperCase();
+try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
     this.id = id;
     this.className = '';
     this.classList = new Set();

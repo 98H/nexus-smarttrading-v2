@@ -36,7 +36,7 @@ class MockDOMTokenList {
 
 class MockElement {
   constructor(tagName) {
-    this.tagName = tagName.toUpperCase();
+try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
     this.id = '';
     this._className = '';
     this.classList = new MockDOMTokenList(this);

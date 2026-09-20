@@ -36,7 +36,7 @@ class MockClassList {
 
 class MockElement {
   constructor(tagName) {
-    this.tagName = tagName.toUpperCase();
+try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
     this.nodeType = 1;
     this.children = [];
     this.parentElement = null;
