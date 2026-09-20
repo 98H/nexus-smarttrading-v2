@@ -5,6 +5,8 @@
  * Stylesheet wiring reference: ./style.css
  */
 
+import { Chart } from './chart.js';
+
 /**
  * Injects dark-theme stylesheet into the document head if not already present.
  */
@@ -111,76 +113,19 @@ function ensureCanvasCompat(canvas) {
     const mockCtx = createMock2DContext();
     mockCtx.canvas = canvas;
     canvas.getContext = () => mockCtx;
-  }
-}
-
-// Polyfill missing prototype methods on mock DOM environments
-if (typeof document !== 'undefined') {
-  try {
-    const sample = document.createElement ? document.createElement('div') : null;
-    if (sample) {
-      const proto = Object.getPrototypeOf(sample);
-      if (proto) {
-        if (!proto.addEventListener) proto.addEventListener = () => {};
-        if (!proto.removeEventListener) proto.removeEventListener = () => {};
-        if (!proto.getBoundingClientRect) {
-          proto.getBoundingClientRect = function () {
-            return {
-              top: 0,
-              left: 0,
-              width: this.clientWidth || 800,
-              height: this.clientHeight || 500,
-              right: this.clientWidth || 800,
-              bottom: this.clientHeight || 500,
-            };
-          };
-        }
-        if (!('style' in proto)) {
-          Object.defineProperty(proto, 'style', {
-            get() {
-              if (!this._style) this._style = {};
-              return this._style;
-            },
-            set(val) {
-              this._style = val;
-            },
-            configurable: true,
-          });
-        }
-        if (!('clientWidth' in proto)) {
-          Object.defineProperty(proto, 'clientWidth', {
-            get() {
-              return this._clientWidth ?? 800;
-            },
-            set(val) {
-              this._clientWidth = val;
-            },
-            configurable: true,
-          });
-        }
-        if (!('clientHeight' in proto)) {
-          Object.defineProperty(proto, 'clientHeight', {
-            get() {
-              return this._clientHeight ?? 500;
-            },
-            set(val) {
-              this._clientHeight = val;
-            },
-            configurable: true,
-          });
-        }
-        if (!proto.getContext) {
-          proto.getContext = function () {
-            if (!this._mockCtx) {
-              this._mockCtx = createMock2DContext();
-              this._mockCtx.canvas = this;
-            }
-            return this._mockCtx;
-          };
+  } else {
+    const origGetContext = canvas.getContext.bind(canvas);
+    canvas.getContext = (type = '2d') => {
+      const ctx = origGetContext(type) || createMock2DContext();
+      const mockFallback = createMock2DContext();
+      for (const key of Object.keys(mockFallback)) {
+        if (typeof ctx[key] !== 'function') {
+          ctx[key] = mockFallback[key];
         }
       }
-    }
-  } catch (_) {}
+      return ctx;
+    };
+  }
 }
 
 /**
@@ -219,7 +164,7 @@ function createEl(tagName, attributes = {}, textContent = '') {
  * with nested canvas workspace, orders panel, and tools panel.
  *
  * @param {HTMLElement} mountTarget - Root container element (#app)
- * @returns {{ header: HTMLElement, workspace: HTMLElement }} Layout elements
+ * @returns {{ header: HTMLElement, workspace: HTMLElement, chartContainer: HTMLElement, canvas: HTMLElement }}
  */
 function buildStructuredLayout(mountTarget) {
   ensureElementCompat(mountTarget);
@@ -228,19 +173,20 @@ function buildStructuredLayout(mountTarget) {
   let workspace = mountTarget.querySelector
     ? mountTarget.querySelector('[data-testid="workspace"]') ||
       mountTarget.querySelector('.workspace-container') ||
-      mountTarget.querySelector('.workspace')
+      mountTarget.querySelector('.workspace') ||
+      mountTarget.querySelector('main')
     : null;
 
   if (!header) {
     header = createEl('header', {
-      class: 'top-nav nav-header',
+      class: 'top-nav nav-header header',
       'data-testid': 'top-nav',
     });
 
     const title = createEl(
       'h1',
       {
-        class: 'app-title',
+        class: 'app-title title',
         'data-testid': 'app-title',
       },
       'SmartTrading-V2'
@@ -309,7 +255,6 @@ function buildStructuredLayout(mountTarget) {
         },
         tool
       );
-      toolBtn.addEventListener('click', () => {});
       toolsPanel.appendChild(toolBtn);
     }
     workspace.appendChild(toolsPanel);
@@ -320,10 +265,9 @@ function buildStructuredLayout(mountTarget) {
       'data-testid': 'chart-container',
     });
 
-    // Reuse existing raw canvas on mountTarget if present
     let canvas = mountTarget.querySelector ? mountTarget.querySelector('canvas') : null;
-    if (canvas && canvas.parentElement) {
-      canvas.parentElement.removeChild(canvas);
+    if (canvas && canvas.parentElement === mountTarget) {
+      mountTarget.removeChild(canvas);
     }
     if (!canvas) {
       canvas = createEl('canvas', {
@@ -368,7 +312,6 @@ function buildStructuredLayout(mountTarget) {
       },
       'Buy / Long'
     );
-    buyBtn.addEventListener('click', () => {});
     tradeActions.appendChild(buyBtn);
 
     const sellBtn = createEl(
@@ -380,7 +323,6 @@ function buildStructuredLayout(mountTarget) {
       },
       'Sell / Short'
     );
-    sellBtn.addEventListener('click', () => {});
     tradeActions.appendChild(sellBtn);
 
     ordersPanel.appendChild(tradeActions);
@@ -389,13 +331,32 @@ function buildStructuredLayout(mountTarget) {
     mountTarget.appendChild(workspace);
   }
 
-  // Prevent flat canvas or panel siblings directly on mountTarget
+  const chartContainer =
+    workspace.querySelector('[data-testid="chart-container"]') ||
+    workspace.querySelector('.chart-container') ||
+    workspace;
+
+  let canvas = workspace.querySelector ? workspace.querySelector('canvas') : null;
+  if (!canvas) {
+    canvas = createEl('canvas', {
+      id: 'chart-canvas',
+      class: 'chart-canvas',
+      'data-testid': 'chart-canvas',
+    });
+    ensureCanvasCompat(canvas);
+    chartContainer.appendChild(canvas);
+  } else {
+    ensureCanvasCompat(canvas);
+  }
+
+  // Eject any stray elements placed directly on mountTarget into workspace hierarchy
   if (mountTarget.children) {
     const strayChildren = mountTarget.children.filter((c) => c !== header && c !== workspace);
     for (const stray of strayChildren) {
       if (stray.tagName === 'CANVAS') {
-        mountTarget.removeChild(stray);
-        const chartContainer = workspace.querySelector('.chart-container') || workspace;
+        if (stray.parentElement === mountTarget) {
+          mountTarget.removeChild(stray);
+        }
         chartContainer.appendChild(stray);
       } else if (
         stray.classList &&
@@ -403,151 +364,15 @@ function buildStructuredLayout(mountTarget) {
           stray.classList.contains('tools-panel') ||
           stray.classList.contains('side-panel'))
       ) {
-        mountTarget.removeChild(stray);
+        if (stray.parentElement === mountTarget) {
+          mountTarget.removeChild(stray);
+        }
         workspace.appendChild(stray);
       }
     }
   }
 
-  return { header, workspace };
-}
-
-/**
- * Binds interactive pan, drag, and zoom gesture listeners to the chart canvas.
- *
- * @param {HTMLElement} canvas - Target canvas element
- * @param {object} state - Chart state object
- * @param {Function} onUpdate - Re-render callback
- * @returns {Function} Cleanup function
- */
-function bindInteractiveGestures(canvas, state, onUpdate) {
-  if (!canvas || typeof canvas.addEventListener !== 'function') return () => {};
-
-  let isDragging = false;
-  let lastX = 0;
-  let lastY = 0;
-
-  const onPointerDown = (e) => {
-    isDragging = true;
-    lastX = e.clientX || 0;
-    lastY = e.clientY || 0;
-  };
-
-  const onPointerMove = (e) => {
-    if (!isDragging) return;
-    const currentX = e.clientX || 0;
-    const currentY = e.clientY || 0;
-    const dx = currentX - lastX;
-    const dy = currentY - lastY;
-    lastX = currentX;
-    lastY = currentY;
-    state.panX += dx;
-    state.panY += dy;
-    if (typeof onUpdate === 'function') onUpdate();
-  };
-
-  const onPointerUp = () => {
-    isDragging = false;
-  };
-
-  const onWheel = (e) => {
-    if (e && typeof e.preventDefault === 'function') {
-      try {
-        e.preventDefault();
-      } catch (_) {}
-    }
-    const delta = e.deltaY || 0;
-    const zoomFactor = delta > 0 ? 0.9 : 1.1;
-    state.scale = Math.max(0.2, Math.min(5.0, state.scale * zoomFactor));
-    if (typeof onUpdate === 'function') onUpdate();
-  };
-
-  canvas.addEventListener('mousedown', onPointerDown);
-  canvas.addEventListener('mousemove', onPointerMove);
-  canvas.addEventListener('mouseup', onPointerUp);
-  canvas.addEventListener('mouseleave', onPointerUp);
-  canvas.addEventListener('wheel', onWheel);
-
-  return () => {
-    if (typeof canvas.removeEventListener !== 'function') return;
-    canvas.removeEventListener('mousedown', onPointerDown);
-    canvas.removeEventListener('mousemove', onPointerMove);
-    canvas.removeEventListener('mouseup', onPointerUp);
-    canvas.removeEventListener('mouseleave', onPointerUp);
-    canvas.removeEventListener('wheel', onWheel);
-  };
-}
-
-/**
- * Renders chart gridlines, axes, and interactive frames.
- *
- * @param {HTMLElement} canvas - Target canvas
- * @param {object} state - Chart state
- */
-function renderChartFrame(canvas, state) {
-  if (!canvas || typeof canvas.getContext !== 'function') return;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-
-  const width = canvas.clientWidth || canvas.width || 800;
-  const height = canvas.clientHeight || canvas.height || 500;
-
-  if (typeof ctx.clearRect === 'function') {
-    ctx.clearRect(0, 0, width, height);
-  }
-  if (typeof ctx.fillRect === 'function') {
-    ctx.fillStyle = '#131722';
-    ctx.fillRect(0, 0, width, height);
-  }
-  if (typeof ctx.beginPath === 'function' && typeof ctx.stroke === 'function') {
-    ctx.beginPath();
-    ctx.strokeStyle = '#2a2e39';
-    for (let y = 50; y < height; y += 50) {
-      if (typeof ctx.moveTo === 'function') ctx.moveTo(0, y);
-      if (typeof ctx.lineTo === 'function') ctx.lineTo(width, y);
-    }
-    ctx.stroke();
-  }
-}
-
-/**
- * Starts a real-time animation tick loop.
- *
- * @param {Function} renderFn - Render step callback
- * @returns {Function} Stop loop callback
- */
-function startAnimationLoop(renderFn) {
-  let animId = null;
-  let isRunning = true;
-
-  const tick = () => {
-    if (!isRunning) return;
-    try {
-      renderFn();
-    } catch (_) {}
-    if (typeof requestAnimationFrame === 'function') {
-      animId = requestAnimationFrame(tick);
-    } else if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-      animId = window.requestAnimationFrame(tick);
-    }
-  };
-
-  if (typeof requestAnimationFrame === 'function') {
-    animId = requestAnimationFrame(tick);
-  } else if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-    animId = window.requestAnimationFrame(tick);
-  }
-
-  return () => {
-    isRunning = false;
-    if (animId !== null) {
-      if (typeof cancelAnimationFrame === 'function') {
-        cancelAnimationFrame(animId);
-      } else if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
-        window.cancelAnimationFrame(animId);
-      }
-    }
-  };
+  return { header, workspace, chartContainer, canvas };
 }
 
 /**
@@ -574,67 +399,44 @@ export function mountApp(container) {
     return mountTarget.__chart;
   }
 
-  const { header, workspace } = buildStructuredLayout(mountTarget);
+  const { header, workspace, chartContainer, canvas } = buildStructuredLayout(mountTarget);
+
+  const chartInstance = new Chart(chartContainer, {
+    width: chartContainer.clientWidth || 800,
+    height: chartContainer.clientHeight || 500,
+    priceScaleWidth: 60,
+    timeScaleHeight: 30,
+    timeframe: '1h',
+    autoRender: true,
+  });
 
   const state = {
-    panX: 0,
-    panY: 0,
-    scale: 1.0,
+    get panX() {
+      return chartInstance.viewportOffset.x;
+    },
+    set panX(val) {
+      chartInstance.viewportOffset.x = val;
+    },
+    get panY() {
+      return chartInstance.viewportOffset.y;
+    },
+    set panY(val) {
+      chartInstance.viewportOffset.y = val;
+    },
+    get scale() {
+      return chartInstance.zoomScale;
+    },
+    set scale(val) {
+      chartInstance.zoomScale = val;
+    },
     timeframe: '1h',
     ticker: 'BTC-USD',
   };
 
-  let cleanupGestures = null;
-  let stopAnim = null;
-  let resizeHandler = null;
-
-  const chart = {
-    canvas: null,
-    state,
-    extChart: null,
-    render: () => {
-      if (chart.canvas) {
-        renderChartFrame(chart.canvas, state);
-      }
-      if (chart.extChart && typeof chart.extChart.render === 'function') {
-        chart.extChart.render();
-      }
-    },
-    start: () => {
-      if (!stopAnim) {
-        stopAnim = startAnimationLoop(() => chart.render());
-      }
-      if (chart.extChart && typeof chart.extChart.start === 'function') {
-        chart.extChart.start();
-      }
-    },
-    destroy: () => {
-      if (typeof stopAnim === 'function') {
-        stopAnim();
-        stopAnim = null;
-      }
-      if (typeof cleanupGestures === 'function') {
-        cleanupGestures();
-        cleanupGestures = null;
-      }
-      if (chart.extChart && typeof chart.extChart.destroy === 'function') {
-        chart.extChart.destroy();
-        chart.extChart = null;
-      }
-      if (typeof window !== 'undefined' && resizeHandler && typeof window.removeEventListener === 'function') {
-        window.removeEventListener('resize', resizeHandler);
-        resizeHandler = null;
-      }
-    },
-  };
-
-  const canvas =
-    workspace.querySelector ? workspace.querySelector('canvas') : mountTarget.querySelector('canvas');
-  if (canvas) {
-    chart.canvas = canvas;
-    ensureCanvasCompat(canvas);
-    cleanupGestures = bindInteractiveGestures(canvas, state, () => chart.render());
-  }
+  chartInstance.state = state;
+  chartInstance.extChart = chartInstance;
+  chartInstance.chart = chartInstance;
+  chartInstance.canvas = canvas || chartInstance.canvas;
 
   // Bind interactive timeframe switch controls
   if (header && typeof header.querySelectorAll === 'function') {
@@ -643,9 +445,6 @@ export function mountApp(container) {
       if (typeof btn.addEventListener === 'function') {
         btn.addEventListener('click', () => {
           for (const b of tfButtons) {
-            if (b.classList && typeof b.classList.delete === 'function') {
-              b.classList.delete('active');
-            }
             if (b.classList && typeof b.classList.remove === 'function') {
               b.classList.remove('active');
             }
@@ -656,14 +455,17 @@ export function mountApp(container) {
           if (btn.classList && typeof btn.classList.add === 'function') {
             btn.classList.add('active');
           }
-          if (btn.className && typeof btn.setAttribute === 'function') {
-            if (!btn.className.includes('active')) {
-              btn.setAttribute('class', `${btn.className} active`.trim());
-            }
+          if (btn.className && !btn.className.includes('active') && typeof btn.setAttribute === 'function') {
+            btn.setAttribute('class', `${btn.className} active`.trim());
           }
           const tf = btn.getAttribute ? btn.getAttribute('data-timeframe') : null;
-          if (tf) state.timeframe = tf;
-          chart.render();
+          if (tf) {
+            state.timeframe = tf;
+            if (typeof chartInstance.setTimeframe === 'function') {
+              chartInstance.setTimeframe(tf);
+            }
+          }
+          chartInstance.render();
         });
       }
     }
@@ -671,68 +473,71 @@ export function mountApp(container) {
 
   // Bind interactive ticker control
   if (header && typeof header.querySelector === 'function') {
-    const tickerControl = header.querySelector('[name="ticker"]');
+    const tickerControl =
+      header.querySelector('[data-testid="ticker-select"]') ||
+      header.querySelector('[data-testid="ticker-control"]') ||
+      header.querySelector('[name="ticker"]');
     if (tickerControl && typeof tickerControl.addEventListener === 'function') {
       tickerControl.addEventListener('change', (e) => {
-        if (e && e.target && e.target.value) {
-          state.ticker = e.target.value;
+        const val = (e && e.target && e.target.value) || tickerControl.value;
+        if (val) {
+          state.ticker = val;
         }
-        chart.render();
+        chartInstance.render();
       });
     }
   }
 
   // Preserve structured hierarchies and re-render on resize
-  resizeHandler = () => {
+  let resizeHandler = () => {
     if (mountTarget.children) {
       const strays = mountTarget.children.filter((c) => c !== header && c !== workspace);
       for (const stray of strays) {
         if (stray.tagName === 'CANVAS') {
-          mountTarget.removeChild(stray);
-          const chartContainer = workspace.querySelector('.chart-container') || workspace;
-          chartContainer.appendChild(stray);
+          if (stray.parentElement === mountTarget) {
+            mountTarget.removeChild(stray);
+          }
+          const host = workspace.querySelector('.chart-container') || workspace;
+          host.appendChild(stray);
+        } else if (
+          stray.classList &&
+          (stray.classList.contains('orders-panel') ||
+            stray.classList.contains('tools-panel') ||
+            stray.classList.contains('side-panel'))
+        ) {
+          if (stray.parentElement === mountTarget) {
+            mountTarget.removeChild(stray);
+          }
+          workspace.appendChild(stray);
         }
       }
     }
-    chart.render();
+    if (chartInstance && typeof chartInstance.render === 'function') {
+      chartInstance.render();
+    }
   };
+
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('resize', resizeHandler);
   }
 
-  chart.render();
-  chart.start();
+  const originalDestroy = chartInstance.destroy.bind(chartInstance);
+  chartInstance.destroy = () => {
+    originalDestroy();
+    if (typeof window !== 'undefined' && resizeHandler && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('resize', resizeHandler);
+      resizeHandler = null;
+    }
+  };
 
-  chart.chart = chart;
-  mountTarget.__chart = chart;
-  mountTarget.chart = chart;
+  chartInstance.render();
+  chartInstance.start();
+
+  mountTarget.__chart = chartInstance;
+  mountTarget.chart = chartInstance;
   mountTarget.__nexus_mounted = true;
 
-  // Asynchronously load and attach full chart module if present
-  try {
-    import('./chart.js')
-      .then((mod) => {
-        if (mod && typeof mod.Chart === 'function') {
-          try {
-            const chartTarget = workspace.querySelector('.chart-container') || workspace;
-            const extChart = new mod.Chart(chartTarget, {
-              width: 800,
-              height: 500,
-              priceScaleWidth: 60,
-              timeScaleHeight: 30,
-            });
-            if (extChart) {
-              chart.extChart = extChart;
-              if (typeof extChart.render === 'function') extChart.render();
-              if (typeof extChart.start === 'function') extChart.start();
-            }
-          } catch (_) {}
-        }
-      })
-      .catch(() => {});
-  } catch (_) {}
-
-  return chart;
+  return chartInstance;
 }
 
 /**

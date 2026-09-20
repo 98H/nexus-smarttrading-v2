@@ -191,13 +191,57 @@ export class Chart {
       throw new Error('Chart container element must be a valid DOM node');
     }
 
+    // Locate workspace or chart container within container if present
+    let workspaceHost = null;
+    if (container && typeof container.querySelector === 'function') {
+      workspaceHost =
+        container.querySelector('[data-testid="workspace"]') ||
+        container.querySelector('.workspace-container') ||
+        container.querySelector('.workspace') ||
+        container.querySelector('main');
+    }
+
+    // If container is #app and no workspace exists yet, ensure structured workspace container
+    if (
+      !workspaceHost &&
+      container &&
+      (container.id === 'app' || (typeof container.getAttribute === 'function' && container.getAttribute('id') === 'app'))
+    ) {
+      if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+        workspaceHost = document.createElement('main');
+        workspaceHost.className = 'workspace-container workspace';
+        if (typeof workspaceHost.setAttribute === 'function') {
+          workspaceHost.setAttribute('class', 'workspace-container workspace');
+          workspaceHost.setAttribute('data-testid', 'workspace');
+        }
+        if (typeof container.appendChild === 'function') {
+          container.appendChild(workspaceHost);
+        }
+      }
+    }
+
+    const chartHost = workspaceHost
+      ? (workspaceHost.querySelector('[data-testid="chart-container"]') ||
+         workspaceHost.querySelector('.chart-workspace') ||
+         workspaceHost.querySelector('.chart-container') ||
+         workspaceHost)
+      : (container && typeof container.querySelector === 'function' &&
+          (container.querySelector('[data-testid="chart-container"]') ||
+           container.querySelector('.chart-workspace') ||
+           container.querySelector('.chart-container') ||
+           container.querySelector('[data-testid="workspace"]') ||
+           container.querySelector('.workspace-container') ||
+           container.querySelector('.workspace'))) ||
+        container;
+
     if (container && !canvas) {
-      if (typeof container.querySelector === 'function') {
+      const searchRoot = workspaceHost || container;
+      if (typeof searchRoot.querySelector === 'function') {
         canvas =
-          container.querySelector('canvas') ||
-          container.querySelector('[data-testid="chart-canvas"]');
-      } else if (Array.isArray(container.children)) {
-        canvas = container.children.find((child) => child.tagName === 'CANVAS') || null;
+          searchRoot.querySelector('canvas') ||
+          searchRoot.querySelector('[data-testid="chart-canvas"]');
+      } else if (Array.isArray(searchRoot.children)) {
+        canvas = searchRoot.children.find((child) => child.tagName === 'CANVAS') || null;
       }
       if (!canvas) {
         canvas =
@@ -208,40 +252,26 @@ export class Chart {
           canvas.id = 'chart-canvas';
           canvas.className = 'chart-canvas';
           if (typeof canvas.setAttribute === 'function') {
+            canvas.setAttribute('id', 'chart-canvas');
+            canvas.setAttribute('class', 'chart-canvas');
             canvas.setAttribute('data-testid', 'chart-canvas');
           }
-          const chartHost =
-            (typeof container.querySelector === 'function' &&
-              (container.querySelector('[data-testid="chart-container"]') ||
-                container.querySelector('.chart-workspace') ||
-                container.querySelector('.chart-container') ||
-                container.querySelector('[data-testid="workspace"]') ||
-                container.querySelector('.workspace-container') ||
-                container.querySelector('.workspace'))) ||
-            container;
-
-          if (typeof chartHost.appendChild === 'function') {
-            chartHost.appendChild(canvas);
+          const host = chartHost || container;
+          if (typeof host.appendChild === 'function') {
+            host.appendChild(canvas);
           }
         }
       }
     }
 
     // Ensure canvas resides in dedicated chart workspace container instead of direct root sibling
-    if (canvas && container && typeof container.querySelector === 'function') {
-      const chartHost =
-        container.querySelector('[data-testid="chart-container"]') ||
-        container.querySelector('.chart-workspace') ||
-        container.querySelector('.chart-container') ||
-        container.querySelector('[data-testid="workspace"]') ||
-        container.querySelector('.workspace-container') ||
-        container.querySelector('.workspace');
-
-      if (chartHost && canvas.parentElement !== chartHost && typeof chartHost.appendChild === 'function') {
+    if (canvas && container) {
+      const host = chartHost !== container ? chartHost : (workspaceHost || null);
+      if (host && canvas.parentElement !== host && typeof host.appendChild === 'function') {
         if (canvas.parentElement && typeof canvas.parentElement.removeChild === 'function') {
           canvas.parentElement.removeChild(canvas);
         }
-        chartHost.appendChild(canvas);
+        host.appendChild(canvas);
       }
     }
 
@@ -291,6 +321,7 @@ export class Chart {
     this.data = this.candles;
 
     this.theme = {
+      backgroundColor: '#131722',
       upColor: '#26a69a',
       downColor: '#ef5350',
       wickColor: '#787b86',
@@ -637,6 +668,11 @@ export class Chart {
 
     if (typeof ctx.clearRect === 'function') {
       ctx.clearRect(0, 0, width, height);
+    }
+
+    if (typeof ctx.fillRect === 'function') {
+      ctx.fillStyle = this.theme.backgroundColor || '#131722';
+      ctx.fillRect(0, 0, width, height);
     }
 
     const candles = this.candles || [];
