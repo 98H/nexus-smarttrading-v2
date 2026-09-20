@@ -84,7 +84,7 @@ class MockCanvasRenderingContext2D {
 
 class MockElement {
   constructor(tagName, id = '', recordMutation) {
-try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
+    this.tagName = tagName.toUpperCase();
     this.id = id;
     this.recordMutation = recordMutation;
     this.children = [];
@@ -356,7 +356,7 @@ describe('STORY 53.1.1: Resolve STATIC_APPLICATION (Defect DF-LIVENESS-01)', () 
     await loadMainEntrypoint();
 
     const app = env.elements.get('app');
-    const canvasElement = Array.from(app.children).find((child) => child.tagName === 'CANVAS');
+    const canvasElement = app.children.find((child) => child.tagName === 'CANVAS');
 
     let initialPixels = null;
     let initialDomContent = app.innerHTML || app.textContent;
