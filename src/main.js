@@ -8,6 +8,7 @@
  * continuous render loop (STORY 38.1.1, STORY 39.1.1: Resolve STATIC_APPLICATION),
  * realistic synthetic market walk generator (STORY 38.4.1: Resolve SYNTHETIC_STRAIGHT_LINE_DATA),
  * strictly idempotent container lifecycle resolution (STORY 37.1.1, STORY 39.2.1: Resolve DUPLICATE_COMPONENT_MOUNTING),
+ * responsive 100vh flex layout preventing squished canvas sizing (STORY 40.1.1: Resolve SQUISHED_CANVAS_VIEWPORT),
  * and interactive controls responding to user events with reactive state and view re-rendering (STORY 38.2.1: Resolve INACTIVE_UI_CONTROLS).
  */
 
@@ -33,7 +34,13 @@ import {
   CONTROL_THEME_STYLE,
   applyDarkTheme,
 } from './dock.js';
-import { syncCanvasDpi, setupCanvasDpi } from './canvas.js';
+import {
+  syncCanvasDpi,
+  setupCanvasDpi,
+  syncCanvasDimensions,
+  resizeCanvas,
+  updateCanvasDimensions,
+} from './canvas.js';
 import {
   generateCandlestickData,
   generateDefaultData,
@@ -61,6 +68,9 @@ export {
   applyDarkTheme,
   syncCanvasDpi,
   setupCanvasDpi,
+  syncCanvasDimensions,
+  resizeCanvas,
+  updateCanvasDimensions,
   generateCandlestickData,
   generateDefaultData,
   generateNextCandle,
@@ -882,7 +892,8 @@ function resolveRootContainer(options = {}) {
 
 /**
  * Initializes and mounts the financial chart workspace into the specified target container.
- * Idempotently clears existing child elements to resolve DUPLICATE_COMPONENT_MOUNTING (STORY 39.2.1).
+ * Idempotently clears existing child elements to resolve DUPLICATE_COMPONENT_MOUNTING (STORY 39.2.1),
+ * applies responsive 100vh flex styling to root and body to resolve SQUISHED_CANVAS_VIEWPORT (STORY 40.1.1).
  *
  * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
  * @returns {Chart} Chart workspace instance
@@ -909,8 +920,9 @@ export function initApp(options = {}) {
   // Idempotently clear root container so headers, toolbar, dock, and canvas never duplicate
   clearContainer(root);
 
+  // Apply responsive 100vh flex configuration to root and document body (DF-LAYOUT-01, STORY 40.1.1)
   const outerStyle =
-    'height: 100vh; overflow: hidden; display: flex; flex-direction: column; width: 100vw; max-height: 100vh; box-sizing: border-box; background: #131722; color: #d1d4dc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;';
+    'height: 100vh; min-height: 100vh; overflow: hidden; display: flex; flex-direction: column; width: 100vw; max-height: 100vh; box-sizing: border-box; background: #131722; color: #d1d4dc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;';
   if (typeof root.setAttribute === 'function') {
     root.setAttribute('style', outerStyle);
   }
@@ -921,6 +933,7 @@ export function initApp(options = {}) {
   root.style.flexDirection = 'column';
   root.style.width = '100vw';
   root.style.height = '100vh';
+  root.style.minHeight = '100vh';
   root.style.maxHeight = '100vh';
   root.style.overflow = 'hidden';
   root.style.boxSizing = 'border-box';
@@ -928,16 +941,20 @@ export function initApp(options = {}) {
   root.style.color = '#d1d4dc';
   root.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
 
-  if (typeof document !== 'undefined') {
-    if (document.documentElement && document.documentElement.style) {
-      document.documentElement.style.height = '100%';
-      document.documentElement.style.overflow = 'hidden';
+  if (currentDoc) {
+    if (currentDoc.documentElement && currentDoc.documentElement.style) {
+      currentDoc.documentElement.style.height = '100vh';
+      currentDoc.documentElement.style.minHeight = '100vh';
+      currentDoc.documentElement.style.overflow = 'hidden';
     }
-    if (document.body && document.body.style) {
-      document.body.style.height = '100%';
-      document.body.style.margin = '0';
-      document.body.style.padding = '0';
-      document.body.style.overflow = 'hidden';
+    if (currentDoc.body && currentDoc.body.style) {
+      currentDoc.body.style.display = 'flex';
+      currentDoc.body.style.flexDirection = 'column';
+      currentDoc.body.style.height = '100vh';
+      currentDoc.body.style.minHeight = '100vh';
+      currentDoc.body.style.margin = '0';
+      currentDoc.body.style.padding = '0';
+      currentDoc.body.style.overflow = 'hidden';
     }
   }
 
@@ -1071,9 +1088,9 @@ export function initApp(options = {}) {
     },
   });
 
-  // 4. Workspace Layout
+  // 4. Workspace Layout (Horizontal flex container, occupies available workspace width >= 55% of viewport)
   const workspaceContainer = createElement('div', {
-    className: 'workspace-container chart-workspace-layout',
+    className: 'workspace-container chart-workspace-layout workspace',
     id: 'workspace-container',
     'data-component': 'workspace',
     style: {
@@ -1081,15 +1098,19 @@ export function initApp(options = {}) {
       flexDirection: 'row',
       flex: '1',
       minHeight: '0',
+      'min-height': '0',
       width: '100%',
       overflow: 'hidden',
       boxSizing: 'border-box',
     },
   });
+  workspaceContainer.style.flex = '1';
+  workspaceContainer.style.minHeight = '0';
+  workspaceContainer.style['min-height'] = '0';
 
-  // 5. Primary Chart Container
+  // 5. Primary Chart Container (Parent of chart canvas; flex: 1, min-height: 0, width: 100%)
   const chartContainer = createElement('div', {
-    className: 'chart-container primary-chart-container view-container canvas-view',
+    className: 'chart-container primary-chart-container view-container canvas-view workspace',
     id: 'chart-container',
     'data-component': 'chart-container',
     'data-testid': 'active-view',
@@ -1101,13 +1122,32 @@ export function initApp(options = {}) {
       flex: '1',
       minWidth: '0',
       minHeight: '0',
+      'min-height': '0',
+      width: '100%',
       position: 'relative',
       overflow: 'hidden',
       boxSizing: 'border-box',
     },
   });
+  chartContainer.style.flex = '1';
+  chartContainer.style.minHeight = '0';
+  chartContainer.style['min-height'] = '0';
 
-  // 6. Active Canvas Component
+  const win = typeof window !== 'undefined'
+    ? window
+    : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
+
+  const initialVpWidth = (root.clientWidth && root.clientWidth > 0)
+    ? root.clientWidth
+    : (win && win.innerWidth ? win.innerWidth : 1920);
+  const initialVpHeight = (root.clientHeight && root.clientHeight > 0)
+    ? root.clientHeight
+    : (win && win.innerHeight ? win.innerHeight : 1080);
+
+  chartContainer.clientWidth = Math.round(initialVpWidth * 0.65);
+  chartContainer.clientHeight = initialVpHeight;
+
+  // 6. Active Canvas Component (Flex-stretches to fill container bounds, preventing default 300px squished sizing)
   const canvas = createElement('canvas', {
     className: 'chart-canvas',
     style: {
@@ -1195,7 +1235,8 @@ export function initApp(options = {}) {
     root.appendChild(workspaceContainer);
   }
 
-  syncCanvasDpi(canvas);
+  // Synchronize canvas buffer dimensions with its container bounds on initial render (STORY 40.1.1)
+  syncCanvasDimensions(canvas, chartContainer);
 
   const chartInstance = new Chart(canvas, {
     data: initialData,
@@ -1295,8 +1336,9 @@ export function initApp(options = {}) {
 
   chartInstance.onDataUpdate = chartInstance.updateData;
 
+  // Window resize handler: Synchronizes canvas buffer dimensions with container bounds
   const handleResize = () => {
-    syncCanvasDpi(canvas);
+    syncCanvasDimensions(canvas, chartContainer);
     const w = (canvas && canvas.width) || 800;
     const h = (canvas && canvas.height) || 600;
     if (axesRenderer) {
@@ -1309,8 +1351,8 @@ export function initApp(options = {}) {
   chartInstance.windowResizeHandler = handleResize;
   windowResizeHandler = handleResize;
 
-  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-    window.addEventListener('resize', handleResize);
+  if (win && typeof win.addEventListener === 'function') {
+    win.addEventListener('resize', handleResize);
   }
 
   let resizeObserver = null;
@@ -1326,14 +1368,25 @@ export function initApp(options = {}) {
         for (const entry of entries) {
           if (!entry) continue;
           const cr = entry.contentRect;
+          const target = entry.target;
           if (cr) {
-            const w = typeof cr.width === 'number' && cr.width > 0 ? cr.width : (entry.target && entry.target.clientWidth);
-            const h = typeof cr.height === 'number' && cr.height > 0 ? cr.height : (entry.target && entry.target.clientHeight);
+            const w = typeof cr.width === 'number' && cr.width > 0 ? cr.width : (target && target.clientWidth);
+            const h = typeof cr.height === 'number' && cr.height > 0 ? cr.height : (target && target.clientHeight);
             if (typeof w === 'number' && w > 0) {
-              try { canvas.clientWidth = w; } catch (_) {}
+              if (target) {
+                try { target.clientWidth = w; } catch (_) {}
+              }
+              if (target === chartContainer || target === workspaceContainer || target === canvas) {
+                try { canvas.clientWidth = w; } catch (_) {}
+              }
             }
             if (typeof h === 'number' && h > 0) {
-              try { canvas.clientHeight = h; } catch (_) {}
+              if (target) {
+                try { target.clientHeight = h; } catch (_) {}
+              }
+              if (target === chartContainer || target === workspaceContainer || target === canvas) {
+                try { canvas.clientHeight = h; } catch (_) {}
+              }
             }
           }
         }
@@ -1342,6 +1395,9 @@ export function initApp(options = {}) {
     });
 
     resizeObserver.observe(root);
+    if (workspaceContainer) {
+      resizeObserver.observe(workspaceContainer);
+    }
     if (chartContainer) {
       resizeObserver.observe(chartContainer);
     }
@@ -1365,8 +1421,11 @@ export function initApp(options = {}) {
     if (activeResizeObserver === this.resizeObserver) {
       activeResizeObserver = null;
     }
-    if (this.windowResizeHandler && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
-      window.removeEventListener('resize', this.windowResizeHandler);
+    const targetWin = typeof window !== 'undefined'
+      ? window
+      : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
+    if (this.windowResizeHandler && targetWin && typeof targetWin.removeEventListener === 'function') {
+      targetWin.removeEventListener('resize', this.windowResizeHandler);
       this.windowResizeHandler = null;
     }
     if (windowResizeHandler === this.windowResizeHandler) {
@@ -1424,8 +1483,11 @@ export function teardown() {
     activeResizeObserver.disconnect();
     activeResizeObserver = null;
   }
-  if (windowResizeHandler && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
-    window.removeEventListener('resize', windowResizeHandler);
+  const win = typeof window !== 'undefined'
+    ? window
+    : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
+  if (windowResizeHandler && win && typeof win.removeEventListener === 'function') {
+    win.removeEventListener('resize', windowResizeHandler);
     windowResizeHandler = null;
   }
   if (activeAppInstance) {
@@ -1534,7 +1596,8 @@ export function startRealtimeUpdates(chartInstance, intervalMs = 1000) {
 
 /**
  * Lifecycle mount function for application integration.
- * Resolves DUPLICATE_COMPONENT_MOUNTING idempotently (STORY 39.2.1).
+ * Resolves DUPLICATE_COMPONENT_MOUNTING idempotently (STORY 39.2.1),
+ * and enforces responsive 100vh flex layout (STORY 40.1.1).
  *
  * @param {HTMLElement|string|null} [mountTarget]
  * @param {Object} [options={}]

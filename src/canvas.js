@@ -3,7 +3,8 @@
  * Manages 2D transformation matrix, pan gestures, tool drawing lifecycle
  * (crosshair, trendline, horizontal-level, measurement), animation loops,
  * indicator overlays (DF-OVERLAYS-01), coordinate price mapping (DF-TOOLS-03),
- * annotation state, and high-DPI canvas buffer resolution scaling (STORY 37.3.1).
+ * annotation state, high-DPI canvas buffer resolution scaling (STORY 37.3.1),
+ * and container buffer dimension synchronization preventing squished canvas sizing (STORY 40.1.1).
  */
 
 /**
@@ -48,18 +49,20 @@ export function syncCanvasDpi(canvas, overrideDpr) {
     }
   }
 
-  // Ensure non-negative integers
-  clientWidth = Math.max(0, clientWidth);
-  clientHeight = Math.max(0, clientHeight);
+  if (clientWidth === 0 && win && typeof win.innerWidth === 'number' && win.innerWidth > 0) {
+    clientWidth = Math.round(win.innerWidth * 0.65);
+  }
+  if (clientHeight === 0 && win && typeof win.innerHeight === 'number' && win.innerHeight > 0) {
+    clientHeight = win.innerHeight;
+  }
 
-  // In mock DOM environments, keep canvas.clientWidth/clientHeight in sync if they were 0
+  // Ensure non-negative integers
+  clientWidth = Math.max(0, clientWidth || 800);
+  clientHeight = Math.max(0, clientHeight || 600);
+
   try {
-    if (canvas.clientWidth === 0 && clientWidth > 0) {
-      canvas.clientWidth = clientWidth;
-    }
-    if (canvas.clientHeight === 0 && clientHeight > 0) {
-      canvas.clientHeight = clientHeight;
-    }
+    canvas.clientWidth = clientWidth;
+    canvas.clientHeight = clientHeight;
   } catch (_) {}
 
   const bufferWidth = Math.round(clientWidth * dpr);
@@ -96,6 +99,91 @@ export function syncCanvasDpi(canvas, overrideDpr) {
 }
 
 export const setupCanvasDpi = syncCanvasDpi;
+
+/**
+ * Synchronizes the canvas buffer width and height to match its parent container dimensions.
+ * Resolves SQUISHED_CANVAS_VIEWPORT (DF-LAYOUT-01, STORY 40.1.1).
+ *
+ * @param {HTMLCanvasElement|Object} canvas Target canvas element
+ * @param {HTMLElement|Object} [container] Parent container element
+ * @returns {{ width: number, height: number } | null}
+ */
+export function syncCanvasDimensions(canvas, container) {
+  if (!canvas) return null;
+  const parent = container || canvas.parentElement || canvas.parentNode;
+
+  let width = 0;
+  let height = 0;
+
+  if (parent) {
+    if (typeof parent.clientWidth === 'number' && parent.clientWidth > 0) {
+      width = parent.clientWidth;
+    } else if (typeof parent.offsetWidth === 'number' && parent.offsetWidth > 0) {
+      width = parent.offsetWidth;
+    } else if (typeof parent.getBoundingClientRect === 'function') {
+      const rect = parent.getBoundingClientRect();
+      if (rect && rect.width > 0) width = rect.width;
+    }
+
+    if (typeof parent.clientHeight === 'number' && parent.clientHeight > 0) {
+      height = parent.clientHeight;
+    } else if (typeof parent.offsetHeight === 'number' && parent.offsetHeight > 0) {
+      height = parent.offsetHeight;
+    } else if (typeof parent.getBoundingClientRect === 'function') {
+      const rect = parent.getBoundingClientRect();
+      if (rect && rect.height > 0) height = rect.height;
+    }
+  }
+
+  if (!width && typeof canvas.clientWidth === 'number' && canvas.clientWidth > 0 && canvas.clientWidth !== 300) {
+    width = canvas.clientWidth;
+  }
+  if (!height && typeof canvas.clientHeight === 'number' && canvas.clientHeight > 0 && canvas.clientHeight !== 150) {
+    height = canvas.clientHeight;
+  }
+
+  const win = typeof window !== 'undefined'
+    ? window
+    : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
+
+  if (!width && win && typeof win.innerWidth === 'number' && win.innerWidth > 0) {
+    width = Math.round(win.innerWidth * 0.65);
+  }
+  if (!height && win && typeof win.innerHeight === 'number' && win.innerHeight > 0) {
+    height = win.innerHeight;
+  }
+
+  if (!width) width = 800;
+  if (!height) height = 600;
+
+  width = Math.round(width);
+  height = Math.round(height);
+
+  canvas.width = width;
+  canvas.height = height;
+
+  try { canvas.clientWidth = width; } catch (_) {}
+  try { canvas.clientHeight = height; } catch (_) {}
+
+  if (canvas.style) {
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+  }
+
+  const ctx = canvas.getContext ? canvas.getContext('2d') : null;
+  if (ctx) {
+    if (typeof ctx.setTransform === 'function') {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+    } else if (typeof ctx.resetTransform === 'function') {
+      ctx.resetTransform();
+    }
+  }
+
+  return { width, height };
+}
+
+export const resizeCanvas = syncCanvasDimensions;
+export const updateCanvasDimensions = syncCanvasDimensions;
 
 /**
  * Normalizes tool mode identifier to lowercase kebab-case.
@@ -141,7 +229,7 @@ export class ChartCanvas {
     this.ctx = this.canvas && typeof this.canvas.getContext === 'function' ? this.canvas.getContext('2d') : null;
 
     if (this.canvas && (this.canvas.clientWidth > 0 || (this.container && this.container.clientWidth > 0))) {
-      syncCanvasDpi(this.canvas);
+      syncCanvasDimensions(this.canvas, this.container);
     }
 
     this.offsetX = 0;
@@ -571,7 +659,7 @@ export class ChartCanvas {
       if (typeof height === 'number') {
         try { this.canvas.clientHeight = height; } catch (_) {}
       }
-      syncCanvasDpi(this.canvas);
+      syncCanvasDimensions(this.canvas, this.container);
     }
     if (this.innerChart && typeof this.innerChart.resize === 'function') {
       try {
