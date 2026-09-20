@@ -4,6 +4,57 @@
  * multi-timeframe candle management, aggregation, and interactive gestures.
  */
 
+// Polyfill WheelEvent & ensure Event.prototype.defaultPrevented is mutable in headless/Node runtimes
+if (typeof globalThis !== 'undefined') {
+  if (typeof globalThis.WheelEvent === 'undefined') {
+    class WheelEventPolyfill extends (globalThis.Event || Object) {
+      constructor(type, eventInitDict = {}) {
+        super(type, eventInitDict);
+        this.deltaY = eventInitDict.deltaY ?? 0;
+        this.deltaX = eventInitDict.deltaX ?? 0;
+        this.deltaZ = eventInitDict.deltaZ ?? 0;
+        this.clientX = eventInitDict.clientX ?? 0;
+        this.clientY = eventInitDict.clientY ?? 0;
+        let isDefaultPrevented = false;
+        Object.defineProperty(this, 'defaultPrevented', {
+          get() {
+            return Boolean(super.defaultPrevented || isDefaultPrevented);
+          },
+          set(val) {
+            isDefaultPrevented = Boolean(val);
+          },
+          configurable: true,
+          enumerable: true,
+        });
+      }
+
+      preventDefault() {
+        super.preventDefault?.();
+        this.defaultPrevented = true;
+      }
+    }
+
+    globalThis.WheelEvent = WheelEventPolyfill;
+  }
+
+  if (globalThis.Event?.prototype) {
+    const desc = Object.getOwnPropertyDescriptor(globalThis.Event.prototype, 'defaultPrevented');
+    if (desc && !desc.set && desc.configurable) {
+      const preventedMap = new WeakMap();
+      Object.defineProperty(globalThis.Event.prototype, 'defaultPrevented', {
+        get() {
+          return Boolean(desc.get?.call(this) || preventedMap.get(this));
+        },
+        set(val) {
+          preventedMap.set(this, Boolean(val));
+        },
+        configurable: true,
+        enumerable: desc.enumerable,
+      });
+    }
+  }
+}
+
 export const DEFAULT_MIN_ZOOM = 0.5;
 export const DEFAULT_MAX_ZOOM = 5.0;
 
@@ -130,11 +181,13 @@ export class Chart {
     const initScale =
       initialViewport.scale !== undefined
         ? initialViewport.scale
-        : opts.initialZoom !== undefined
-          ? opts.initialZoom
-          : opts.zoom !== undefined
-            ? opts.zoom
-            : 1.0;
+        : opts.zoomFactor !== undefined
+          ? opts.zoomFactor
+          : opts.initialZoom !== undefined
+            ? opts.initialZoom
+            : opts.zoom !== undefined
+              ? opts.zoom
+              : 1.0;
 
     const initOffsetX =
       initialViewport.offsetX !== undefined
@@ -152,7 +205,7 @@ export class Chart {
     this.viewport = {
       offsetX: initOffsetX,
       offsetY: initOffsetY,
-      scale: initScale,
+      scale: Math.min(this.maxZoom, Math.max(this.minZoom, initScale)),
     };
 
     this.isPanning = false;
@@ -164,8 +217,8 @@ export class Chart {
     this.dragStartPoint = { x: 0, y: 0 };
     this.dragStartOffset = { x: 0, y: 0 };
 
-    this.timeScale = { min: 0, max: 1 };
-    this.priceScale = { min: 0, max: 1 };
+    this.timeScale = { min: 0, max: 1, domain: [0, 1] };
+    this.priceScale = { min: 0, max: 1, domain: [0, 1] };
 
     this.handleWheel = this.handleWheel.bind(this);
     this.handleMouseDown = this.handleMouseDown.bind(this);
@@ -182,6 +235,7 @@ export class Chart {
     }
 
     this.updateScales();
+    this.render();
   }
 
   updateAggregatedCandles() {
@@ -344,6 +398,14 @@ export class Chart {
     this.viewport.scale = val;
   }
 
+  get zoomFactor() {
+    return this.viewport.scale;
+  }
+
+  set zoomFactor(val) {
+    this.viewport.scale = val;
+  }
+
   get viewportOffset() {
     return {
       x: this.viewport.offsetX,
@@ -402,9 +464,9 @@ export class Chart {
     return {
       min: this.timeScale.min,
       max: this.timeScale.max,
-      domain: [this.timeScale.min, this.timeScale.max],
+      domain: [...this.timeScale.domain],
       range: [0, width],
-      zoom: this.zoom,
+      zoom: this.zoomFactor,
     };
   }
 
@@ -414,16 +476,16 @@ export class Chart {
     return {
       min: this.priceScale.min,
       max: this.priceScale.max,
-      domain: [this.priceScale.min, this.priceScale.max],
+      domain: [...this.priceScale.domain],
       range: [height, 0],
-      zoom: this.zoom,
+      zoom: this.zoomFactor,
     };
   }
 
   updateScales() {
     if (!this.data || this.data.length === 0) {
-      this.timeScale = { min: 0, max: 1 };
-      this.priceScale = { min: 0, max: 1 };
+      this.timeScale = { min: 0, max: 1, domain: [0, 1] };
+      this.priceScale = { min: 0, max: 1, domain: [0, 1] };
       return;
     }
 
@@ -443,20 +505,27 @@ export class Chart {
 
     const timeSpan = maxTime - minTime || 3600;
     const centerTime = (minTime + maxTime) / 2;
-    const visibleTimeSpan = timeSpan / this.zoom;
+    const visibleTimeSpan = timeSpan / this.zoomFactor;
 
     const priceSpan = maxPrice - minPrice || 10;
     const centerPrice = (minPrice + maxPrice) / 2;
-    const visiblePriceSpan = priceSpan / this.zoom;
+    const visiblePriceSpan = priceSpan / this.zoomFactor;
+
+    const timeMin = centerTime - visibleTimeSpan / 2;
+    const timeMax = centerTime + visibleTimeSpan / 2;
+    const priceMin = centerPrice - visiblePriceSpan / 2;
+    const priceMax = centerPrice + visiblePriceSpan / 2;
 
     this.timeScale = {
-      min: centerTime - visibleTimeSpan / 2,
-      max: centerTime + visibleTimeSpan / 2,
+      min: timeMin,
+      max: timeMax,
+      domain: [timeMin, timeMax],
     };
 
     this.priceScale = {
-      min: centerPrice - visiblePriceSpan / 2,
-      max: centerPrice + visiblePriceSpan / 2,
+      min: priceMin,
+      max: priceMax,
+      domain: [priceMin, priceMax],
     };
   }
 
@@ -510,15 +579,17 @@ export class Chart {
       event.preventDefault();
     }
 
-    const deltaY = event.deltaY ?? 0;
+    const deltaY = typeof event.deltaY === 'number' && Number.isFinite(event.deltaY) ? event.deltaY : 0;
     if (deltaY === 0) return;
 
-    const zoomFactor = Math.exp(-deltaY * 0.001);
-    const nextZoom = Math.min(this.maxZoom, Math.max(this.minZoom, this.zoom * zoomFactor));
+    const zoomMultiplier = Math.exp(-deltaY * 0.001);
+    const nextZoom = Math.min(this.maxZoom, Math.max(this.minZoom, this.zoomFactor * zoomMultiplier));
 
-    if (nextZoom === this.zoom) return;
+    if (nextZoom === this.zoomFactor) {
+      return;
+    }
 
-    this.zoom = nextZoom;
+    this.zoomFactor = nextZoom;
     this.updateScales();
     this.render();
   }
@@ -561,8 +632,20 @@ export class Chart {
 
     this.computeCoordinates();
 
+<<<<<<< HEAD
     for (let i = 0; i < this.candleCoordinates.length; i++) {
       const coord = this.candleCoordinates[i];
+=======
+    this.updateScales();
+    const { min: minTime, max: maxTime } = this.timeScale;
+    const { min: minPrice, max: maxPrice } = this.priceScale;
+
+    const timeRange = maxTime - minTime || 1;
+    const priceRange = maxPrice - minPrice || 1;
+    const candleWidth = Math.max(2, (width / this.data.length) * 0.6 * this.zoomFactor);
+
+    for (let i = 0; i < this.data.length; i++) {
+>>>>>>> task/story-574da399
       const candle = this.data[i];
       const isBull = candle.close >= candle.open;
       const color = isBull ? '#00f5a0' : '#ff3b69';

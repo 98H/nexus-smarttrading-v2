@@ -603,6 +603,14 @@ export function mountApp(container, options = {}) {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+export const mount = mountApp;
+export const init = mountApp;
+export const initialize = mountApp;
+export const initApp = mountApp;
+
+>>>>>>> task/story-574da399
 // Browser Auto-Mount Bootstrap Guard
 =======
 export const mount = mountApp;
@@ -616,9 +624,12 @@ export const initialize = initApp;
 
 >>>>>>> task/story-44727988
 if (typeof document !== 'undefined') {
-  const mountTarget = document.getElementById('app') || document.body;
+  const mountTarget =
+    (typeof document.getElementById === 'function' ? document.getElementById('app') : null) ||
+    document.body;
   if (mountTarget && !mountTarget.__nexus_mounted) {
     mountTarget.__nexus_mounted = true;
+<<<<<<< HEAD
 <<<<<<< HEAD
     if (typeof mountApp === 'function') {
       mountApp(mountTarget);
@@ -635,3 +646,9 @@ if (typeof document !== 'undefined') {
   }
 }
 >>>>>>> task/story-44727988
+=======
+    if (typeof mountApp === 'function') mountApp(mountTarget);
+    else if (typeof mount === 'function') mount(mountTarget);
+  }
+}
+>>>>>>> task/story-574da399
