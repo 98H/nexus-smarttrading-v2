@@ -1,7 +1,7 @@
 /**
  * SmartTrading-V2 — Candlestick Chart Engine & Timeseries Aggregation
- * Implements viewport sector coverage, interactive pan gestures,
- * responsive canvas zoom scaling, and high-density financial charting.
+ * Implements coordinate axes (price & time scales), gridline rendering,
+ * viewport sector coverage, interactive pan gestures, and zoom scaling.
  */
 
 /**
@@ -31,6 +31,26 @@ export function getTimeframeDuration(timeframe) {
     default:
       return 60 * 1000;
   }
+}
+
+/**
+ * Formats a timestamp into a standard axis time string (MM/DD HH:mm).
+ *
+ * @param {number} timestamp - Unix timestamp in seconds or milliseconds
+ * @returns {string} Formatted label
+ */
+export function formatAxisTime(timestamp) {
+  if (timestamp === undefined || timestamp === null || isNaN(timestamp)) {
+    return '00:00';
+  }
+  const ms = timestamp < 1e11 ? timestamp * 1000 : timestamp;
+  const d = new Date(ms);
+  if (isNaN(d.getTime())) return '00:00';
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${m}/${day} ${h}:${min}`;
 }
 
 /**
@@ -137,7 +157,7 @@ export function aggregateCandles(candles, timeframe) {
 
 /**
  * Interactive HTML5 Canvas Candlestick Chart Engine.
- * Manages rendering, scaling, viewport panning, and real-time updates.
+ * Manages rendering, scaling, viewport panning, coordinate axes, and real-time updates.
  */
 export class Chart {
   constructor(canvasOrOptions, maybeOptions = {}) {
@@ -174,6 +194,9 @@ export class Chart {
       upColor: '#26a69a',
       downColor: '#ef5350',
       wickColor: '#787b86',
+      gridColor: '#2a2e39',
+      axisColor: '#4c525e',
+      textColor: '#848e9c',
       ...(options.theme || {}),
     };
 
@@ -190,9 +213,15 @@ export class Chart {
 
     this._setupInteractivity();
 
-    if (options.autoRender !== false) {
+    if (options.autoRender === true) {
       this.render();
     }
+  }
+
+  setData(data) {
+    this.candles = Array.isArray(data) ? [...data] : [];
+    this.data = this.candles;
+    this.candleCount = this.candles.length;
   }
 
   getViewportOffset() {
@@ -233,7 +262,7 @@ export class Chart {
     if (typeof factor !== 'number' || isNaN(factor) || factor <= 0) return;
     const currentScale = typeof this.zoomScale === 'number' && this.zoomScale > 0 ? this.zoomScale : 1.0;
     this.zoomScale = Math.max(0.01, Math.round(currentScale * factor * 10000) / 10000);
-    this.render();
+    this.draw();
   }
 
   /**
@@ -262,7 +291,7 @@ export class Chart {
   pan(dx, dy = 0) {
     this.viewportOffset.x += dx;
     this.viewportOffset.y += dy;
-    this.render();
+    this.draw();
   }
 
   _setupInteractivity() {
@@ -289,7 +318,7 @@ export class Chart {
       const dy = clientY - this._panStart.y;
       this.viewportOffset.x = this._initialOffset.x + dx;
       this.viewportOffset.y = this._initialOffset.y + dy;
-      this.render();
+      this.draw();
     };
 
     const onMouseUp = () => {
@@ -338,12 +367,12 @@ export class Chart {
       this.candles = generateCandleSeries({ count: this.candleCount || 75 });
     }
     this.data = this.candles;
-    this.render();
+    this.draw();
   }
 
   start() {
     if (this._intervalId) return;
-    this.render();
+    this.draw();
     this._intervalId = setInterval(() => {
       this.tick();
     }, 2000);
@@ -372,44 +401,69 @@ export class Chart {
     last.close = Math.round((last.close + change) * 100) / 100;
     last.high = Math.max(last.high, last.close);
     last.low = Math.min(last.low, last.close);
+    this.draw();
+  }
+
+  resize(width, height) {
+    if (this.canvas) {
+      if (typeof width === 'number') this.canvas.width = width;
+      if (typeof height === 'number') this.canvas.height = height;
+    }
+    this.draw();
+  }
+
+  draw() {
     this.render();
   }
 
   /**
-   * Renders the candlestick series to the active canvas with applied viewport offset and zoom scale.
+   * Primary canvas drawing routine. Renders coordinate gridlines, candlesticks,
+   * right-hand price scale axis, and bottom time scale axis with ticks and labels.
    */
   render() {
     if (!this.canvas || typeof this.canvas.getContext !== 'function') return;
     const ctx = this.canvas.getContext('2d');
     if (!ctx) return;
 
-    const width = this.canvas.width || 1000;
+    const width = this.canvas.width || 800;
     const height = this.canvas.height || 500;
+
+    const layout = this.options.layout || {};
+    const rightMargin = typeof layout.rightMargin === 'number'
+      ? layout.rightMargin
+      : (typeof this.options.rightMargin === 'number' ? this.options.rightMargin : 60);
+
+    const bottomMargin = typeof layout.bottomMargin === 'number'
+      ? layout.bottomMargin
+      : (typeof this.options.bottomMargin === 'number' ? this.options.bottomMargin : 30);
+
+    const topMargin = typeof layout.topMargin === 'number'
+      ? layout.topMargin
+      : (typeof this.options.topMargin === 'number' ? this.options.topMargin : 10);
+
+    const leftMargin = typeof layout.leftMargin === 'number'
+      ? layout.leftMargin
+      : (typeof this.options.leftMargin === 'number' ? this.options.leftMargin : 10);
+
+    const plotWidth = width - rightMargin;
+    const plotHeight = height - bottomMargin;
 
     if (typeof ctx.clearRect === 'function') {
       ctx.clearRect(0, 0, width, height);
     }
 
-    if (typeof ctx.save === 'function') {
-      ctx.save();
-    }
+    const candles = this.candles || [];
+    const n = candles.length;
 
-    if (typeof ctx.translate === 'function') {
-      ctx.translate(this.viewportOffset.x, this.viewportOffset.y);
-    }
-
-    const candles = this.candles;
-    const n = candles ? candles.length : 0;
-    if (n === 0) {
-      if (typeof ctx.restore === 'function') ctx.restore();
-      return;
-    }
-
+    // Resolve price range across dataset
     let minPrice = Infinity;
     let maxPrice = -Infinity;
-    for (const c of candles) {
-      if (typeof c.low === 'number' && c.low < minPrice) minPrice = c.low;
-      if (typeof c.high === 'number' && c.high > maxPrice) maxPrice = c.high;
+    for (let i = 0; i < n; i++) {
+      const c = candles[i];
+      const low = typeof c.low === 'number' ? c.low : (c.close ?? 100);
+      const high = typeof c.high === 'number' ? c.high : (c.close ?? 100);
+      if (low < minPrice) minPrice = low;
+      if (high > maxPrice) maxPrice = high;
     }
 
     if (!Number.isFinite(minPrice) || !Number.isFinite(maxPrice) || minPrice === maxPrice) {
@@ -417,26 +471,75 @@ export class Chart {
       maxPrice = 150;
     }
 
-    const priceRange = maxPrice - minPrice;
-    const pad = priceRange * 0.1 || 5;
+    const priceRange = maxPrice - minPrice || 1;
+    const pad = priceRange * 0.25;
     const effectiveMin = minPrice - pad;
     const effectiveMax = maxPrice + pad;
     const effectiveRange = effectiveMax - effectiveMin;
 
-    const marginTop = 30;
-    const marginBottom = 30;
-    const plotHeight = Math.max(10, height - marginTop - marginBottom);
+    const plotAreaTop = topMargin;
+    const plotAreaHeight = Math.max(10, plotHeight - plotAreaTop);
 
-    const getY = (price) => marginTop + plotHeight * (1 - (price - effectiveMin) / effectiveRange);
+    const getY = (price) => plotAreaTop + plotAreaHeight * (1 - (price - effectiveMin) / effectiveRange);
 
     const scale = typeof this.zoomScale === 'number' && this.zoomScale > 0 ? this.zoomScale : 1.0;
-    const leftMargin = width * 0.02;
-    const rightMargin = width * 0.04;
-    const availableWidth = width - leftMargin - rightMargin;
+    const candleWidth = Math.max(2, Math.floor(((plotWidth - leftMargin) / Math.max(1, n)) * 0.7 * scale));
+    const availableWidth = Math.max(10, plotWidth - leftMargin - candleWidth);
     const baseStep = n > 1 ? availableWidth / (n - 1) : availableWidth;
     const step = baseStep * scale;
-    const candleWidth = Math.max(2, Math.floor(step * 0.7));
 
+    // Compute Price Ticks (encompasses minPrice and maxPrice)
+    const priceTickCount = 5;
+    const priceTicks = [];
+    for (let i = 0; i < priceTickCount; i++) {
+      const p = minPrice + (i / (priceTickCount - 1)) * (maxPrice - minPrice);
+      priceTicks.push({
+        price: p,
+        y: getY(p),
+      });
+    }
+
+    // Compute Time Ticks
+    const timeTickCount = Math.min(Math.max(3, n), 5);
+    const timeTicks = [];
+    for (let i = 0; i < timeTickCount; i++) {
+      const idx = n > 1 ? Math.round((i * (n - 1)) / (timeTickCount - 1)) : i;
+      const c = candles[idx] || (candles[0] || { time: Date.now() });
+      const t = c.time ?? c.timestamp ?? Date.now();
+      const x = Math.round(leftMargin + idx * step + candleWidth / 2);
+      timeTicks.push({
+        time: t,
+        x,
+      });
+    }
+
+    // -------------------------------------------------------------------------
+    // STEP 1: Coordinate Gridlines (rendered BEHIND candlesticks)
+    // -------------------------------------------------------------------------
+    ctx.strokeStyle = this.theme.gridColor || '#2a2e39';
+    ctx.lineWidth = 1;
+
+    // Horizontal gridlines extending across the plot area horizontally (length >= 400)
+    for (let i = 0; i < priceTicks.length; i++) {
+      const y = Math.round(priceTicks[i].y);
+      if (typeof ctx.beginPath === 'function') ctx.beginPath();
+      if (typeof ctx.moveTo === 'function') ctx.moveTo(0, y);
+      if (typeof ctx.lineTo === 'function') ctx.lineTo(plotWidth, y);
+      if (typeof ctx.stroke === 'function') ctx.stroke();
+    }
+
+    // Vertical gridlines extending across the plot area vertically (length >= 200)
+    for (let i = 0; i < timeTicks.length; i++) {
+      const x = Math.round(timeTicks[i].x);
+      if (typeof ctx.beginPath === 'function') ctx.beginPath();
+      if (typeof ctx.moveTo === 'function') ctx.moveTo(x, 0);
+      if (typeof ctx.lineTo === 'function') ctx.lineTo(x, plotHeight);
+      if (typeof ctx.stroke === 'function') ctx.stroke();
+    }
+
+    // -------------------------------------------------------------------------
+    // STEP 2: Candlesticks (Bodies and Wicks)
+    // -------------------------------------------------------------------------
     for (let i = 0; i < n; i++) {
       const candle = candles[i];
       const candleX = Math.round(leftMargin + i * step);
@@ -452,23 +555,63 @@ export class Chart {
       const isUp = candle.close >= candle.open;
 
       const color = isUp ? this.theme.upColor : this.theme.downColor;
-      ctx.strokeStyle = color;
       ctx.fillStyle = color;
+      ctx.strokeStyle = color;
+
+      // Draw candle body first
+      if (typeof ctx.fillRect === 'function') {
+        ctx.fillRect(candleX, Math.round(bodyTop), candleWidth, Math.round(bodyHeight));
+      }
 
       // Draw high/low wick
       if (typeof ctx.beginPath === 'function') ctx.beginPath();
       if (typeof ctx.moveTo === 'function') ctx.moveTo(candleCenterX, Math.round(highY));
       if (typeof ctx.lineTo === 'function') ctx.lineTo(candleCenterX, Math.round(lowY));
       if (typeof ctx.stroke === 'function') ctx.stroke();
+    }
 
-      // Draw candle body
-      if (typeof ctx.fillRect === 'function') {
-        ctx.fillRect(candleX, Math.round(bodyTop), candleWidth, Math.round(bodyHeight));
+    // -------------------------------------------------------------------------
+    // STEP 3: Coordinate Axes (Right-hand price scale & Bottom time scale)
+    // -------------------------------------------------------------------------
+    ctx.strokeStyle = this.theme.axisColor || '#4c525e';
+    ctx.fillStyle = this.theme.textColor || '#848e9c';
+    ctx.lineWidth = 1;
+    ctx.font = '11px sans-serif';
+
+    // Right-hand price scale tick marks and numeric labels
+    for (let i = 0; i < priceTicks.length; i++) {
+      const pt = priceTicks[i];
+      const y = Math.round(pt.y);
+
+      // Short horizontal tick mark at x >= plotWidth - 1
+      if (typeof ctx.beginPath === 'function') ctx.beginPath();
+      if (typeof ctx.moveTo === 'function') ctx.moveTo(plotWidth, y);
+      if (typeof ctx.lineTo === 'function') ctx.lineTo(plotWidth + 5, y);
+      if (typeof ctx.stroke === 'function') ctx.stroke();
+
+      // Price label on right axis (x >= plotWidth)
+      const priceLabel = pt.price.toFixed(2);
+      if (typeof ctx.fillText === 'function') {
+        ctx.fillText(priceLabel, plotWidth + 8, y + 4);
       }
     }
 
-    if (typeof ctx.restore === 'function') {
-      ctx.restore();
+    // Bottom time scale tick marks and formatted time labels
+    for (let i = 0; i < timeTicks.length; i++) {
+      const tt = timeTicks[i];
+      const x = Math.round(tt.x);
+
+      // Short vertical tick mark at y >= plotHeight - 1
+      if (typeof ctx.beginPath === 'function') ctx.beginPath();
+      if (typeof ctx.moveTo === 'function') ctx.moveTo(x, plotHeight);
+      if (typeof ctx.lineTo === 'function') ctx.lineTo(x, plotHeight + 5);
+      if (typeof ctx.stroke === 'function') ctx.stroke();
+
+      // Formatted time label in bottom margin (y >= plotHeight)
+      const timeLabel = formatAxisTime(tt.time);
+      if (typeof ctx.fillText === 'function') {
+        ctx.fillText(timeLabel, x - 15, plotHeight + 18);
+      }
     }
   }
 }
