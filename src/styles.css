@@ -42,7 +42,9 @@ body {
   overflow: hidden;
 }
 
-#app {
+#app,
+.dark-theme,
+[data-theme="dark"] {
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -59,6 +61,10 @@ select,
 textarea,
 .form-control,
 .dark-control,
+.btn-dark,
+.select-dark,
+.dark-theme button,
+.dark-theme select,
 input[type="button"],
 input[type="submit"],
 input[type="reset"],
@@ -88,7 +94,10 @@ button:focus,
 input:focus,
 select:focus,
 textarea:focus,
-.form-control:focus {
+.form-control:focus,
+.dark-control:focus,
+.btn-dark:focus,
+.select-dark:focus {
   border-color: var(--border-focus);
   box-shadow: 0 0 0 2px rgba(41, 98, 255, 0.25);
 }
@@ -101,6 +110,10 @@ input:hover,
 select:hover,
 textarea:hover,
 .dark-control:hover,
+.btn-dark:hover,
+.select-dark:hover,
+.dark-theme button:hover,
+.dark-theme select:hover,
 .form-control:hover {
   background-color: var(--control-bg-hover);
   border-color: var(--border-focus);
@@ -115,6 +128,10 @@ input:active,
 select:active,
 textarea:active,
 .dark-control:active,
+.btn-dark:active,
+.select-dark:active,
+.dark-theme button:active,
+.dark-theme select:active,
 .form-control:active {
   background-color: var(--control-bg-active);
   transform: translateY(1px);
@@ -129,6 +146,7 @@ textarea:active,
   padding: 8px 16px;
   color: #ffffff;
   font-weight: 600;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
 }
 
 .btn-buy:hover {
@@ -148,6 +166,7 @@ textarea:active,
   padding: 8px 16px;
   color: #ffffff;
   font-weight: 600;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
 }
 
 .btn-sell:hover {
@@ -164,14 +183,21 @@ textarea:active,
   background-color: var(--surface-color);
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  padding: 4px 8px;
+  padding: 6px 12px;
   color: var(--text-secondary);
   font-size: 12px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .timeframe-btn:hover {
   background-color: var(--control-bg-hover);
   color: var(--text-light);
+}
+
+.timeframe-btn:active {
+  background-color: var(--control-bg-active);
+  transform: translateY(1px);
 }
 
 .timeframe-btn.active {
@@ -188,11 +214,18 @@ textarea:active,
   color: var(--text-primary);
   font-size: 12px;
   text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .tool-btn:hover {
   background-color: var(--control-bg-hover);
   border-color: var(--border-focus);
+}
+
+.tool-btn:active {
+  background-color: var(--control-bg-active);
+  transform: translateY(1px);
 }
 
 /* Structured Application Header & Toolbar */
@@ -230,6 +263,20 @@ textarea:active,
   background-color: var(--control-bg);
   color: var(--text-primary);
   font-size: 13px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.ticker-control:hover,
+.ticker-selector:hover {
+  background-color: var(--control-bg-hover);
+  border-color: var(--border-focus);
+  color: var(--text-light);
+}
+
+.ticker-control:active,
+.ticker-selector:active {
+  background-color: var(--control-bg-active);
 }
 
 .timeframe-controls {
