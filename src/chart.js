@@ -69,8 +69,8 @@ function ensureContextMethods(ctx) {
         };
       } else {
         ctx[m] = function (...args) {
-          if (Array.isArray(this.calls)) {
-            this.calls.push({ method: m, args });
+          if (Array.isArray(this.drawCalls)) {
+            this.drawCalls.push({ type: m, args });
           }
         };
       }
@@ -217,18 +217,32 @@ export function generateDefaultCandles(count = 60) {
 }
 
 /**
- * Formats a UNIX timestamp into a human-readable string (MM/DD HH:mm).
+ * Formats a UNIX timestamp into a human-readable date/time string according to span.
  *
  * @param {number} ts - Seconds or milliseconds timestamp
- * @returns {string}
+ * @param {number} [span] - Optional total visible domain time span
+ * @returns {string} Formatted timestamp
  */
-export function formatTimestamp(ts) {
+export function formatTimestamp(ts, span) {
   if (typeof ts !== 'number' || isNaN(ts)) return String(ts || '');
-  const d = new Date(ts > 1e11 ? ts : ts * 1000);
+  const isMs = ts > 1e11;
+  const d = new Date(isMs ? ts : ts * 1000);
   const m = String(d.getUTCMonth() + 1).padStart(2, '0');
   const day = String(d.getUTCDate()).padStart(2, '0');
   const h = String(d.getUTCHours()).padStart(2, '0');
   const min = String(d.getUTCMinutes()).padStart(2, '0');
+
+  if (typeof span === 'number' && span > 0) {
+    const spanSeconds = isMs ? span / 1000 : span;
+    if (spanSeconds > 30 * 86400) {
+      return `${d.getUTCFullYear()}-${m}-${day}`;
+    }
+    if (spanSeconds > 2 * 86400) {
+      return `${m}/${day}`;
+    }
+    return `${h}:${min}`;
+  }
+
   return `${m}/${day} ${h}:${min}`;
 }
 
@@ -436,7 +450,7 @@ export function renderPriceScale(ctx, options = {}) {
 }
 
 /**
- * Renders bottom time scale axis with timestamp/date labels.
+ * Renders bottom horizontal time scale axis with timestamp/date labels (DF-SCALES-02).
  *
  * @param {CanvasRenderingContext2D|Object} ctx
  * @param {Object} [options={}]
@@ -447,7 +461,8 @@ export function renderTimeScale(ctx, options = {}) {
 
   const x = options.x !== undefined ? options.x : 0;
   const y = options.y !== undefined ? options.y : Math.max(0, ((ctx.canvas && ctx.canvas.height) || 600) - 30);
-  const width = options.width !== undefined ? options.width : Math.max(0, ((ctx.canvas && ctx.canvas.width) || 800) - 60);
+  const width =
+    options.width !== undefined ? options.width : Math.max(0, ((ctx.canvas && ctx.canvas.width) || 800) - 60);
   const height = options.height !== undefined ? options.height : 30;
 
   ctx.save();
@@ -463,7 +478,7 @@ export function renderTimeScale(ctx, options = {}) {
   ctx.stroke();
 
   let timestamps = options.timestamps;
-  if (!Array.isArray(timestamps) || timestamps.length < 3) {
+  if (!Array.isArray(timestamps) || timestamps.length < 2) {
     const min =
       options.min !== undefined
         ? options.min
@@ -501,7 +516,7 @@ export function renderTimeScale(ctx, options = {}) {
     ctx.lineTo(xPos, y + 4);
     ctx.stroke();
 
-    ctx.fillText(formatTimestamp(ts), xPos, yPos);
+    ctx.fillText(formatTimestamp(ts, span), xPos, yPos);
   }
 
   ctx.restore();
@@ -646,7 +661,12 @@ export function renderChart(ctx, options = {}) {
   const width = options.width || (ctx.canvas && ctx.canvas.width) || 800;
   const height = options.height || (ctx.canvas && ctx.canvas.height) || 600;
   const priceScaleWidth = options.priceScaleWidth !== undefined ? options.priceScaleWidth : 60;
-  const timeScaleHeight = options.timeScaleHeight !== undefined ? options.timeScaleHeight : 30;
+  const timeScaleHeight =
+    options.timeScaleHeight !== undefined
+      ? options.timeScaleHeight
+      : options.timeAxis && options.timeAxis.height !== undefined
+      ? options.timeAxis.height
+      : 30;
   const data = options.data || options.candles || [];
 
   const chartArea = {
@@ -698,7 +718,7 @@ export function renderChart(ctx, options = {}) {
     maxTime: tMax,
   });
 
-  // 2. Candlestick series
+  // 2. Candlestick series (strictly constrained above time scale reserve)
   renderCandlesticksSeries(ctx, chartArea, data, { min: pMin, max: pMax }, { min: tMin, max: tMax });
 
   // 3. Moving Average Analytical Overlay (DF-OVERLAYS-01)
@@ -727,16 +747,18 @@ export function renderChart(ctx, options = {}) {
     max: pMax,
   });
 
-  // 5. Bottom time scale
-  renderTimeScale(ctx, {
-    x: 0,
-    y: height - timeScaleHeight,
-    width: width - priceScaleWidth,
-    height: timeScaleHeight,
-    timestamps: verticalTicks,
-    min: tMin,
-    max: tMax,
-  });
+  // 5. Bottom horizontal time scale (DF-SCALES-02)
+  if (!options.timeAxis || options.timeAxis.visible !== false) {
+    renderTimeScale(ctx, {
+      x: 0,
+      y: height - timeScaleHeight,
+      width: width - priceScaleWidth,
+      height: timeScaleHeight,
+      timestamps: verticalTicks,
+      min: tMin,
+      max: tMax,
+    });
+  }
 }
 
 export class Chart {
@@ -847,12 +869,15 @@ export class Chart {
     this.timeScaleHeight =
       opts.timeScaleHeight !== undefined
         ? opts.timeScaleHeight
+        : opts.timeAxis && opts.timeAxis.height !== undefined
+        ? opts.timeAxis.height
         : opts.timeAxisHeight !== undefined
         ? opts.timeAxisHeight
         : 30;
 
     this.priceAxisWidth = this.priceScaleWidth;
     this.timeAxisHeight = this.timeScaleHeight;
+    this.timeAxis = opts.timeAxis || { visible: true, height: this.timeScaleHeight };
 
     const plotWidth = Math.max(0, width - this.priceScaleWidth);
     const plotHeight = Math.max(0, height - this.timeScaleHeight);
@@ -908,7 +933,6 @@ export class Chart {
   _ensureElements() {
     if (!this.container) return;
 
-    // 1. Resolve or construct header & indicator-legend
     let header =
       typeof this.container.querySelector === 'function'
         ? this.container.querySelector('.chart-header') ||
@@ -951,7 +975,6 @@ export class Chart {
     }
     this.legendElement = legend;
 
-    // 2. Resolve or construct chart canvas attached to container
     if (!this.canvas) {
       if (typeof this.container.querySelector === 'function') {
         this.canvas = this.container.querySelector('canvas');
@@ -1151,23 +1174,29 @@ export class Chart {
   }
 
   resize(width, height) {
+    const w = width !== undefined ? width : (this.canvas && this.canvas.width) || 800;
+    const h = height !== undefined ? height : (this.canvas && this.canvas.height) || 600;
+
     if (this.canvas) {
-      this.canvas.width = width;
-      this.canvas.height = height;
+      this.canvas.width = w;
+      this.canvas.height = h;
     }
-    const plotWidth = Math.max(0, width - this.priceScaleWidth);
-    const plotHeight = Math.max(0, height - this.timeScaleHeight);
+
+    const plotWidth = Math.max(0, w - this.priceScaleWidth);
+    const plotHeight = Math.max(0, h - this.timeScaleHeight);
     this.plotArea = {
       top: 0,
       left: 0,
       width: plotWidth,
       height: plotHeight,
     };
+
     if (this.axesRenderer && typeof this.axesRenderer.resize === 'function') {
       try {
-        this.axesRenderer.resize(width, height);
+        this.axesRenderer.resize(w, h);
       } catch (_) {}
     }
+
     this.render();
   }
 
@@ -1264,6 +1293,15 @@ export class Chart {
     return this.updateData(candles);
   }
 
+  update(options = {}) {
+    if (options && (options.data || options.candles)) {
+      this.setData(options.data || options.candles);
+    } else {
+      this.render();
+    }
+    return this;
+  }
+
   draw() {
     this.renderCount = (this.renderCount || 0) + 1;
 
@@ -1277,6 +1315,17 @@ export class Chart {
     const width = (this.canvas && this.canvas.width) || this.options.width || 800;
     const height = (this.canvas && this.canvas.height) || this.options.height || 600;
 
+    this.plotArea = {
+      top: 0,
+      left: 0,
+      width: Math.max(0, width - this.priceScaleWidth),
+      height: Math.max(0, height - this.timeScaleHeight),
+    };
+
+    if (Array.isArray(ctx.drawCalls)) {
+      ctx.drawCalls.length = 0;
+    }
+
     if (typeof ctx.clearRect === 'function') {
       ctx.clearRect(0, 0, width, height);
     }
@@ -1287,6 +1336,7 @@ export class Chart {
       height,
       priceScaleWidth: this.priceScaleWidth,
       timeScaleHeight: this.timeScaleHeight,
+      timeAxis: this.timeAxis,
       zoomScale: this.zoomScale,
       viewportOffset: this.viewportOffset,
       overlayPeriod: this.overlayPeriod,
@@ -1419,16 +1469,30 @@ export class Chart {
     this.canvas.addEventListener('mouseleave', this._boundMouseLeave);
     this.canvas.addEventListener('wheel', this._boundWheel, { passive: false });
     this.canvas.addEventListener('click', this._boundClick);
+
+    this._boundWindowResize = () => {
+      const w = (this.canvas && this.canvas.width) || (typeof window !== 'undefined' ? window.innerWidth : 800);
+      const h = (this.canvas && this.canvas.height) || (typeof window !== 'undefined' ? window.innerHeight : 600);
+      this.resize(w, h);
+    };
+
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('resize', this._boundWindowResize);
+    }
   }
 
   _unbindEvents() {
-    if (!this.canvas || typeof this.canvas.removeEventListener !== 'function') return;
-    if (this._boundMouseDown) this.canvas.removeEventListener('mousedown', this._boundMouseDown);
-    if (this._boundMouseMove) this.canvas.removeEventListener('mousemove', this._boundMouseMove);
-    if (this._boundMouseUp) this.canvas.removeEventListener('mouseup', this._boundMouseUp);
-    if (this._boundMouseLeave) this.canvas.removeEventListener('mouseleave', this._boundMouseLeave);
-    if (this._boundWheel) this.canvas.removeEventListener('wheel', this._boundWheel);
-    if (this._boundClick) this.canvas.removeEventListener('click', this._boundClick);
+    if (this.canvas && typeof this.canvas.removeEventListener === 'function') {
+      if (this._boundMouseDown) this.canvas.removeEventListener('mousedown', this._boundMouseDown);
+      if (this._boundMouseMove) this.canvas.removeEventListener('mousemove', this._boundMouseMove);
+      if (this._boundMouseUp) this.canvas.removeEventListener('mouseup', this._boundMouseUp);
+      if (this._boundMouseLeave) this.canvas.removeEventListener('mouseleave', this._boundMouseLeave);
+      if (this._boundWheel) this.canvas.removeEventListener('wheel', this._boundWheel);
+      if (this._boundClick) this.canvas.removeEventListener('click', this._boundClick);
+    }
+    if (this._boundWindowResize && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('resize', this._boundWindowResize);
+    }
   }
 
   tick() {
