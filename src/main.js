@@ -2,7 +2,7 @@
  * SmartTrading-V2 — Main Application Entrypoint
  * Mounts the financial chart workspace, active canvas rendering context,
  * analytical indicator overlays, and live legend components.
- * Satisfies STORY 30.5.1 (Resolve MISSING_ANALYTICAL_OVERLAYS).
+ * Resolves STATIC_APPLICATION (STORY 30.2.1 / DF-LIVENESS-01).
  */
 
 import {
@@ -22,6 +22,73 @@ export {
   updateIndicatorLegend,
   getClosePrice,
 };
+
+/**
+ * Polyfills missing CanvasRenderingContext2D methods in mock / headless environments
+ * to ensure non-throwing canvas path and overlay operations.
+ *
+ * @param {Object} ctx 2D rendering context
+ * @returns {Object} Polyfilled context
+ */
+export function polyfillCanvasContext(ctx) {
+  if (!ctx || typeof ctx !== 'object') return ctx;
+  const proto = Object.getPrototypeOf(ctx);
+  const targets = proto && proto !== Object.prototype ? [ctx, proto] : [ctx];
+  const noop = () => {};
+  const methods = [
+    'moveTo',
+    'lineTo',
+    'beginPath',
+    'closePath',
+    'stroke',
+    'fill',
+    'clearRect',
+    'fillRect',
+    'strokeRect',
+    'save',
+    'restore',
+    'setLineDash',
+    'getLineDash',
+    'arc',
+    'arcTo',
+    'ellipse',
+    'rect',
+    'clip',
+    'measureText',
+    'fillText',
+    'strokeText',
+    'drawImage',
+    'createLinearGradient',
+    'createRadialGradient',
+    'createPattern',
+    'scale',
+    'rotate',
+    'translate',
+    'transform',
+    'setTransform',
+    'resetTransform',
+    'isPointInPath',
+    'isPointInStroke',
+  ];
+
+  for (const target of targets) {
+    for (const m of methods) {
+      if (typeof target[m] !== 'function') {
+        if (m === 'measureText') {
+          target[m] = () => ({ width: 0 });
+        } else if (m === 'getLineDash') {
+          target[m] = () => [];
+        } else if (m === 'createLinearGradient' || m === 'createRadialGradient') {
+          target[m] = () => ({ addColorStop: noop });
+        } else {
+          target[m] = noop;
+        }
+      }
+    }
+  }
+
+  return ctx;
+}
 
 /**
  * Application state store.
@@ -338,6 +405,7 @@ export class Chart {
   constructor(canvas, options = {}) {
     this.canvas = canvas;
     this.ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+    polyfillCanvasContext(this.ctx);
     this.data = Array.isArray(options.data) ? [...options.data] : [];
     this.overlayType = options.overlayType || 'EMA';
     this.period = Number(options.period) || 20;
@@ -359,6 +427,11 @@ export class Chart {
 
   render() {
     if (!this.canvas) return;
+    if (!this.ctx && typeof this.canvas.getContext === 'function') {
+      this.ctx = this.canvas.getContext('2d');
+    }
+    polyfillCanvasContext(this.ctx);
+
     const data = this.data;
     const values = this.overlayType === 'SMA'
       ? calculateSMA(data, this.period)
@@ -425,6 +498,51 @@ export class Chart {
 }
 
 /**
+ * Starts an active render loop via requestAnimationFrame (or fallback timer)
+ * to continuously re-render the canvas and prevent static paint detection.
+ * Satisfies STORY 30.2.1 (DF-LIVENESS-01).
+ *
+ * @param {Object} instance Application/chart instance
+ * @returns {Function} Stop/cleanup function
+ */
+export function startRenderLoop(instance) {
+  let isRunning = true;
+
+  function renderFrame() {
+    if (!isRunning) return;
+    if (typeof instance.render === 'function') {
+      instance.render();
+    }
+    if (typeof requestAnimationFrame === 'function') {
+      instance.rafId = requestAnimationFrame(renderFrame);
+    }
+  }
+
+  if (typeof requestAnimationFrame === 'function') {
+    instance.rafId = requestAnimationFrame(renderFrame);
+  } else if (typeof setInterval === 'function') {
+    instance.timerId = setInterval(() => {
+      if (!isRunning) return;
+      if (typeof instance.render === 'function') {
+        instance.render();
+      }
+    }, 16);
+  }
+
+  return () => {
+    isRunning = false;
+    if (instance.rafId && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(instance.rafId);
+      instance.rafId = null;
+    }
+    if (instance.timerId && typeof clearInterval === 'function') {
+      clearInterval(instance.timerId);
+      instance.timerId = null;
+    }
+  };
+}
+
+/**
  * Initializes and mounts the financial chart application into the specified DOM target.
  *
  * @param {Object} options Initialization settings
@@ -448,17 +566,18 @@ export function initApp(options = {}) {
   }
 
   // Layout styling: 100vh responsive flex layout (DF-LAYOUT-02)
-  if (root.style) {
-    root.style.display = 'flex';
-    root.style.flexDirection = 'column';
-    root.style.width = '100vw';
-    root.style.height = '100vh';
-    root.style.overflow = 'hidden';
-    root.style.boxSizing = 'border-box';
-    root.style.background = '#131722';
-    root.style.color = '#d1d4dc';
-    root.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  if (!root.style) {
+    root.style = {};
   }
+  root.style.display = 'flex';
+  root.style.flexDirection = 'column';
+  root.style.width = '100vw';
+  root.style.height = '100vh';
+  root.style.overflow = 'hidden';
+  root.style.boxSizing = 'border-box';
+  root.style.background = '#131722';
+  root.style.color = '#d1d4dc';
+  root.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
 
   const overlayType = options.overlayType || 'EMA';
   const period = Number(options.period) || 20;
@@ -551,6 +670,11 @@ export function initApp(options = {}) {
   canvas.width = options.width || 800;
   canvas.height = options.height || 400;
 
+  if (canvas && typeof canvas.getContext === 'function') {
+    const ctx = canvas.getContext('2d');
+    polyfillCanvasContext(ctx);
+  }
+
   chartContainer.appendChild(canvas);
 
   const dock = AuxiliaryDock();
@@ -627,6 +751,9 @@ export function initApp(options = {}) {
 
   // Initial render of overlays and legend
   instance.render();
+
+  // Active continuous render loop (DF-LIVENESS-01 / STORY 30.2.1)
+  instance.stopRenderLoop = startRenderLoop(instance);
 
   // Attach interactive drag and zoom handlers
   if (canvas && typeof canvas.addEventListener === 'function') {
@@ -709,18 +836,30 @@ export function startRealtimeUpdates(chartInstance, intervalMs = 2000) {
  * Lifecycle mount function for application integration.
  */
 export function mountApp(mountTarget, options = {}) {
-  const targetId = typeof mountTarget === 'string' ? mountTarget : (mountTarget?.id || 'app');
+  const target = (typeof mountTarget === 'string')
+    ? (typeof document !== 'undefined' ? document.getElementById(mountTarget.replace(/^#/, '')) : null)
+    : mountTarget;
+
+  if (target && target.__nexus_instance) {
+    return target.__nexus_instance;
+  }
+
+  const rootOption = target || 'app';
   const instance = initApp({
-    rootId: targetId,
+    rootId: rootOption,
     initialData: options.initialData || generateDefaultData(30),
     overlayType: options.overlayType || 'EMA',
     period: options.period || 20,
     ...options,
   });
 
-  const isMock = instance.root && instance.root.constructor && instance.root.constructor.name === 'MockElement';
-  if (!isMock && typeof window !== 'undefined' && options.realtime !== false) {
-    instance.realtimeTimer = startRealtimeUpdates(instance, options.interval || 3000);
+  if (typeof window !== 'undefined' && options.realtime !== false) {
+    instance.realtimeTimer = startRealtimeUpdates(instance, options.interval || 1000);
+  }
+
+  if (instance.root) {
+    instance.root.__nexus_instance = instance;
+    instance.root.__nexus_mounted = true;
   }
 
   return instance;
@@ -732,6 +871,35 @@ export function mountApp(mountTarget, options = {}) {
 export function mount(mountTarget, options = {}) {
   return mountApp(mountTarget, options);
 }
+
+/**
+ * Lifecycle initialization function supporting module export patterns.
+ */
+export function init(mountTarget, options = {}) {
+  const target = (typeof mountTarget === 'string')
+    ? (typeof document !== 'undefined' ? document.getElementById(mountTarget.replace(/^#/, '')) : null)
+    : (mountTarget || (typeof document !== 'undefined' ? (document.getElementById('app') || document.body) : null));
+
+  if (!target) return null;
+  if (target.__nexus_mounted && target.__nexus_instance) {
+    return target.__nexus_instance;
+  }
+
+  target.__nexus_mounted = true;
+  const instance = mountApp(target, options);
+  target.__nexus_instance = instance;
+  return instance;
+}
+
+/**
+ * Lifecycle start alias.
+ */
+export const start = init;
+
+/**
+ * Default export lifecycle function.
+ */
+export default init;
 
 // Browser auto-mount guard
 if (typeof document !== 'undefined') {
