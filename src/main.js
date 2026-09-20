@@ -666,13 +666,4 @@ if (typeof window !== 'undefined') {
 }
 
 // Browser auto-mount guard
-if (typeof document !== 'undefined') {
-  const mountTarget = document.getElementById('app') || document.body;
-  if (mountTarget && !mountTarget.__nexus_mounted) {
-    mountTarget.__nexus_mounted = true;
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
-  }
-}
-
 export default mountApp;
