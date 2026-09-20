@@ -3,7 +3,7 @@
  * Mounts the financial chart workspace, active canvas rendering context,
  * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02, STORY 36.1.1), analytical indicator
  * overlays (DF-OVERLAYS-01), live legend components, auxiliary dock
- * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1, STORY 37.2.1: EMPTY_AUXILIARY_DOCK_PANELS),
+ * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1, STORY 37.2.1, STORY 38.3.1: Resolve MISSING_AUXILIARY_DOCK),
  * continuous ResizeObserver canvas DPI synchronization (STORY 37.3.1),
  * and strictly idempotent container lifecycle resolution (STORY 37.1.1: Resolve DUPLICATE_COMPONENT_MOUNTING).
  */
@@ -23,7 +23,13 @@ import {
   updateIndicatorLegend,
   getClosePrice,
 } from './indicators.js';
-import { AuxiliaryDock, patchMockDOM } from './components/dock.js';
+import {
+  AuxiliaryDock,
+  Dock,
+  patchMockDOM,
+  CONTROL_THEME_STYLE,
+  applyDarkTheme,
+} from './dock.js';
 import { syncCanvasDpi, setupCanvasDpi } from './canvas.js';
 
 export {
@@ -40,6 +46,9 @@ export {
   updateIndicatorLegend,
   getClosePrice,
   AuxiliaryDock,
+  Dock,
+  CONTROL_THEME_STYLE,
+  applyDarkTheme,
   syncCanvasDpi,
   setupCanvasDpi,
 };
@@ -235,9 +244,21 @@ export function createElement(tag, attrs = {}, children = []) {
       } else if (key === 'id') {
         el.id = attrs[key];
         if (typeof el.setAttribute === 'function') el.setAttribute('id', attrs[key]);
-      } else if (key === 'style' && typeof attrs[key] === 'object') {
-        if (!el.style) el.style = {};
-        Object.assign(el.style, attrs[key]);
+      } else if (key === 'style') {
+        if (typeof attrs[key] === 'object') {
+          if (!el.style) el.style = {};
+          Object.assign(el.style, attrs[key]);
+          const cssText = Object.entries(attrs[key])
+            .map(([k, v]) => `${k.replace(/([A-Z])/g, '-$1').toLowerCase()}: ${v};`)
+            .join(' ');
+          if (typeof el.setAttribute === 'function') {
+            el.setAttribute('style', cssText);
+          }
+        } else {
+          if (typeof el.setAttribute === 'function') {
+            el.setAttribute('style', String(attrs[key]));
+          }
+        }
       } else if (key.startsWith('on') && typeof attrs[key] === 'function') {
         const eventName = key.slice(2).toLowerCase();
         if (typeof el.addEventListener === 'function') {
@@ -325,6 +346,7 @@ export function ToolPalette(options = {}) {
       width: '48px',
       alignItems: 'center',
       boxSizing: 'border-box',
+      flexShrink: '0',
     },
   });
 
@@ -528,7 +550,7 @@ function resolveRootContainer(options = {}) {
 
 /**
  * Initializes and mounts the financial chart workspace into the specified target container.
- * Satisfies STORY 37.1.1: Resolve DUPLICATE_COMPONENT_MOUNTING and DF-DUPLICATION-01.
+ * Satisfies STORY 38.3.1 (Resolve MISSING_AUXILIARY_DOCK), STORY 37.1.1, and DF-PANEL-01 / DF-PANEL-02.
  *
  * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
  * @returns {Chart} Chart workspace instance
@@ -561,19 +583,25 @@ export function initApp(options = {}) {
     }
   }
 
-  // Layout styling: responsive flex layout preserving full viewport dimensions
-  if (root.style) {
-    root.style.display = 'flex';
-    root.style.flexDirection = 'column';
-    root.style.width = '100vw';
-    root.style.height = '100vh';
-    root.style.maxHeight = '100vh';
-    root.style.overflow = 'hidden';
-    root.style.boxSizing = 'border-box';
-    root.style.background = '#131722';
-    root.style.color = '#d1d4dc';
-    root.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  // Viewport layout: enforces height: 100vh; overflow: hidden; display: flex; flex-direction: column;
+  const outerStyle =
+    'height: 100vh; overflow: hidden; display: flex; flex-direction: column; width: 100vw; max-height: 100vh; box-sizing: border-box; background: #131722; color: #d1d4dc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;';
+  if (typeof root.setAttribute === 'function') {
+    root.setAttribute('style', outerStyle);
   }
+  if (!root.style) {
+    root.style = {};
+  }
+  root.style.display = 'flex';
+  root.style.flexDirection = 'column';
+  root.style.width = '100vw';
+  root.style.height = '100vh';
+  root.style.maxHeight = '100vh';
+  root.style.overflow = 'hidden';
+  root.style.boxSizing = 'border-box';
+  root.style.background = '#131722';
+  root.style.color = '#d1d4dc';
+  root.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
 
   if (typeof document !== 'undefined') {
     if (document.documentElement && document.documentElement.style) {
@@ -643,7 +671,40 @@ export function initApp(options = {}) {
     },
   });
 
-  // 3. Primary Canvas Component directly rooted under active container (STORY 37.1.1)
+  // 3. Workspace Layout: side-by-side flex layout (display: flex; flex-direction: row; flex: 1; min-height: 0;)
+  const workspaceContainer = createElement('div', {
+    className: 'workspace-container chart-workspace-layout',
+    id: 'workspace-container',
+    'data-component': 'workspace',
+    style: {
+      display: 'flex',
+      flexDirection: 'row',
+      flex: '1',
+      minHeight: '0',
+      width: '100%',
+      overflow: 'hidden',
+      boxSizing: 'border-box',
+    },
+  });
+
+  // 4. Primary Chart Container hosting the canvas and time-axis track
+  const chartContainer = createElement('div', {
+    className: 'chart-container primary-chart-container',
+    id: 'chart-container',
+    'data-component': 'chart-container',
+    style: {
+      display: 'flex',
+      flexDirection: 'column',
+      flex: '1',
+      minWidth: '0',
+      minHeight: '0',
+      position: 'relative',
+      overflow: 'hidden',
+      boxSizing: 'border-box',
+    },
+  });
+
+  // 5. Primary Canvas Component
   const canvas = createElement('canvas', {
     className: 'chart-canvas',
     style: {
@@ -693,6 +754,11 @@ export function initApp(options = {}) {
     },
   });
 
+  if (typeof chartContainer.appendChild === 'function') {
+    chartContainer.appendChild(canvas);
+    chartContainer.appendChild(bottomAxisTrack);
+  }
+
   const axesRenderer = new AxesRenderer({
     canvas,
     context: ctx,
@@ -703,7 +769,7 @@ export function initApp(options = {}) {
 
   canvas.axesRenderer = axesRenderer;
 
-  // Auxiliary Dock Component (STORY 37.2.1, DF-PANEL-01)
+  // 6. Auxiliary Dock Component (STORY 38.3.1, DF-PANEL-01, DF-PANEL-02)
   const initialTab = opts.activeTab || opts.dockOptions?.activeTab || 'Watchlist';
   const dockOptions = Object.assign(
     {
@@ -716,11 +782,16 @@ export function initApp(options = {}) {
   const dockComponent = new AuxiliaryDock(dockOptions);
   const dockElement = dockComponent.getElement ? dockComponent.getElement() : dockComponent.element;
 
-  // Mount components strictly into container preserving deterministic structure and direct canvas rooting
+  // Mount components into side-by-side workspace and root layout container
+  if (typeof workspaceContainer.appendChild === 'function') {
+    workspaceContainer.appendChild(toolPalette);
+    workspaceContainer.appendChild(chartContainer);
+    workspaceContainer.appendChild(dockElement);
+  }
+
   if (typeof root.appendChild === 'function') {
     root.appendChild(header);
-    root.appendChild(toolPalette);
-    root.appendChild(canvas);
+    root.appendChild(workspaceContainer);
   }
 
   // Initial DPI buffer scaling
@@ -747,7 +818,8 @@ export function initApp(options = {}) {
   chartInstance.header = header;
   chartInstance.legend = legend;
   chartInstance.canvas = canvas;
-  chartInstance.chartContainer = root;
+  chartInstance.chartContainer = chartContainer;
+  chartInstance.workspaceContainer = workspaceContainer;
   chartInstance.bottomAxisTrack = bottomAxisTrack;
   chartInstance.toolPalette = toolPalette;
   chartInstance.dock = dockComponent;
@@ -844,6 +916,9 @@ export function initApp(options = {}) {
     });
 
     resizeObserver.observe(root);
+    if (chartContainer) {
+      resizeObserver.observe(chartContainer);
+    }
     if (canvas && canvas !== root) {
       resizeObserver.observe(canvas);
     }
@@ -877,6 +952,9 @@ export function initApp(options = {}) {
     if (this.realtimeTimer && typeof clearInterval === 'function') {
       clearInterval(this.realtimeTimer);
       this.realtimeTimer = null;
+    }
+    if (this.dock && typeof this.dock.destroy === 'function') {
+      this.dock.destroy();
     }
     if (typeof this.destroy === 'function') {
       this.destroy();
