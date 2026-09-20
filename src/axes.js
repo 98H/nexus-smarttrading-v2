@@ -23,10 +23,15 @@ export function computeRanges(candles) {
   let minTime = Infinity;
   let maxTime = -Infinity;
 
-  for (const c of candles) {
-    const low = c.low !== undefined ? c.low : Math.min(c.open ?? 0, c.close ?? 0);
-    const high = c.high !== undefined ? c.high : Math.max(c.open ?? 0, c.close ?? 0);
-    const time = c.time !== undefined ? c.time : (c.timestamp !== undefined ? c.timestamp : 0);
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    if (!c) continue;
+
+    const open = typeof c.open === 'number' ? c.open : (typeof c.close === 'number' ? c.close : 0);
+    const close = typeof c.close === 'number' ? c.close : open;
+    const low = typeof c.low === 'number' ? c.low : Math.min(open, close);
+    const high = typeof c.high === 'number' ? c.high : Math.max(open, close);
+    const time = typeof c.time === 'number' ? c.time : (typeof c.timestamp === 'number' ? c.timestamp : 0);
 
     if (low < minPrice) minPrice = low;
     if (high > maxPrice) maxPrice = high;
@@ -69,28 +74,38 @@ export class AxesRenderer {
    * @param {string} [options.textColor='#787b86']
    * @param {string} [options.font='11px sans-serif']
    */
-  constructor(options = {}) {
-    this.canvas = options.canvas || null;
+  constructor(options) {
+    const opts = options || {};
+    this.canvas = opts.canvas || null;
     this.context =
-      options.context ||
+      opts.context ||
       (this.canvas && typeof this.canvas.getContext === 'function' ? this.canvas.getContext('2d') : null);
-    this.priceAxisWidth = options.priceAxisWidth !== undefined ? options.priceAxisWidth : 70;
-    this.timeAxisHeight = options.timeAxisHeight !== undefined ? options.timeAxisHeight : 50;
+    this.priceAxisWidth = opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 70;
+    this.timeAxisHeight = opts.timeAxisHeight !== undefined ? opts.timeAxisHeight : 50;
 
     const canvasWidth = this.canvas ? this.canvas.width : 800;
     const canvasHeight = this.canvas ? this.canvas.height : 600;
 
-    this.plotArea = options.plotArea || {
-      top: 0,
-      left: 0,
-      width: Math.max(0, canvasWidth - this.priceAxisWidth),
-      height: Math.max(0, canvasHeight - this.timeAxisHeight),
-    };
+    if (opts.plotArea) {
+      this.plotArea = {
+        top: opts.plotArea.top !== undefined ? opts.plotArea.top : 0,
+        left: opts.plotArea.left !== undefined ? opts.plotArea.left : 0,
+        width: opts.plotArea.width !== undefined ? opts.plotArea.width : Math.max(0, canvasWidth - this.priceAxisWidth),
+        height: opts.plotArea.height !== undefined ? opts.plotArea.height : Math.max(0, canvasHeight - this.timeAxisHeight),
+      };
+    } else {
+      this.plotArea = {
+        top: 0,
+        left: 0,
+        width: Math.max(0, canvasWidth - this.priceAxisWidth),
+        height: Math.max(0, canvasHeight - this.timeAxisHeight),
+      };
+    }
 
-    this.gridColor = options.gridColor || '#2a2e39';
-    this.axisColor = options.axisColor || '#363c4e';
-    this.textColor = options.textColor || '#787b86';
-    this.font = options.font || '11px sans-serif';
+    this.gridColor = opts.gridColor || '#2a2e39';
+    this.axisColor = opts.axisColor || '#363c4e';
+    this.textColor = opts.textColor || '#787b86';
+    this.font = opts.font || '11px sans-serif';
   }
 
   /**
@@ -104,11 +119,11 @@ export class AxesRenderer {
       this.canvas.width = width;
       this.canvas.height = height;
     }
-    const top = this.plotArea?.top || 0;
-    const left = this.plotArea?.left || 0;
+    const top = (this.plotArea && this.plotArea.top) || 0;
+    const left = (this.plotArea && this.plotArea.left) || 0;
     this.plotArea = {
-      top,
-      left,
+      top: top,
+      left: left,
       width: Math.max(0, width - left - this.priceAxisWidth),
       height: Math.max(0, height - top - this.timeAxisHeight),
     };
@@ -120,21 +135,27 @@ export class AxesRenderer {
    * @param {{ top: number, left: number, width: number, height: number }} plotArea
    */
   setPlotArea(plotArea) {
-    this.plotArea = { ...plotArea };
+    if (!plotArea) return;
+    this.plotArea = {
+      top: plotArea.top !== undefined ? plotArea.top : 0,
+      left: plotArea.left !== undefined ? plotArea.left : 0,
+      width: plotArea.width !== undefined ? plotArea.width : 0,
+      height: plotArea.height !== undefined ? plotArea.height : 0,
+    };
   }
 
   /**
-   * Renders horizontal and vertical background gridlines across the active plot area.
+   * Renders horizontal and vertical background gridlines across active plot area.
    *
    * @param {Object} [ranges={}]
    * @param {{ min: number, max: number }} [ranges.priceRange]
    * @param {{ min: number, max: number }} [ranges.timeRange]
    */
-  renderGridlines(ranges = {}) {
+  renderGridlines(ranges) {
     const ctx = this.context || (this.canvas && this.canvas.getContext('2d'));
     if (!ctx) return;
 
-    const { plotArea } = this;
+    const plotArea = this.plotArea;
     const hSteps = 5;
     const vSteps = 5;
 
@@ -170,17 +191,31 @@ export class AxesRenderer {
    * @param {number} [range.min=100]
    * @param {number} [range.max=200]
    */
-  renderPriceScale(range = {}) {
+  renderPriceScale(range) {
     const ctx = this.context || (this.canvas && this.canvas.getContext('2d'));
     if (!ctx) return;
 
-    const { plotArea } = this;
-    let min = range.min !== undefined ? range.min : 100;
-    let max = range.max !== undefined ? range.max : 200;
+    const r = range || {};
+    let min = 100;
+    let max = 200;
+
+    if (r.min !== undefined) {
+      min = r.min;
+    } else if (r.priceRange && r.priceRange.min !== undefined) {
+      min = r.priceRange.min;
+    }
+
+    if (r.max !== undefined) {
+      max = r.max;
+    } else if (r.priceRange && r.priceRange.max !== undefined) {
+      max = r.priceRange.max;
+    }
+
     if (min === max) {
       min -= 1;
       max += 1;
     }
+    const plotArea = this.plotArea;
     const axisX = plotArea.left + plotArea.width;
 
     ctx.save();
@@ -196,7 +231,7 @@ export class AxesRenderer {
     ctx.lineTo(axisX, plotArea.top + plotArea.height);
     ctx.stroke();
 
-    // 2. Draw price tick marks and labels in the right-hand scale region (x >= plotWidth)
+    // 2. Draw price tick marks and labels in the right-hand scale region (x >= axisX)
     const steps = 5;
     for (let i = 0; i <= steps; i++) {
       const price = min + ((max - min) * i) / steps;
@@ -223,17 +258,31 @@ export class AxesRenderer {
    * @param {number} [range.min=1700000000]
    * @param {number} [range.max=1700086400]
    */
-  renderTimeScale(range = {}) {
+  renderTimeScale(range) {
     const ctx = this.context || (this.canvas && this.canvas.getContext('2d'));
     if (!ctx) return;
 
-    const { plotArea } = this;
-    let min = range.min !== undefined ? range.min : 1700000000;
-    let max = range.max !== undefined ? range.max : 1700086400;
+    const r = range || {};
+    let min = 1700000000;
+    let max = 1700086400;
+
+    if (r.min !== undefined) {
+      min = r.min;
+    } else if (r.timeRange && r.timeRange.min !== undefined) {
+      min = r.timeRange.min;
+    }
+
+    if (r.max !== undefined) {
+      max = r.max;
+    } else if (r.timeRange && r.timeRange.max !== undefined) {
+      max = r.timeRange.max;
+    }
+
     if (min === max) {
       min -= 1;
       max += 1;
     }
+    const plotArea = this.plotArea;
     const axisY = plotArea.top + plotArea.height;
 
     ctx.save();
@@ -249,7 +298,7 @@ export class AxesRenderer {
     ctx.lineTo(plotArea.left + plotArea.width, axisY);
     ctx.stroke();
 
-    // 2. Draw timestamp tick marks and labels in the bottom scale region (y >= plotHeight)
+    // 2. Draw timestamp tick marks and labels in the bottom scale region (y >= axisY)
     const steps = 5;
     for (let i = 0; i <= steps; i++) {
       const timeVal = min + ((max - min) * i) / steps;
@@ -265,7 +314,7 @@ export class AxesRenderer {
       const date = new Date(timeVal > 1e11 ? timeVal : timeVal * 1000);
       const hours = String(date.getUTCHours()).padStart(2, '0');
       const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-      const timeLabel = `${hours}:${minutes}`;
+      const timeLabel = hours + ':' + minutes;
 
       ctx.fillText(timeLabel, x, axisY + 12);
     }
@@ -280,11 +329,24 @@ export class AxesRenderer {
    * @param {{ min: number, max: number }} [ranges.priceRange]
    * @param {{ min: number, max: number }} [ranges.timeRange]
    */
-  render(ranges = {}) {
-    const priceRange = ranges.priceRange || { min: 100, max: 200 };
-    const timeRange = ranges.timeRange || { min: 1700000000, max: 1700086400 };
+  render(ranges) {
+    const r = ranges || {};
+    let priceRange = { min: 100, max: 200 };
+    let timeRange = { min: 1700000000, max: 1700086400 };
 
-    this.renderGridlines({ priceRange, timeRange });
+    if (r.priceRange) {
+      priceRange = r.priceRange;
+    } else if (r.min !== undefined && r.max !== undefined) {
+      priceRange = { min: r.min, max: r.max };
+    }
+
+    if (r.timeRange) {
+      timeRange = r.timeRange;
+    } else if (r.min !== undefined && r.max !== undefined && r.min > 1e6) {
+      timeRange = { min: r.min, max: r.max };
+    }
+
+    this.renderGridlines({ priceRange: priceRange, timeRange: timeRange });
     this.renderPriceScale(priceRange);
     this.renderTimeScale(timeRange);
   }
