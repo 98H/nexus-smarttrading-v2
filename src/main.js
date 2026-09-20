@@ -1549,7 +1549,7 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
 
   // Detect pre-existing canvas in root container (e.g. from test fixture)
   const existingCanvas = Array.isArray(root.children)
-    ? root.children.find((c) => c && (c.tagName === 'CANVAS' || typeof c.getContext === 'function'))
+    ? Array.from(root.children).find((c) => c && (c.tagName === 'CANVAS' || typeof c.getContext === 'function'))
     : null;
 
   clearContainer(root);
@@ -2061,8 +2061,6 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     },
   });
 
-  canvas.tagName = 'CANVAS';
-  canvas.nodeName = 'CANVAS';
   canvas.width = initialChartWidth;
   canvas.height = initialChartHeight;
 
@@ -2326,3 +2324,4 @@ if (typeof document !== 'undefined') {
     else if (typeof mount === 'function') mount(mountTarget);
   }
 }
+export const initialize = mountApp;
