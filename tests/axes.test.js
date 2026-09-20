@@ -41,6 +41,7 @@ function createMockCanvas(width = 800, height = 600) {
   ctx.canvas.height = height;
 
   const canvas = {
+    tagName: 'CANVAS',
     width,
     height,
     getContext: (type) => (type === '2d' ? ctx : null),

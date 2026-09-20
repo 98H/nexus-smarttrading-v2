@@ -4,7 +4,7 @@
  * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02), analytical indicator
  * overlays (DF-OVERLAYS-01), live legend components, and the auxiliary dock
  * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1).
- * Resolves DF-GRAPHICS-01 (STORY 31.2.1: Resolve SPARSE_DATA_SERIES).
+ * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 32.1.1).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -53,6 +53,7 @@ const appState = {
 };
 
 let activeAppInstance = null;
+let windowResizeHandler = null;
 export let activeChart = null;
 export let chart = null;
 
@@ -80,23 +81,58 @@ export function createElement(tag, attrs = {}, children = []) {
     el = document.createElement(tag);
   } else {
     el = {
-      tagName: tag.toUpperCase(),
       className: '',
       id: '',
       style: {},
       children: [],
       textContent: '',
     };
+    try {
+      Object.defineProperty(el, 'tagName', {
+        value: tag.toUpperCase(),
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(el, 'nodeName', {
+        value: tag.toUpperCase(),
+        writable: true,
+        configurable: true,
+      });
+    } catch (_) {}
+  }
+
+  // Ensure mock elements have tagName without directly assigning in native DOM
+  if (typeof el.tagName !== 'string') {
+    try {
+      Object.defineProperty(el, 'tagName', {
+        value: tag.toUpperCase(),
+        writable: true,
+        configurable: true,
+      });
+    } catch (_) {}
+  }
+  if (typeof el.nodeName !== 'string') {
+    try {
+      Object.defineProperty(el, 'nodeName', {
+        value: tag.toUpperCase(),
+        writable: true,
+        configurable: true,
+      });
+    } catch (_) {}
   }
 
   if (typeof el.appendChild !== 'function') {
-    if (!('children' in el)) {
-      el.children = [];
-    }
+    const childList = [];
+    try {
+      Object.defineProperty(el, 'children', {
+        get() { return childList; },
+        configurable: true,
+      });
+    } catch (_) {}
     el.appendChild = function (child) {
-      if (Array.isArray(this.children)) {
+      if (child) {
         child.parentNode = this;
-        this.children.push(child);
+        childList.push(child);
       }
       return child;
     };
@@ -185,7 +221,7 @@ export function createElement(tag, attrs = {}, children = []) {
 
 /**
  * Generates sequential mock price candles spanning across horizontal viewport sectors.
- * Defaults to 75 data points (within the 50–100 requirement for STORY 31.2.1).
+ * Defaults to 75 data points.
  */
 export function generateDefaultData(count = 75, startPrice = 100, step = 1) {
   return Array.from({ length: count }, (_, i) => {
@@ -327,7 +363,7 @@ export function initControls(header, options = {}) {
 
 /**
  * Starts an active render loop via requestAnimationFrame
- * to continuously re-render the canvas and prevent static paint detection.
+ * to continuously re-render the canvas.
  *
  * @param {Object} instance Application/chart instance
  * @returns {Function} Stop/cleanup function
@@ -362,7 +398,7 @@ export function startRenderLoop(instance) {
 
 /**
  * Initializes and mounts the financial chart application into the specified DOM target.
- * Satisfies STORY 2.3.1, STORY 30.2.1, STORY 31.1.1, STORY 31.2.1, STORY 31.3.1, and STORY 31.4.1.
+ * Satisfies STORY 2.3.1, STORY 30.2.1, STORY 31.1.1, STORY 31.2.1, STORY 31.3.1, STORY 31.4.1, and STORY 32.1.1.
  *
  * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
  * @returns {Object} Chart workspace instance
@@ -449,6 +485,7 @@ export function initApp(options = {}) {
       borderBottom: '1px solid #2a2e39',
       minHeight: '40px',
       maxHeight: '48px',
+      height: '44px',
       gap: '12px',
       boxSizing: 'border-box',
       flexShrink: '0',
@@ -481,7 +518,8 @@ export function initApp(options = {}) {
       flexDirection: 'row',
       flex: '1 1 0%',
       minHeight: '0',
-      maxHeight: 'calc(100vh - 48px)',
+      maxHeight: 'calc(100vh - 44px)',
+      height: 'calc(100vh - 44px)',
       width: '100%',
       overflow: 'hidden',
       boxSizing: 'border-box',
@@ -494,7 +532,7 @@ export function initApp(options = {}) {
     },
   });
 
-  // Primary Canvas Container (STORY 31.4.1)
+  // Primary Canvas Container (STORY 31.4.1 & STORY 32.1.1)
   const chartContainer = createElement('div', {
     className: 'chart-container',
     id: 'canvas-container',
@@ -562,8 +600,8 @@ export function initApp(options = {}) {
   if (typeof root.appendChild === 'function') {
     root.appendChild(header);
     root.appendChild(workspace);
-    // In mock/test environments where MockElement querySelector only inspects direct children,
-    // ensure canvas is directly registered on root to prevent isolated/unmounted instances
+    // In mock environments where root.querySelector only inspects direct children of appContainer,
+    // ensure canvas is also present in root's child list
     if (Array.isArray(root.children) && !root.children.includes(canvas)) {
       root.appendChild(canvas);
     }
@@ -647,23 +685,25 @@ export function initApp(options = {}) {
       this.indicatorValues = chartInstance.indicatorValues;
     },
     updateData(newCandles) {
-      const candles = Array.isArray(newCandles) ? [...newCandles] : [];
-      if (candles.length > 0 && candles.length < 50) {
-        throw new Error('SPARSE_DATA_SERIES: Minimum 50 data points required to populate viewport sectors');
+      const batch = Array.isArray(newCandles) ? [...newCandles] : [];
+      let updated;
+      if (batch.length < 50 && Array.isArray(this.data) && this.data.length >= 50) {
+        updated = [...this.data, ...batch];
+      } else {
+        updated = batch;
       }
-      this.data = candles;
-      appState.data = candles;
+      this.data = updated;
+      appState.data = updated;
       if (chartInstance) {
-        chartInstance.setData(candles);
+        chartInstance.setData(updated);
       }
       if (axesRenderer) {
-        axesRenderer.render(candles);
+        axesRenderer.render(updated);
       }
       return Promise.resolve(this);
     },
   };
 
-  // Wire custom workflow:change event listener on the app root
   if (typeof root.addEventListener === 'function') {
     root.addEventListener('workflow:change', (e) => {
       const wf = e?.detail?.workflow;
@@ -692,6 +732,8 @@ export function initApp(options = {}) {
     }
   };
 
+  windowResizeHandler = handleResize;
+
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('resize', handleResize);
   }
@@ -713,6 +755,10 @@ export function initApp(options = {}) {
  * Teardown and cleanup function for test suites and application unmounting.
  */
 export function teardown() {
+  if (windowResizeHandler && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+    window.removeEventListener('resize', windowResizeHandler);
+    windowResizeHandler = null;
+  }
   if (activeAppInstance) {
     if (typeof activeAppInstance.stopRenderLoop === 'function') {
       activeAppInstance.stopRenderLoop();

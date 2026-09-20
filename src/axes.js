@@ -2,7 +2,7 @@
  * SmartTrading-V2 — Coordinate Axes Renderer
  * Handles rendering of background coordinate gridlines, right-hand vertical price scale,
  * and bottom horizontal time scale across active candlestick chart areas.
- * Satisfies STORY 2.3.1 (DF-SCALES-01) and STORY 31.3.1 (DF-SCALES-02).
+ * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02), and STORY 32.1.1.
  */
 
 /**
@@ -356,7 +356,18 @@ export class AxesRenderer {
         timeLabel = `${hours}:${minutes}`;
       }
 
-      ctx.fillText?.(timeLabel, x, axisY + 12);
+      let drawX = x;
+      if (i === 0) {
+        ctx.textAlign = 'left';
+        drawX = Math.max(x, plotArea.left + 2);
+      } else if (i === steps) {
+        ctx.textAlign = 'right';
+        drawX = Math.min(x, plotArea.left + plotArea.width - 2);
+      } else {
+        ctx.textAlign = 'center';
+      }
+
+      ctx.fillText?.(timeLabel, drawX, axisY + 12);
     }
 
     ctx.restore?.();
