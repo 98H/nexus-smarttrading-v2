@@ -1,7 +1,7 @@
 /**
  * SmartTrading-V2 — Core Chart Canvas Component
  * High-performance 2D composite candlestick rendering engine with viewport transformations,
- * multi-timeframe candle management, aggregation, and interactive gestures.
+ * multi-timeframe candle management, aggregation, dynamic sector scaling, and interactive gestures.
  */
 
 // Polyfill WheelEvent & ensure Event.prototype.defaultPrevented is mutable in headless/Node runtimes
@@ -89,6 +89,42 @@ export function getTimeframeDuration(tf) {
 }
 
 /**
+ * Generates default contiguous candlestick records to satisfy viewport sector scaling.
+ *
+ * @param {number} count - Total candles to generate (bounded to [50, 100])
+ * @returns {Array<Object>} Contiguous OHLCV candle records
+ */
+export function generateDefaultCandles(count = 75) {
+  const targetCount = Math.max(50, Math.min(100, typeof count === 'number' ? count : 75));
+  const candles = [];
+  const baseTime = 1609459200000;
+  let price = 100.0;
+
+  for (let i = 0; i < targetCount; i++) {
+    const timestamp = baseTime + i * 60000;
+    const wave = Math.sin(i * 0.15) * 2.5 + Math.cos(i * 0.35) * 1.2;
+    const open = Math.round(price * 100) / 100;
+    const close = Math.round((open + wave * 0.6 + (i % 2 === 0 ? 0.4 : -0.3)) * 100) / 100;
+    const high = Math.round((Math.max(open, close) + Math.abs(wave) * 0.4 + 0.6) * 100) / 100;
+    const low = Math.round((Math.min(open, close) - Math.abs(wave) * 0.4 - 0.6) * 100) / 100;
+    const volume = Math.round(20 + Math.abs(wave) * 10 + (i % 5) * 6);
+
+    price = close;
+    candles.push({
+      timestamp,
+      time: timestamp,
+      open,
+      high,
+      low,
+      close,
+      volume,
+    });
+  }
+
+  return candles;
+}
+
+/**
  * Aggregates raw candlestick data into discrete timeframe buckets (OHLCV).
  *
  * @param {Array<Object>} candles - Raw candlestick records
@@ -171,8 +207,19 @@ export class Chart {
     this.canvas.__chart = this;
     this.options = opts;
     this.elements = opts.elements ? [...opts.elements] : [];
-    this.rawCandles = opts.candles || opts.data ? [...(opts.candles || opts.data)] : [];
+
+    if (opts.candles && Array.isArray(opts.candles)) {
+      this.rawCandles = [...opts.candles];
+    } else if (opts.data && Array.isArray(opts.data)) {
+      this.rawCandles = [...opts.data];
+    } else if (opts.candles === undefined && opts.data === undefined) {
+      this.rawCandles = generateDefaultCandles(opts.candleCount || 75);
+    } else {
+      this.rawCandles = [];
+    }
+
     this.timeframe = opts.defaultTimeframe || opts.timeframe || '1m';
+    this.sectorCount = opts.sectorCount || opts.sectors || 3;
 
     getTimeframeDuration(this.timeframe);
 
@@ -382,7 +429,16 @@ export class Chart {
       const candle = this.data[i];
       const time =
         candle.time !== undefined ? candle.time : (candle.timestamp !== undefined ? candle.timestamp : i);
-      const x = ((time - minTime) / timeRange) * width + this.viewport.offsetX;
+
+      // Dynamic viewport scaling across the full width of the canvas
+      const normX =
+        maxTime > minTime
+          ? (time - minTime) / timeRange
+          : this.data.length > 1
+            ? i / (this.data.length - 1)
+            : 0.5;
+
+      const x = normX * width + this.viewport.offsetX;
       const yHigh =
         height - ((candle.high - minPrice) / priceRange) * height + this.viewport.offsetY;
       const yLow =
@@ -403,6 +459,93 @@ export class Chart {
     }
 
     return this.candleCoordinates;
+  }
+
+  getHorizontalSectors(sectorCount = 3) {
+    const count = typeof sectorCount === 'number' && sectorCount > 0 ? sectorCount : 3;
+    const width = this.canvas.width || this.options.width || 800;
+    const sectorWidth = width / count;
+    const coords = this.getCandleCoordinates();
+    const sectors = [];
+
+    for (let i = 0; i < count; i++) {
+      const start = i * sectorWidth;
+      const end = (i + 1) * sectorWidth;
+      const sectorCandles = [];
+      const sectorCoords = [];
+
+      for (let j = 0; j < coords.length; j++) {
+        const c = coords[j];
+        const isMatch = i === count - 1 ? c.x >= start && c.x <= end + 0.001 : c.x >= start && c.x < end;
+        if (isMatch) {
+          sectorCoords.push(c);
+          if (this.data && this.data[j]) {
+            sectorCandles.push(this.data[j]);
+          }
+        }
+      }
+
+      sectors.push({
+        index: i,
+        sectorIndex: i,
+        start,
+        end,
+        startX: start,
+        endX: end,
+        width: sectorWidth,
+        candleCount: sectorCoords.length,
+        count: sectorCoords.length,
+        candles: sectorCandles,
+        coordinates: sectorCoords,
+        isPopulated: sectorCoords.length > 0,
+      });
+    }
+
+    return sectors;
+  }
+
+  getViewportSectors(sectorCount = 3) {
+    return this.getHorizontalSectors(sectorCount);
+  }
+
+  getSectors(sectorCount = 3) {
+    return this.getHorizontalSectors(sectorCount);
+  }
+
+  scaleToSectors(sectorCount = 3) {
+    this.sectorCount = typeof sectorCount === 'number' && sectorCount > 0 ? sectorCount : 3;
+    this.computeCoordinates();
+    return this.getHorizontalSectors(this.sectorCount);
+  }
+
+  get horizontalSectors() {
+    return this.getHorizontalSectors(this.sectorCount || 3);
+  }
+
+  get sectors() {
+    return this.getHorizontalSectors(this.sectorCount || 3);
+  }
+
+  isSectorPopulated(sectorIndex, sectorCount = 3) {
+    const sectors = this.getHorizontalSectors(sectorCount);
+    return sectors[sectorIndex] ? Boolean(sectors[sectorIndex].isPopulated) : false;
+  }
+
+  getPopulatedSectorCount(sectorCount = 3) {
+    return this.getHorizontalSectors(sectorCount).filter((s) => s.candleCount > 0).length;
+  }
+
+  hasSparseGaps(maxGapRatio = 0.25) {
+    const coords = this.getCandleCoordinates();
+    if (coords.length < 2) return false;
+    const width = this.canvas.width || this.options.width || 800;
+    const maxAllowedGap = width * maxGapRatio;
+    for (let i = 1; i < coords.length; i++) {
+      if (Math.abs(coords[i].x - coords[i - 1].x) > maxAllowedGap) {
+        return true;
+      }
+    }
+    return false;
   }
 
   updateTick(price) {
