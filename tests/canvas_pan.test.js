@@ -86,7 +86,7 @@ class MockContainerElement extends EventTarget {
 
   querySelector(selector) {
     if (selector === 'canvas') {
-      return this.children.find((child) => child.tagName === 'CANVAS') || null;
+      return Array.from(this.children).find((child) => child.tagName === 'CANVAS') || null;
     }
     return null;
   }
