@@ -77,7 +77,7 @@ class MockCanvasRenderingContext2D {
 class MockElement extends MockEventTarget {
   constructor(tagName = 'div') {
     super();
-    this.tagName = tagName.toUpperCase();
+try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
     this.children = [];
     this.parentElement = null;
     this.id = '';

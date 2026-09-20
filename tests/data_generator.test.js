@@ -76,7 +76,7 @@ class MockHTMLCanvasElement {
 class MockElement {
   constructor(id = '', tagName = 'DIV') {
     this.id = id;
-    this.tagName = tagName;
+try {     this.tagName = tagName; } catch (_) {}
     this.children = [];
     this.innerHTML = '';
   }

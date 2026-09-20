@@ -10,7 +10,7 @@ import * as MainModule from '../src/main.js';
  */
 class MockDOMElement {
   constructor(tagName) {
-    this.tagName = tagName.toUpperCase();
+try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
     this.children = [];
     this.parentNode = null;
     this.attributes = new Map();

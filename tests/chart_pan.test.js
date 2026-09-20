@@ -23,7 +23,7 @@ class MockCanvasContext2D {
 class MockElement extends EventTarget {
   constructor(tagName = 'div') {
     super();
-    this.tagName = tagName.toUpperCase();
+try {     this.tagName = tagName.toUpperCase(); } catch (_) {}
     this.children = [];
     this.id = '';
     this.style = {};

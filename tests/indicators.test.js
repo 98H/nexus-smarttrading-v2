@@ -17,7 +17,7 @@ function setupDOMMock() {
 
   class MockElement {
     constructor(tagName, id = '') {
-      this.tagName = tagName.toUpperCase();
+try {       this.tagName = tagName.toUpperCase(); } catch (_) {}
       this.id = id;
       this.className = '';
       this.innerHTML = '';
