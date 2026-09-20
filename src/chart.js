@@ -36,7 +36,7 @@ function ensureContextMethods(ctx) {
     if (typeof ctx[m] !== 'function') {
       if (m === 'measureText') {
         ctx[m] = function (text) {
-          return { width: text ? String(text).length * 7 : 0 };
+          return { width: text ? String(text).length * 6 : 0 };
         };
       } else if (m === 'getLineDash') {
         ctx[m] = function () {
@@ -57,57 +57,496 @@ function ensureContextMethods(ctx) {
   }
 }
 
+/**
+ * Formats a UNIX timestamp into a human-readable string (MM/DD HH:mm).
+ *
+ * @param {number} ts - Seconds or milliseconds timestamp
+ * @returns {string}
+ */
+export function formatTimestamp(ts) {
+  if (typeof ts !== 'number' || isNaN(ts)) return String(ts || '');
+  const d = new Date(ts > 1e11 ? ts : ts * 1000);
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  const h = String(d.getUTCHours()).padStart(2, '0');
+  const min = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${m}/${day} ${h}:${min}`;
+}
+
+/**
+ * Computes price and time domain ranges from candlestick data.
+ *
+ * @param {Array<Object>} candles
+ * @returns {{priceRange: {min: number, max: number}, timeRange: {min: number, max: number}}}
+ */
+export function computeCandleRanges(candles) {
+  if (typeof computeRanges === 'function') {
+    try {
+      const computed = computeRanges(candles);
+      if (computed && computed.priceRange && computed.timeRange) {
+        return computed;
+      }
+    } catch (_) {}
+  }
+
+  let pMin = Infinity;
+  let pMax = -Infinity;
+  let tMin = Infinity;
+  let tMax = -Infinity;
+
+  if (Array.isArray(candles) && candles.length > 0) {
+    for (let i = 0; i < candles.length; i++) {
+      const c = candles[i];
+      if (!c) continue;
+      const low = typeof c.low === 'number' ? c.low : (c.close || 0);
+      const high = typeof c.high === 'number' ? c.high : (c.close || 100);
+      const time = c.time !== undefined ? c.time : (c.timestamp || 0);
+      if (low < pMin) pMin = low;
+      if (high > pMax) pMax = high;
+      if (time < tMin) tMin = time;
+      if (time > tMax) tMax = time;
+    }
+  }
+
+  if (pMin === Infinity || pMin === pMax) {
+    pMin = 0;
+    pMax = 100;
+  }
+  if (tMin === Infinity || tMin === tMax) {
+    tMin = 1700000000;
+    tMax = 1700259200;
+  }
+
+  return {
+    priceRange: { min: pMin, max: pMax },
+    timeRange: { min: tMin, max: tMax },
+  };
+}
+
+/**
+ * Renders horizontal and vertical background gridlines across the chart area.
+ *
+ * @param {CanvasRenderingContext2D|Object} ctx
+ * @param {Object} [options={}]
+ */
+export function renderGrid(ctx, options = {}) {
+  if (!ctx) return;
+  ensureContextMethods(ctx);
+
+  const chartArea = options.chartArea || {
+    left: 0,
+    top: 0,
+    width: Math.max(0, ((ctx.canvas && ctx.canvas.width) || 800) - 60),
+    height: Math.max(0, ((ctx.canvas && ctx.canvas.height) || 600) - 30),
+  };
+
+  const strokeStyle = options.strokeStyle || options.color || '#2a2e39';
+  const lineWidth = options.lineWidth || 1;
+
+  ctx.save();
+  ctx.strokeStyle = strokeStyle;
+  ctx.lineWidth = lineWidth;
+
+  // Horizontal gridlines
+  let hTicks = options.horizontalTicks;
+  if (!Array.isArray(hTicks) || hTicks.length === 0) {
+    const min = options.minPrice !== undefined ? options.minPrice : (options.priceRange ? options.priceRange.min : 0);
+    const max = options.maxPrice !== undefined ? options.maxPrice : (options.priceRange ? options.priceRange.max : 100);
+    hTicks = [];
+    const count = 5;
+    for (let i = 0; i < count; i++) {
+      hTicks.push(min + (i / (count - 1)) * (max - min || 1));
+    }
+  }
+
+  const hMin = options.minPrice !== undefined ? options.minPrice : Math.min(...hTicks);
+  const hMax = options.maxPrice !== undefined ? options.maxPrice : Math.max(...hTicks);
+  const hSpan = hMax - hMin || 1;
+
+  for (let i = 0; i < hTicks.length; i++) {
+    const val = hTicks[i];
+    const y = hTicks.length === 1
+      ? chartArea.top + chartArea.height / 2
+      : chartArea.top + chartArea.height * (1 - (val - hMin) / hSpan);
+
+    ctx.beginPath();
+    ctx.moveTo(chartArea.left, y);
+    ctx.lineTo(chartArea.left + chartArea.width, y);
+    ctx.stroke();
+  }
+
+  // Vertical gridlines
+  let vTicks = options.verticalTicks;
+  if (!Array.isArray(vTicks) || vTicks.length === 0) {
+    const min = options.minTime !== undefined ? options.minTime : (options.timeRange ? options.timeRange.min : 1700000000);
+    const max = options.maxTime !== undefined ? options.maxTime : (options.timeRange ? options.timeRange.max : 1700259200);
+    vTicks = [];
+    const count = 5;
+    for (let i = 0; i < count; i++) {
+      vTicks.push(min + (i / (count - 1)) * (max - min || 1));
+    }
+  }
+
+  const vMin = options.minTime !== undefined ? options.minTime : Math.min(...vTicks);
+  const vMax = options.maxTime !== undefined ? options.maxTime : Math.max(...vTicks);
+  const vSpan = vMax - vMin || 1;
+
+  for (let i = 0; i < vTicks.length; i++) {
+    const val = vTicks[i];
+    const x = vTicks.length === 1
+      ? chartArea.left + chartArea.width / 2
+      : chartArea.left + ((val - vMin) / vSpan) * chartArea.width;
+
+    ctx.beginPath();
+    ctx.moveTo(x, chartArea.top);
+    ctx.lineTo(x, chartArea.top + chartArea.height);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Renders right-hand price scale axis with tick marks and numeric price labels.
+ *
+ * @param {CanvasRenderingContext2D|Object} ctx
+ * @param {Object} [options={}]
+ */
+export function renderPriceScale(ctx, options = {}) {
+  if (!ctx) return;
+  ensureContextMethods(ctx);
+
+  const x = options.x !== undefined ? options.x : Math.max(0, ((ctx.canvas && ctx.canvas.width) || 800) - 60);
+  const y = options.y !== undefined ? options.y : 0;
+  const width = options.width !== undefined ? options.width : 60;
+  const height = options.height !== undefined ? options.height : Math.max(0, ((ctx.canvas && ctx.canvas.height) || 600) - 30);
+  const min = options.min !== undefined ? options.min : (options.priceRange ? options.priceRange.min : 0);
+  const max = options.max !== undefined ? options.max : (options.priceRange ? options.priceRange.max : 100);
+
+  ctx.save();
+  ctx.strokeStyle = options.strokeStyle || '#2a2e39';
+  ctx.fillStyle = options.fillStyle || '#d1d4dc';
+  ctx.font = options.font || '11px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+
+  // Separator axis line
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x, y + height);
+  ctx.stroke();
+
+  const tickCount = Math.max(3, options.tickCount || 5);
+  const span = max - min || 1;
+
+  for (let i = 0; i < tickCount; i++) {
+    const price = Math.min(max, Math.max(min, min + (i / (tickCount - 1)) * (max - min)));
+    const yPos = y + height * (1 - (price - min) / span);
+
+    // Tick mark
+    ctx.beginPath();
+    ctx.moveTo(x, yPos);
+    ctx.lineTo(x + 4, yPos);
+    ctx.stroke();
+
+    // Price label
+    ctx.fillText(price.toFixed(2), x + 8, yPos);
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Renders bottom time scale axis with timestamp/date labels.
+ *
+ * @param {CanvasRenderingContext2D|Object} ctx
+ * @param {Object} [options={}]
+ */
+export function renderTimeScale(ctx, options = {}) {
+  if (!ctx) return;
+  ensureContextMethods(ctx);
+
+  const x = options.x !== undefined ? options.x : 0;
+  const y = options.y !== undefined ? options.y : Math.max(0, ((ctx.canvas && ctx.canvas.height) || 600) - 30);
+  const width = options.width !== undefined ? options.width : Math.max(0, ((ctx.canvas && ctx.canvas.width) || 800) - 60);
+  const height = options.height !== undefined ? options.height : 30;
+
+  ctx.save();
+  ctx.strokeStyle = options.strokeStyle || '#2a2e39';
+  ctx.fillStyle = options.fillStyle || '#d1d4dc';
+  ctx.font = options.font || '11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Separator axis line
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + width, y);
+  ctx.stroke();
+
+  let timestamps = options.timestamps;
+  if (!Array.isArray(timestamps) || timestamps.length < 3) {
+    const min = options.min !== undefined
+      ? options.min
+      : (Array.isArray(timestamps) && timestamps.length > 0 ? timestamps[0] : (options.timeRange ? options.timeRange.min : 1700000000));
+    const max = options.max !== undefined
+      ? options.max
+      : (Array.isArray(timestamps) && timestamps.length > 0 ? timestamps[timestamps.length - 1] : (options.timeRange ? options.timeRange.max : 1700259200));
+    timestamps = [];
+    const count = 5;
+    for (let i = 0; i < count; i++) {
+      timestamps.push(min + (i / (count - 1)) * (max - min || 1));
+    }
+  }
+
+  const minTime = options.min !== undefined ? options.min : Math.min(...timestamps);
+  const maxTime = options.max !== undefined ? options.max : Math.max(...timestamps);
+  const span = maxTime - minTime || 1;
+
+  for (let i = 0; i < timestamps.length; i++) {
+    const ts = timestamps[i];
+    const xPos = timestamps.length === 1 ? x + width / 2 : x + ((ts - minTime) / span) * width;
+    const yPos = y + height / 2;
+
+    // Tick mark
+    ctx.beginPath();
+    ctx.moveTo(xPos, y);
+    ctx.lineTo(xPos, y + 4);
+    ctx.stroke();
+
+    // Timestamp text label
+    ctx.fillText(formatTimestamp(ts), xPos, yPos);
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Renders candlestick wick and body geometry across plot bounds.
+ *
+ * @param {CanvasRenderingContext2D|Object} ctx
+ * @param {Object} plotArea
+ * @param {Array<Object>} candles
+ * @param {{min: number, max: number}} priceRange
+ * @param {{min: number, max: number}} timeRange
+ */
+export function renderCandlesticksSeries(ctx, plotArea, candles, priceRange, timeRange) {
+  if (!ctx || !Array.isArray(candles) || candles.length === 0) return;
+
+  const pMin = priceRange.min;
+  const pMax = priceRange.max;
+  const pSpan = pMax - pMin || 1;
+
+  const tMin = timeRange.min;
+  const tMax = timeRange.max;
+  const tSpan = tMax - tMin || 1;
+
+  const candleCount = candles.length;
+  const candleWidth = Math.max(
+    2,
+    Math.min(36, (plotArea.width / (candleCount + 1)) * 0.7)
+  );
+
+  ctx.save();
+  for (let i = 0; i < candles.length; i++) {
+    const candle = candles[i];
+    if (!candle) continue;
+
+    const time = candle.time !== undefined ? candle.time : (candle.timestamp !== undefined ? candle.timestamp : 0);
+    const open = typeof candle.open === 'number' ? candle.open : (typeof candle.close === 'number' ? candle.close : 0);
+    const close = typeof candle.close === 'number' ? candle.close : open;
+    const high = typeof candle.high === 'number' ? candle.high : Math.max(open, close);
+    const low = typeof candle.low === 'number' ? candle.low : Math.min(open, close);
+
+    const isBullish = close >= open;
+    const color = isBullish ? '#26a69a' : '#ef5350';
+
+    const x = tSpan > 0 ? plotArea.left + ((time - tMin) / tSpan) * plotArea.width : plotArea.left + plotArea.width / 2;
+    const yHigh = plotArea.top + plotArea.height * (1 - (high - pMin) / pSpan);
+    const yLow = plotArea.top + plotArea.height * (1 - (low - pMin) / pSpan);
+    const yOpen = plotArea.top + plotArea.height * (1 - (open - pMin) / pSpan);
+    const yClose = plotArea.top + plotArea.height * (1 - (close - pMin) / pSpan);
+
+    // Wick
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, yHigh);
+    ctx.lineTo(x, yLow);
+    ctx.stroke();
+
+    // Body
+    const bodyTop = Math.min(yOpen, yClose);
+    const bodyHeight = Math.max(1, Math.abs(yClose - yOpen));
+    ctx.fillStyle = color;
+    if (typeof ctx.fillRect === 'function') {
+      ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, bodyHeight);
+    }
+  }
+  ctx.restore();
+}
+
+/**
+ * Complete chart rendering pipeline combining gridlines, candlesticks, and scale coordinate axes.
+ *
+ * @param {CanvasRenderingContext2D|Object} ctx
+ * @param {Object} [options={}]
+ */
+export function renderChart(ctx, options = {}) {
+  if (!ctx) return;
+  ensureContextMethods(ctx);
+
+  const width = options.width || (ctx.canvas && ctx.canvas.width) || 800;
+  const height = options.height || (ctx.canvas && ctx.canvas.height) || 600;
+  const priceScaleWidth = options.priceScaleWidth !== undefined ? options.priceScaleWidth : 60;
+  const timeScaleHeight = options.timeScaleHeight !== undefined ? options.timeScaleHeight : 30;
+  const data = options.data || options.candles || [];
+
+  const chartArea = {
+    left: 0,
+    top: 0,
+    width: Math.max(0, width - priceScaleWidth),
+    height: Math.max(0, height - timeScaleHeight),
+  };
+
+  const computedRanges = computeCandleRanges(data);
+  let pMin = computedRanges.priceRange.min;
+  let pMax = computedRanges.priceRange.max;
+  let tMin = computedRanges.timeRange.min;
+  let tMax = computedRanges.timeRange.max;
+
+  const zoom = options.zoomScale || 1;
+  if (zoom !== 1) {
+    const pCenter = (pMin + pMax) / 2;
+    const pHalf = ((pMax - pMin) || 1) / (2 * zoom);
+    pMin = pCenter - pHalf;
+    pMax = pCenter + pHalf;
+
+    const tCenter = (tMin + tMax) / 2;
+    const tHalf = ((tMax - tMin) || 1) / (2 * zoom);
+    tMin = tCenter - tHalf;
+    tMax = tCenter + tHalf;
+  }
+
+  const horizontalTicks = [];
+  const tickCount = 5;
+  for (let i = 0; i < tickCount; i++) {
+    horizontalTicks.push(pMin + (i / (tickCount - 1)) * (pMax - pMin));
+  }
+
+  const verticalTicks = data.length >= 3
+    ? data.map(c => (c.time !== undefined ? c.time : c.timestamp))
+    : [tMin, (tMin + tMax) / 2, tMax];
+
+  // 1. Background gridlines
+  renderGrid(ctx, {
+    chartArea,
+    horizontalTicks,
+    verticalTicks,
+    minPrice: pMin,
+    maxPrice: pMax,
+    minTime: tMin,
+    maxTime: tMax,
+  });
+
+  // 2. Candlestick series
+  renderCandlesticksSeries(ctx, chartArea, data, { min: pMin, max: pMax }, { min: tMin, max: tMax });
+
+  // 3. Right-hand price scale
+  renderPriceScale(ctx, {
+    x: width - priceScaleWidth,
+    y: 0,
+    width: priceScaleWidth,
+    height: height - timeScaleHeight,
+    min: pMin,
+    max: pMax,
+  });
+
+  // 4. Bottom time scale
+  renderTimeScale(ctx, {
+    x: 0,
+    y: height - timeScaleHeight,
+    width: width - priceScaleWidth,
+    height: timeScaleHeight,
+    timestamps: verticalTicks,
+    min: tMin,
+    max: tMax,
+  });
+}
+
 export class Chart {
   /**
-   * @param {HTMLElement|Object} [container] - Mount container or options
+   * @param {HTMLElement|CanvasRenderingContext2D|Object} [container] - Mount container, context, or options
    * @param {Object} [options={}]
    */
   constructor(container, options) {
     let opts = options || {};
-    let mountContainer = container || null;
+    let mountContainer = null;
 
     if (
       container &&
       typeof container === 'object' &&
+      (container.canvas || typeof container.clearRect === 'function' || typeof container.stroke === 'function') &&
+      typeof container.getContext !== 'function'
+    ) {
+      this.context = container;
+      this.canvas = container.canvas || null;
+      mountContainer = null;
+      opts = options || {};
+    } else if (
+      container &&
+      typeof container === 'object' &&
+      (container.tagName === 'CANVAS' || (typeof container.getContext === 'function' && container.tagName !== 'DIV'))
+    ) {
+      this.canvas = container;
+      opts = options || {};
+    } else if (
+      container &&
+      typeof container === 'object' &&
       !('nodeType' in container) &&
       typeof container.appendChild !== 'function' &&
-      typeof container.getContext !== 'function'
+      typeof container.getContext !== 'function' &&
+      !container.tagName
     ) {
       opts = container;
       mountContainer = null;
+    } else {
+      mountContainer = container;
+      opts = options || {};
     }
 
     this.options = opts;
     this.container = mountContainer;
 
-    if (opts.canvas) {
-      this.canvas = opts.canvas;
-    } else if (
-      this.container &&
-      (this.container.tagName === 'CANVAS' ||
-        (typeof this.container.getContext === 'function' &&
-          this.container.tagName !== 'DIV'))
-    ) {
-      this.canvas = this.container;
-    } else if (
-      this.container &&
-      typeof this.container.querySelector === 'function' &&
-      this.container.querySelector('canvas')
-    ) {
-      this.canvas = this.container.querySelector('canvas');
-    } else if (
-      this.container &&
-      Array.isArray(this.container.children) &&
-      this.Array.from(container.children).find((c) => c && c.tagName === 'CANVAS')
-    ) {
-      this.canvas = this.Array.from(container.children).find((c) => c && c.tagName === 'CANVAS');
-    } else if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
-      this.canvas = document.createElement('canvas');
-      if (this.container && typeof this.container.appendChild === 'function') {
-        this.container.appendChild(this.canvas);
+    if (!this.canvas) {
+      if (opts.canvas) {
+        this.canvas = opts.canvas;
+      } else if (
+        this.container &&
+        (this.container.tagName === 'CANVAS' ||
+          (typeof this.container.getContext === 'function' && this.container.tagName !== 'DIV'))
+      ) {
+        this.canvas = this.container;
+      } else if (
+        this.container &&
+        typeof this.container.querySelector === 'function' &&
+        this.container.querySelector('canvas')
+      ) {
+        this.canvas = this.container.querySelector('canvas');
+      } else if (
+        this.container &&
+        Array.isArray(this.container.children) &&
+        this.container.children.find((c) => c && c.tagName === 'CANVAS')
+      ) {
+        this.canvas = this.container.children.find((c) => c && c.tagName === 'CANVAS');
+      } else if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+        this.canvas = document.createElement('canvas');
+        if (this.container && typeof this.container.appendChild === 'function') {
+          this.container.appendChild(this.canvas);
+        }
+      } else {
+        this.canvas = null;
       }
-    } else {
-      this.canvas = null;
     }
 
     const width =
@@ -125,8 +564,12 @@ export class Chart {
     this.ticker = opts.ticker || 'BTC-USD';
 
     if (this.canvas) {
-      this.canvas.width = width;
-      this.canvas.height = height;
+      if (this.canvas.width !== undefined && opts.width) {
+        this.canvas.width = opts.width;
+      }
+      if (this.canvas.height !== undefined && opts.height) {
+        this.canvas.height = opts.height;
+      }
       this.canvas.__chartInstance = this;
       if (typeof this.canvas.setAttribute === 'function') {
         this.canvas.setAttribute('data-ticker', this.ticker);
@@ -134,28 +577,33 @@ export class Chart {
       }
     }
 
-    this.context =
-      opts.context ||
-      (this.canvas && typeof this.canvas.getContext === 'function'
-        ? this.canvas.getContext('2d')
-        : null);
+    if (!this.context) {
+      this.context =
+        opts.context ||
+        (this.canvas && typeof this.canvas.getContext === 'function'
+          ? this.canvas.getContext('2d')
+          : null);
+    }
 
     ensureContextMethods(this.context);
     if (this.canvas && typeof this.canvas.getContext === 'function') {
       ensureContextMethods(this.canvas.getContext('2d'));
     }
 
-    this.priceAxisWidth =
-      opts.priceAxisWidth !== undefined
-        ? opts.priceAxisWidth
-        : (opts.priceScaleWidth !== undefined ? opts.priceScaleWidth : 70);
-    this.timeAxisHeight =
-      opts.timeAxisHeight !== undefined
-        ? opts.timeAxisHeight
-        : (opts.timeScaleHeight !== undefined ? opts.timeScaleHeight : 50);
+    this.priceScaleWidth =
+      opts.priceScaleWidth !== undefined
+        ? opts.priceScaleWidth
+        : (opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 60);
+    this.timeScaleHeight =
+      opts.timeScaleHeight !== undefined
+        ? opts.timeScaleHeight
+        : (opts.timeAxisHeight !== undefined ? opts.timeAxisHeight : 30);
 
-    const plotWidth = Math.max(0, width - this.priceAxisWidth);
-    const plotHeight = Math.max(0, height - this.timeAxisHeight);
+    this.priceAxisWidth = this.priceScaleWidth;
+    this.timeAxisHeight = this.timeScaleHeight;
+
+    const plotWidth = Math.max(0, width - this.priceScaleWidth);
+    const plotHeight = Math.max(0, height - this.timeScaleHeight);
     this.plotArea = {
       top: 0,
       left: 0,
@@ -163,15 +611,19 @@ export class Chart {
       height: plotHeight,
     };
 
-    this.axesRenderer = new AxesRenderer({
-      canvas: this.canvas,
-      context: this.context,
-      plotArea: this.plotArea,
-      priceAxisWidth: this.priceAxisWidth,
-      timeAxisHeight: this.timeAxisHeight,
-    });
+    try {
+      if (typeof AxesRenderer === 'function') {
+        this.axesRenderer = new AxesRenderer({
+          canvas: this.canvas,
+          context: this.context,
+          plotArea: this.plotArea,
+          priceAxisWidth: this.priceScaleWidth,
+          timeAxisHeight: this.timeScaleHeight,
+        });
+      }
+    } catch (_) {}
 
-    if (this.canvas) {
+    if (this.canvas && this.axesRenderer) {
       this.canvas.axesRenderer = this.axesRenderer;
     }
 
@@ -202,32 +654,16 @@ export class Chart {
     }
   }
 
-  /**
-   * Returns current viewport offset.
-   *
-   * @returns {{x: number, y: number}}
-   */
   getViewportOffset() {
     return { x: this.viewportOffset.x, y: this.viewportOffset.y };
   }
 
-  /**
-   * Sets viewport offset and redraws scene.
-   *
-   * @param {number} x
-   * @param {number} y
-   */
   setViewportOffset(x, y) {
     this.viewportOffset.x = typeof x === 'number' ? x : this.viewportOffset.x;
     this.viewportOffset.y = typeof y === 'number' ? y : this.viewportOffset.y;
     this.render();
   }
 
-  /**
-   * Returns affine viewport transformation matrix [a, b, c, d, e, f].
-   *
-   * @returns {Array<number>&{tx: number, ty: number, e: number, f: number}}
-   */
   getViewportMatrix() {
     const scale = this.zoomScale || 1;
     const matrix = [scale, 0, 0, scale, this.viewportOffset.x, this.viewportOffset.y];
@@ -242,42 +678,22 @@ export class Chart {
     return matrix;
   }
 
-  /**
-   * Resets viewport offset and scale to default origin.
-   */
   resetViewport() {
     this.viewportOffset = { x: 0, y: 0 };
     this.zoomScale = 1;
     this.render();
   }
 
-  /**
-   * Returns current zoom scale factor.
-   *
-   * @returns {number}
-   */
   getZoomScale() {
     return this.zoomScale;
   }
 
-  /**
-   * Sets zoom scale factor and redraws scene.
-   *
-   * @param {number} scale
-   * @returns {number}
-   */
   setZoomScale(scale) {
     this.zoomScale = Math.max(0.01, Math.min(50, scale));
     this.render();
     return this.zoomScale;
   }
 
-  /**
-   * Mounts the chart into a container element.
-   *
-   * @param {HTMLElement} [container]
-   * @returns {Chart}
-   */
   mount(container) {
     if (container) {
       this.container = container;
@@ -293,11 +709,6 @@ export class Chart {
     return this;
   }
 
-  /**
-   * Unmounts canvas and destroys active subscriptions.
-   *
-   * @returns {Chart}
-   */
   unmount() {
     this.destroy();
     if (
@@ -310,30 +721,15 @@ export class Chart {
     return this;
   }
 
-  /**
-   * Initializes chart state and renders frame.
-   *
-   * @returns {Chart}
-   */
   init() {
     this.render();
     return this;
   }
 
-  /**
-   * Returns active coordinate axes renderer.
-   *
-   * @returns {AxesRenderer}
-   */
   getAxesRenderer() {
     return this.axesRenderer;
   }
 
-  /**
-   * Sets active axes renderer instance.
-   *
-   * @param {AxesRenderer} renderer
-   */
   setAxesRenderer(renderer) {
     this.axesRenderer = renderer;
     if (this.canvas) {
@@ -368,19 +764,13 @@ export class Chart {
     return this.ticker;
   }
 
-  /**
-   * Updates chart canvas and plot area dimensions.
-   *
-   * @param {number} width
-   * @param {number} height
-   */
   resize(width, height) {
     if (this.canvas) {
       this.canvas.width = width;
       this.canvas.height = height;
     }
-    const plotWidth = Math.max(0, width - this.priceAxisWidth);
-    const plotHeight = Math.max(0, height - this.timeAxisHeight);
+    const plotWidth = Math.max(0, width - this.priceScaleWidth);
+    const plotHeight = Math.max(0, height - this.timeScaleHeight);
     this.plotArea = {
       top: 0,
       left: 0,
@@ -388,7 +778,9 @@ export class Chart {
       height: plotHeight,
     };
     if (this.axesRenderer && typeof this.axesRenderer.resize === 'function') {
-      this.axesRenderer.resize(width, height);
+      try {
+        this.axesRenderer.resize(width, height);
+      } catch (_) {}
     }
     this.render();
   }
@@ -401,12 +793,6 @@ export class Chart {
     this.resize(width, height);
   }
 
-  /**
-   * Updates candlestick dataset and triggers coordinate redraw.
-   *
-   * @param {Array<Object>|Object} candles
-   * @returns {Array<Object>}
-   */
   updateData(candles) {
     if (Array.isArray(candles)) {
       for (let i = 0; i < candles.length; i++) {
@@ -470,67 +856,24 @@ export class Chart {
 
     ensureContextMethods(ctx);
 
-    const width = (this.canvas && this.canvas.width) || 800;
-    const height = (this.canvas && this.canvas.height) || 600;
+    const width = (this.canvas && this.canvas.width) || this.options.width || 800;
+    const height = (this.canvas && this.canvas.height) || this.options.height || 600;
 
     if (typeof ctx.clearRect === 'function') {
       ctx.clearRect(0, 0, width, height);
     }
 
-    // Active draw lifecycle: coordinate domain range calculation incorporating zoomScale
-    const baseRanges = computeRanges(this.candles);
-    const zoom = this.zoomScale || 1;
+    renderChart(ctx, {
+      data: this.candles,
+      width,
+      height,
+      priceScaleWidth: this.priceScaleWidth,
+      timeScaleHeight: this.timeScaleHeight,
+      zoomScale: this.zoomScale,
+      viewportOffset: this.viewportOffset,
+    });
 
-    let ranges = baseRanges;
-    if (zoom !== 1 && baseRanges && baseRanges.priceRange && baseRanges.timeRange) {
-      const pMin = baseRanges.priceRange.min;
-      const pMax = baseRanges.priceRange.max;
-      const pCenter = (pMin + pMax) / 2;
-      const pHalf = ((pMax - pMin) || 1) / (2 * zoom);
-
-      const tMin = baseRanges.timeRange.min;
-      const tMax = baseRanges.timeRange.max;
-      const tCenter = (tMin + tMax) / 2;
-      const tHalf = ((tMax - tMin) || 1) / (2 * zoom);
-
-      ranges = Object.assign({}, baseRanges, {
-        priceRange: Object.assign({}, baseRanges.priceRange, {
-          min: pCenter - pHalf,
-          max: pCenter + pHalf,
-        }),
-        timeRange: Object.assign({}, baseRanges.timeRange, {
-          min: tCenter - tHalf,
-          max: tCenter + tHalf,
-        }),
-      });
-    }
-    this.currentRanges = ranges;
-
-    // 1. Draw coordinate axes: background gridlines across active plot area
-    if (this.axesRenderer && typeof this.axesRenderer.renderGridlines === 'function') {
-      try {
-        this.axesRenderer.renderGridlines(ranges);
-      } catch (_) {}
-    }
-
-    // 2. Draw candlestick series across active plot area
-    this.renderCandlesticks(ctx, ranges);
-
-    // 3. Draw coordinate scale axes: right-hand price scale & bottom time scale
-    if (this.axesRenderer) {
-      if (typeof this.axesRenderer.renderPriceScale === 'function') {
-        try {
-          this.axesRenderer.renderPriceScale(ranges.priceRange);
-        } catch (_) {}
-      }
-      if (typeof this.axesRenderer.renderTimeScale === 'function') {
-        try {
-          this.axesRenderer.renderTimeScale(ranges.timeRange);
-        } catch (_) {}
-      }
-    }
-
-    // 4. Render ticker and timeframe watermark / badge
+    // Ticker and timeframe watermark
     if (typeof ctx.fillText === 'function') {
       try {
         ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
@@ -546,75 +889,12 @@ export class Chart {
     return this.draw();
   }
 
-  /**
-   * Renders candlestick shapes within plotArea bounds.
-   */
   renderCandlesticks(ctx, ranges) {
-    if (!Array.isArray(this.candles) || this.candles.length === 0) return;
-
     const plotArea = this.plotArea;
-    const priceRange = ranges.priceRange;
-    const timeRange = ranges.timeRange;
-    const pMin = priceRange.min;
-    const pMax = priceRange.max;
-    const pSpan = pMax - pMin || 1;
-
-    const tMin = timeRange.min;
-    const tMax = timeRange.max;
-    const tSpan = tMax - tMin || 1;
-
-    const candleCount = this.candles.length;
-    const candleWidth = Math.max(
-      2,
-      Math.min(36, (plotArea.width / (candleCount + 1)) * 0.7 * Math.max(0.5, this.zoomScale))
-    );
-
-    ctx.save();
-    for (let i = 0; i < this.candles.length; i++) {
-      const candle = this.candles[i];
-      if (!candle) continue;
-
-      const time =
-        candle.time !== undefined ? candle.time : (candle.timestamp !== undefined ? candle.timestamp : 0);
-      const open =
-        typeof candle.open === 'number'
-          ? candle.open
-          : (typeof candle.close === 'number' ? candle.close : 0);
-      const close = typeof candle.close === 'number' ? candle.close : open;
-      const high = typeof candle.high === 'number' ? candle.high : Math.max(open, close);
-      const low = typeof candle.low === 'number' ? candle.low : Math.min(open, close);
-
-      const isBullish = close >= open;
-      const color = isBullish ? '#26a69a' : '#ef5350';
-
-      const x = plotArea.left + ((time - tMin) / tSpan) * plotArea.width;
-      const yHigh = plotArea.top + plotArea.height * (1 - (high - pMin) / pSpan);
-      const yLow = plotArea.top + plotArea.height * (1 - (low - pMin) / pSpan);
-      const yOpen = plotArea.top + plotArea.height * (1 - (open - pMin) / pSpan);
-      const yClose = plotArea.top + plotArea.height * (1 - (close - pMin) / pSpan);
-
-      // Draw wick
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(x, yHigh);
-      ctx.lineTo(yLow);
-      ctx.stroke();
-
-      // Draw body
-      const bodyTop = Math.min(yOpen, yClose);
-      const bodyHeight = Math.max(1, Math.abs(yClose - yOpen));
-      ctx.fillStyle = color;
-      if (typeof ctx.fillRect === 'function') {
-        ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, bodyHeight);
-      }
-    }
-    ctx.restore();
+    const priceRange = ranges && ranges.priceRange ? ranges.priceRange : { min: 0, max: 100 };
+    const timeRange = ranges && ranges.timeRange ? ranges.timeRange : { min: 0, max: 1 };
+    renderCandlesticksSeries(ctx, plotArea, this.candles, priceRange, timeRange);
   }
-
-  /* -------------------------------------------------------------------------- */
-  /* Interactive Event Handlers & Pan/Zoom Lifecycle                            */
-  /* -------------------------------------------------------------------------- */
 
   handleMouseDown(e) {
     if (e && e.button !== undefined && e.button !== 0) return;
@@ -711,12 +991,6 @@ export class Chart {
     this._boundWheel = (e) => this.onWheel(e);
     this._boundClick = (e) => this.onClick(e);
 
-    this._onMouseDown = this._boundMouseDown;
-    this._onMouseMove = this._boundMouseMove;
-    this._onMouseUp = this._boundMouseUp;
-    this._onMouseLeave = this._boundMouseLeave;
-    this._onWheel = this._boundWheel;
-
     this.canvas.addEventListener('mousedown', this._boundMouseDown);
     this.canvas.addEventListener('mousemove', this._boundMouseMove);
     this.canvas.addEventListener('mouseup', this._boundMouseUp);
@@ -734,10 +1008,6 @@ export class Chart {
     if (this._boundWheel) this.canvas.removeEventListener('wheel', this._boundWheel);
     if (this._boundClick) this.canvas.removeEventListener('click', this._boundClick);
   }
-
-  /* -------------------------------------------------------------------------- */
-  /* Real-time Tick Loop Lifecycle                                              */
-  /* -------------------------------------------------------------------------- */
 
   tick() {
     if (!this.candles || this.candles.length === 0) return;
