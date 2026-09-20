@@ -5,6 +5,8 @@
  * container hosting the chart canvas and side panel as structured descendants.
  */
 
+import './styles.css';
+
 import {
   Chart,
   aggregateCandles,

@@ -46,10 +46,15 @@ body {
   color: #d1d4dc;
 }
 
-/* Interactive Controls: Standardized Dark Theme, Modern Borders, and Padding */
+/* Interactive Controls: Standardized Dark Theme, Modern Borders, and Consistent Padding */
 button,
 input,
 select,
+textarea,
+#app button,
+#app input,
+#app select,
+#app textarea,
 .btn,
 .control,
 .dark-control,
@@ -64,21 +69,28 @@ select,
   line-height: 1.4;
   outline: none;
   cursor: pointer;
+  box-sizing: border-box;
   transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.05s ease, box-shadow 0.15s ease;
 }
 
-input {
+input,
+textarea {
   cursor: text;
 }
 
-input:focus {
+button:focus,
+input:focus,
+select:focus,
+textarea:focus {
   border-color: var(--border-focus);
   box-shadow: 0 0 0 2px rgba(41, 98, 255, 0.25);
 }
 
-/* Visual Feedback States: :hover and :active */
+/* Visual Feedback States: :hover and :active Transitions */
 button:hover,
 input:hover,
+select:hover,
+textarea:hover,
 .btn:hover,
 .control:hover,
 .dark-control:hover,
@@ -90,6 +102,8 @@ input:hover,
 
 button:active,
 input:active,
+select:active,
+textarea:active,
 .btn:active,
 .control:active,
 .dark-control:active,
