@@ -121,10 +121,17 @@ export class Chart {
       (this.container && this.container.clientHeight) ||
       600;
 
+    this.timeframe = opts.timeframe || '1h';
+    this.ticker = opts.ticker || 'BTC-USD';
+
     if (this.canvas) {
       this.canvas.width = width;
       this.canvas.height = height;
       this.canvas.__chartInstance = this;
+      if (typeof this.canvas.setAttribute === 'function') {
+        this.canvas.setAttribute('data-ticker', this.ticker);
+        this.canvas.setAttribute('data-timeframe', this.timeframe);
+      }
     }
 
     this.context =
@@ -172,8 +179,6 @@ export class Chart {
     this.zoomScale = 1;
     this.isPanning = false;
     this.renderCount = 0;
-    this.timeframe = opts.timeframe || '1h';
-    this.ticker = opts.ticker || 'BTC-USD';
 
     this.candles = opts.candles ||
       opts.data || [
@@ -339,7 +344,11 @@ export class Chart {
 
   setTimeframe(tf) {
     this.timeframe = tf;
+    if (this.canvas && typeof this.canvas.setAttribute === 'function') {
+      this.canvas.setAttribute('data-timeframe', tf);
+    }
     this.render();
+    return this;
   }
 
   getTimeframe() {
@@ -348,7 +357,11 @@ export class Chart {
 
   setTicker(ticker) {
     this.ticker = ticker;
+    if (this.canvas && typeof this.canvas.setAttribute === 'function') {
+      this.canvas.setAttribute('data-ticker', ticker);
+    }
     this.render();
+    return this;
   }
 
   getTicker() {
@@ -515,6 +528,15 @@ export class Chart {
           this.axesRenderer.renderTimeScale(ranges.timeRange);
         } catch (_) {}
       }
+    }
+
+    // 4. Render ticker and timeframe watermark / badge
+    if (typeof ctx.fillText === 'function') {
+      try {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.font = '14px sans-serif';
+        ctx.fillText(`${this.ticker} • ${this.timeframe}`, 16, 24);
+      } catch (_) {}
     }
 
     return this;
