@@ -1,8 +1,9 @@
 /**
- * SmartTrading-V2 — Candlestick Data Generator
+ * SmartTrading-V2 — Candlestick Data Generator & Streaming Provider
  * Produces synthetic oscillating random-walk financial price series containing
  * balanced distributions of bullish (close > open) and bearish (close < open)
- * candles with dynamic high and low wicks (resolves DF-CANDLES-01, STORY 38.4.1).
+ * candles with dynamic high and low wicks (resolves DF-CANDLES-01, STORY 38.4.1),
+ * next-candle synthesis, tick generation, and live streaming utilities (STORY 39.1.1: Resolve STATIC_APPLICATION).
  */
 
 /**
@@ -123,5 +124,316 @@ export function generateCandlestickData(options = {}) {
   return data;
 }
 
+/**
+ * Generates the next realistic incremental candle continuing from a preceding candle or base price.
+ *
+ * @param {Object|number|null} [previousCandle=null] Previous candle bar or close price
+ * @param {Object} [options={}]
+ * @param {number} [options.interval=60] Time increment in seconds
+ * @param {number} [options.volatility=1.5] Step magnitude scalar
+ * @returns {{ time: number, timestamp: number, open: number, high: number, low: number, close: number, volume: number }}
+ */
+export function generateNextCandle(previousCandle = null, options = {}) {
+  const opts = options || {};
+  let prevClose = 100;
+  let prevTime = 1700000000;
+
+  if (typeof previousCandle === 'number' && Number.isFinite(previousCandle)) {
+    prevClose = previousCandle;
+  } else if (previousCandle && typeof previousCandle === 'object') {
+    if (typeof previousCandle.close === 'number' && Number.isFinite(previousCandle.close)) {
+      prevClose = previousCandle.close;
+    } else if (typeof previousCandle.price === 'number' && Number.isFinite(previousCandle.price)) {
+      prevClose = previousCandle.price;
+    } else if (typeof previousCandle.value === 'number' && Number.isFinite(previousCandle.value)) {
+      prevClose = previousCandle.value;
+    }
+
+    if (typeof previousCandle.time === 'number' && Number.isFinite(previousCandle.time)) {
+      prevTime = previousCandle.time;
+    } else if (typeof previousCandle.timestamp === 'number' && Number.isFinite(previousCandle.timestamp)) {
+      prevTime = previousCandle.timestamp > 1e11
+        ? Math.floor(previousCandle.timestamp / 1000)
+        : previousCandle.timestamp;
+    }
+  }
+
+  const interval = typeof opts.interval === 'number' && Number.isFinite(opts.interval) && opts.interval > 0
+    ? opts.interval
+    : 60;
+
+  const volatility = typeof opts.volatility === 'number' && Number.isFinite(opts.volatility) && opts.volatility > 0
+    ? opts.volatility
+    : 1.5;
+
+  const candleTime = prevTime + interval;
+  const open = Number(prevClose.toFixed(2));
+
+  const isBullish = Math.random() < 0.5;
+  const bodyHeight = Number(Math.max(0.15, (0.2 + Math.random() * 1.1) * volatility).toFixed(2));
+
+  let close;
+  if (isBullish) {
+    close = Number((open + bodyHeight).toFixed(2));
+  } else {
+    close = Number(Math.max(5, open - bodyHeight).toFixed(2));
+    if (close >= open) {
+      close = Number((open - 0.15).toFixed(2));
+    }
+  }
+
+  const bodyTop = Math.max(open, close);
+  const bodyBottom = Math.min(open, close);
+
+  const upperWick = Number(Math.max(0.1, (0.1 + Math.random() * 0.8) * volatility).toFixed(2));
+  const lowerWick = Number(Math.max(0.1, (0.1 + Math.random() * 0.8) * volatility).toFixed(2));
+
+  const high = Number((bodyTop + upperWick).toFixed(2));
+  const low = Number(Math.max(1, bodyBottom - lowerWick).toFixed(2));
+  const volume = Math.floor(500 + Math.random() * 2500);
+
+  return {
+    time: candleTime,
+    timestamp: candleTime * 1000,
+    open,
+    high,
+    low,
+    close,
+    volume,
+  };
+}
+
+/**
+ * Generates an incremental price tick event for live streaming.
+ *
+ * @param {Object|number|null} [previousCandleOrPrice=null]
+ * @param {Object} [options={}]
+ * @returns {{ time: number, timestamp: number, price: number, close: number, volume: number }}
+ */
+export function generateTick(previousCandleOrPrice = null, options = {}) {
+  const opts = options || {};
+  let basePrice = 100;
+  let baseTime = Math.floor(Date.now() / 1000);
+
+  if (typeof previousCandleOrPrice === 'number' && Number.isFinite(previousCandleOrPrice)) {
+    basePrice = previousCandleOrPrice;
+  } else if (previousCandleOrPrice && typeof previousCandleOrPrice === 'object') {
+    if (typeof previousCandleOrPrice.close === 'number' && Number.isFinite(previousCandleOrPrice.close)) {
+      basePrice = previousCandleOrPrice.close;
+    } else if (typeof previousCandleOrPrice.price === 'number' && Number.isFinite(previousCandleOrPrice.price)) {
+      basePrice = previousCandleOrPrice.price;
+    } else if (typeof previousCandleOrPrice.value === 'number' && Number.isFinite(previousCandleOrPrice.value)) {
+      basePrice = previousCandleOrPrice.value;
+    }
+
+    if (typeof previousCandleOrPrice.time === 'number' && Number.isFinite(previousCandleOrPrice.time)) {
+      baseTime = previousCandleOrPrice.time;
+    } else if (typeof previousCandleOrPrice.timestamp === 'number' && Number.isFinite(previousCandleOrPrice.timestamp)) {
+      baseTime = previousCandleOrPrice.timestamp > 1e11
+        ? Math.floor(previousCandleOrPrice.timestamp / 1000)
+        : previousCandleOrPrice.timestamp;
+    }
+  }
+
+  const volatility = typeof opts.volatility === 'number' && Number.isFinite(opts.volatility) && opts.volatility > 0
+    ? opts.volatility
+    : 0.5;
+
+  const delta = (Math.random() - 0.49) * volatility;
+  const price = Number(Math.max(1, basePrice + delta).toFixed(2));
+  const tickTime = typeof opts.time === 'number' && Number.isFinite(opts.time) ? opts.time : baseTime + 1;
+  const volume = Math.floor(10 + Math.random() * 100);
+
+  return {
+    time: tickTime,
+    timestamp: tickTime * 1000,
+    price,
+    close: price,
+    volume,
+  };
+}
+
+/**
+ * Creates a reactive candle and tick stream emitter pipeable to chart workspaces.
+ * Satisfies STORY 39.1.1 (Resolve STATIC_APPLICATION).
+ *
+ * @param {Object|Function} [targetOrOptions] Target chart or options object
+ * @param {Object|number} [maybeOptionsOrInterval={}] Interval in ms or options
+ * @returns {Object} Stream controller
+ */
+export function createCandleStream(targetOrOptions, maybeOptionsOrInterval = {}) {
+  let targetChart = null;
+  let callback = null;
+  let opts = {};
+
+  if (typeof targetOrOptions === 'function') {
+    callback = targetOrOptions;
+    if (typeof maybeOptionsOrInterval === 'number') {
+      opts = { interval: maybeOptionsOrInterval };
+    } else if (typeof maybeOptionsOrInterval === 'object' && maybeOptionsOrInterval !== null) {
+      opts = maybeOptionsOrInterval;
+    }
+  } else if (
+    targetOrOptions &&
+    (typeof targetOrOptions.updateData === 'function' ||
+      typeof targetOrOptions.updateTick === 'function' ||
+      typeof targetOrOptions.setData === 'function' ||
+      typeof targetOrOptions.render === 'function')
+  ) {
+    targetChart = targetOrOptions;
+    if (typeof maybeOptionsOrInterval === 'number') {
+      opts = { interval: maybeOptionsOrInterval };
+    } else if (typeof maybeOptionsOrInterval === 'object' && maybeOptionsOrInterval !== null) {
+      opts = maybeOptionsOrInterval;
+    }
+  } else if (typeof targetOrOptions === 'object' && targetOrOptions !== null) {
+    opts = targetOrOptions;
+    if (typeof opts.chart === 'object' && opts.chart) {
+      targetChart = opts.chart;
+    }
+    if (typeof opts.onCandle === 'function') {
+      callback = opts.onCandle;
+    } else if (typeof opts.onTick === 'function') {
+      callback = opts.onTick;
+    } else if (typeof opts.callback === 'function') {
+      callback = opts.callback;
+    }
+  }
+
+  const subscribers = new Set();
+  if (callback) subscribers.add(callback);
+
+  if (targetChart) {
+    subscribers.add((candle) => {
+      if (typeof targetChart.updateData === 'function') {
+        targetChart.updateData(candle);
+      } else if (typeof targetChart.updateTick === 'function') {
+        targetChart.updateTick(candle);
+      } else if (Array.isArray(targetChart.data)) {
+        targetChart.data.push(candle);
+        if (typeof targetChart.render === 'function') targetChart.render();
+      }
+    });
+  }
+
+  const intervalMs =
+    typeof opts.interval === 'number' && opts.interval > 0
+      ? opts.interval
+      : (opts.intervalMs || 1000);
+  const candleInterval = opts.candleInterval || 60;
+  const volatility = opts.volatility || 1.5;
+
+  let lastCandle = opts.lastCandle || opts.initialCandle || null;
+  if (!lastCandle && targetChart && Array.isArray(targetChart.data) && targetChart.data.length > 0) {
+    lastCandle = targetChart.data[targetChart.data.length - 1];
+  }
+  if (!lastCandle) {
+    lastCandle = {
+      time: Math.floor(Date.now() / 1000),
+      timestamp: Date.now(),
+      open: opts.initialPrice || 100,
+      high: (opts.initialPrice || 100) + 1,
+      low: (opts.initialPrice || 100) - 1,
+      close: (opts.initialPrice || 100) + 0.5,
+      volume: 1000,
+    };
+  }
+
+  let timerId = null;
+  let running = false;
+
+  const emitNext = () => {
+    if (targetChart && Array.isArray(targetChart.data) && targetChart.data.length > 0) {
+      lastCandle = targetChart.data[targetChart.data.length - 1];
+    }
+    const next = generateNextCandle(lastCandle, { interval: candleInterval, volatility });
+    lastCandle = next;
+    for (const sub of subscribers) {
+      try {
+        sub(next);
+      } catch (_) {}
+    }
+    return next;
+  };
+
+  const emitTick = () => {
+    if (targetChart && Array.isArray(targetChart.data) && targetChart.data.length > 0) {
+      lastCandle = targetChart.data[targetChart.data.length - 1];
+    }
+    const tick = generateTick(lastCandle, { volatility });
+    for (const sub of subscribers) {
+      try {
+        sub(tick);
+      } catch (_) {}
+    }
+    return tick;
+  };
+
+  const start = () => {
+    if (running) return;
+    running = true;
+    if (typeof setInterval === 'function') {
+      timerId = setInterval(() => {
+        emitNext();
+      }, intervalMs);
+      if (timerId && typeof timerId.unref === 'function') {
+        timerId.unref();
+      }
+    }
+  };
+
+  const stop = () => {
+    running = false;
+    if (timerId !== null) {
+      if (typeof clearInterval === 'function') {
+        clearInterval(timerId);
+      }
+      timerId = null;
+    }
+  };
+
+  const subscribe = (fn) => {
+    if (typeof fn === 'function') {
+      subscribers.add(fn);
+      if (!running && opts.autoStart !== false) {
+        start();
+      }
+    }
+    return () => subscribers.delete(fn);
+  };
+
+  const pipe = (chart) => {
+    if (chart && typeof chart.updateData === 'function') {
+      return subscribe((c) => chart.updateData(c));
+    }
+    return () => {};
+  };
+
+  if (opts.autoStart !== false && (callback || targetChart)) {
+    start();
+  }
+
+  return {
+    start,
+    stop,
+    subscribe,
+    unsubscribe: (fn) => subscribers.delete(fn),
+    pipe,
+    emitNext,
+    emitTick,
+    next: emitNext,
+    getLastCandle: () => lastCandle,
+    get isRunning() {
+      return running;
+    },
+    get timerId() {
+      return timerId;
+    },
+  };
+}
+
 export const generateDefaultData = generateCandlestickData;
+export const generateNextTick = generateTick;
+export const createStream = createCandleStream;
+export const CandleStream = createCandleStream;
 export default generateCandlestickData;

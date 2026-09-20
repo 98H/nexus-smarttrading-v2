@@ -1,8 +1,8 @@
 /**
  * SmartTrading-V2 — Chart Engine & Candlestick/Axes Orchestrator
  * Integrates Candlestick rendering, AxesRenderer (DF-SCALES-01, DF-SCALES-02, STORY 36.1.1),
- * pan gestures (DF-GESTURE-01), and analytical overlays (DF-OVERLAYS-01)
- * within constrained viewport bounds.
+ * pan gestures (DF-GESTURE-01), analytical overlays (DF-OVERLAYS-01),
+ * and real-time streaming data updates (STORY 39.1.1: Resolve STATIC_APPLICATION).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -13,6 +13,7 @@ import {
   updateIndicatorLegend,
   getClosePrice,
 } from './indicators.js';
+import { createCandleStream } from './data_generator.js';
 
 export { AxesRenderer, computeRanges };
 
@@ -134,6 +135,7 @@ export class Chart {
     this._dragStartY = 0;
     this._dragStartViewportX = 0;
     this._dragStartViewportY = 0;
+    this._stream = null;
 
     this.data = Array.isArray(options.data) ? [...options.data] : [];
     this.overlayType = options.overlayType || 'EMA';
@@ -294,6 +296,7 @@ export class Chart {
   }
 
   destroy() {
+    this.stopStreaming();
     this.unbindEvents();
   }
 
@@ -324,6 +327,13 @@ export class Chart {
     this.render();
   }
 
+  /**
+   * Appends or updates candlestick items seamlessly without throwing on small batch sizes.
+   * Satisfies STORY 39.1.1 real-time streaming updates.
+   *
+   * @param {Object|Array<Object>} data Single candle/tick or array of candles
+   * @returns {Array<Object>} Updated series
+   */
   updateData(data) {
     if (!data) return this.data;
     const batch = Array.isArray(data) ? data : [data];
@@ -338,8 +348,35 @@ export class Chart {
       });
       batch.forEach((c) => {
         if (!c) return;
-        const k = c.time ?? c.timestamp ?? c.t ?? c.date;
-        if (k !== undefined) map.set(k, c);
+        const lastCandle = this.data[this.data.length - 1];
+        const lastTime = lastCandle ? (lastCandle.time ?? 1700000000) : Math.floor(Date.now() / 1000);
+        const k = c.time ?? c.timestamp ?? c.t ?? c.date ?? (lastTime + 60);
+
+        if (map.has(k)) {
+          const existing = map.get(k);
+          const price = c.close ?? c.price ?? c.value ?? existing.close;
+          map.set(k, {
+            ...existing,
+            ...c,
+            open: c.open ?? existing.open ?? price,
+            close: price,
+            high: Math.max(existing.high ?? price, c.high ?? price, price),
+            low: Math.min(existing.low ?? price, c.low ?? price, price),
+            volume: (existing.volume || 0) + (c.volume || 0),
+          });
+        } else {
+          const fallbackPrice = lastCandle ? (lastCandle.close ?? 100) : 100;
+          const price = c.close ?? c.price ?? c.value ?? fallbackPrice;
+          map.set(k, {
+            time: k,
+            timestamp: c.timestamp ?? (k < 1e11 ? k * 1000 : k),
+            open: c.open ?? price,
+            high: c.high ?? Math.max(c.open ?? price, price),
+            low: c.low ?? Math.min(c.open ?? price, price),
+            close: price,
+            volume: c.volume || 0,
+          });
+        }
       });
       this.data = Array.from(map.values()).sort((a, b) => {
         const tA = a.time ?? a.timestamp ?? a.t ?? a.date ?? 0;
@@ -347,10 +384,99 @@ export class Chart {
         return tA - tB;
       });
     } else {
-      this.data = [...batch];
+      this.data = batch.map((c) => {
+        const k = c.time ?? c.timestamp ?? c.t ?? c.date ?? Math.floor(Date.now() / 1000);
+        const price = c.close ?? c.price ?? c.value ?? 100;
+        return {
+          time: k,
+          timestamp: c.timestamp ?? (k < 1e11 ? k * 1000 : k),
+          open: c.open ?? price,
+          high: c.high ?? Math.max(c.open ?? price, price),
+          low: c.low ?? Math.min(c.open ?? price, price),
+          close: price,
+          volume: c.volume || 0,
+        };
+      });
     }
     this.render();
     return this.data;
+  }
+
+  /**
+   * Seamlessly updates the current candle with a streaming tick or appends a new one.
+   *
+   * @param {Object|number} tick Price tick or tick object
+   * @returns {Array<Object>} Updated series
+   */
+  updateTick(tick) {
+    if (!tick) return this.data;
+    const price = typeof tick === 'number' ? tick : (tick.price ?? tick.close ?? tick.value);
+    if (typeof price !== 'number' || !Number.isFinite(price)) return this.data;
+
+    const tickTime = typeof tick === 'object'
+      ? (tick.time ?? (tick.timestamp ? Math.floor(tick.timestamp / 1000) : null))
+      : null;
+
+    if (!Array.isArray(this.data) || this.data.length === 0) {
+      const t = tickTime || Math.floor(Date.now() / 1000);
+      const newCandle = {
+        time: t,
+        timestamp: t * 1000,
+        open: price,
+        high: price,
+        low: price,
+        close: price,
+        volume: (typeof tick === 'object' && tick.volume) || 1,
+      };
+      this.data = [newCandle];
+      this.render();
+      return this.data;
+    }
+
+    const last = this.data[this.data.length - 1];
+    const lastTime = last.time ?? (last.timestamp ? Math.floor(last.timestamp / 1000) : 0);
+
+    if (!tickTime || tickTime <= lastTime) {
+      last.close = price;
+      last.high = Math.max(last.high ?? price, price);
+      last.low = Math.min(last.low ?? price, price);
+      if (typeof tick === 'object' && tick.volume) {
+        last.volume = (last.volume || 0) + tick.volume;
+      }
+    } else {
+      const newCandle = {
+        time: tickTime,
+        timestamp: tickTime * 1000,
+        open: last.close ?? price,
+        high: Math.max(last.close ?? price, price),
+        low: Math.min(last.close ?? price, price),
+        close: price,
+        volume: (typeof tick === 'object' && tick.volume) || 1,
+      };
+      this.data.push(newCandle);
+    }
+
+    this.render();
+    return this.data;
+  }
+
+  appendCandle(candle) {
+    return this.updateData(candle);
+  }
+
+  startStreaming(interval = 1000, options = {}) {
+    if (this._stream) {
+      this._stream.stop();
+    }
+    this._stream = createCandleStream(this, { interval, ...options });
+    return this._stream;
+  }
+
+  stopStreaming() {
+    if (this._stream) {
+      this._stream.stop();
+      this._stream = null;
+    }
   }
 
   setOverlay(type, period = 20) {
@@ -407,7 +533,6 @@ export class Chart {
     }
 
     // Ensure coordinate scales and time axis are rendered in untransformed screen space
-    // so the horizontal time scale axis remains anchored along the bottom viewport fold
     if (typeof ctx.setTransform === 'function') {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
     }
@@ -431,7 +556,15 @@ export class Chart {
     this.indicatorValues = values;
 
     if (this.legend) {
-      const latestVal = values.length > 0 ? values[values.length - 1] : null;
+      let latestVal = null;
+      if (Array.isArray(values) && values.length > 0) {
+        latestVal = values[values.length - 1];
+        if (latestVal === null && data.length > 0) {
+          latestVal = getClosePrice(data[data.length - 1]);
+        }
+      } else if (data.length > 0) {
+        latestVal = getClosePrice(data[data.length - 1]);
+      }
       updateIndicatorLegend(this.legend, latestVal);
     }
 
