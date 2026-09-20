@@ -67,6 +67,8 @@ export class Chart {
 
     this.isPanning = false;
     this.renderCount = 0;
+    this.frameCount = 0;
+    this.animationTimer = null;
     this.dragStartPoint = { x: 0, y: 0 };
     this.dragStartOffset = { x: 0, y: 0 };
 
@@ -88,6 +90,26 @@ export class Chart {
     }
 
     this.updateScales();
+  }
+
+  start(fps = 60) {
+    if (this.animationTimer) return;
+    const intervalMs = Math.max(1, Math.round(1000 / fps));
+    this.animationTimer = setInterval(() => {
+      this.frameCount++;
+      this.render();
+    }, intervalMs);
+  }
+
+  stop() {
+    if (this.animationTimer) {
+      clearInterval(this.animationTimer);
+      this.animationTimer = null;
+    }
+  }
+
+  getFrameCount() {
+    return this.frameCount;
   }
 
   getTimeframe() {
@@ -361,6 +383,7 @@ export class Chart {
   }
 
   destroy() {
+    this.stop();
     this.isPanning = false;
     if (this.canvas && typeof this.canvas.removeEventListener === 'function') {
       this.canvas.removeEventListener('wheel', this.handleWheel, { passive: false });
