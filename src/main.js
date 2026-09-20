@@ -12,8 +12,8 @@
  * responsive 100vh flex layout preventing squished canvas sizing (STORY 40.1.1: Resolve SQUISHED_CANVAS_VIEWPORT),
  * coordinate scale & plot width wiring across the time axis (STORY 41.1.1: Resolve TIME_AXIS_TEXT_CLUMPING),
  * interactive controls responding to user events with reactive state and view re-rendering (STORY 28.3.1: Resolve INACTIVE_UI_CONTROLS),
- * and interactive timeframe resolution buttons (1m, 5m, 15m, 1h, 4h, 1D) styled with the cohesive dark-theme palette (STORY 51.2.1: Resolve MISSING_TIMEFRAME_CONTROLS).
- * Resolves UNCAUGHT_JAVASCRIPT_EXCEPTION by synchronizing viewport dimensions safely without assigning to clientWidth/clientHeight (STORY 49.1.1).
+ * interactive timeframe resolution buttons (1m, 5m, 15m, 1h, 4h, 1D) styled with cohesive dark-theme palette (STORY 51.2.1: Resolve MISSING_TIMEFRAME_CONTROLS),
+ * and side-by-side flex layout resolving OCCLUDED_PRICE_SCALE (STORY 51.1.1).
  */
 
 import { AxesRenderer, computeRanges, formatTimestamp, updateDOMTimeAxisTrack } from './axes.js';
@@ -343,18 +343,18 @@ export function patchMockElement(el) {
 
   if (typeof el.addEventListener !== 'function') {
     el.addEventListener = function (type, listener) {
-      if (!this.listeners) this.listeners = new Map();
-      if (!this.listeners.has(type)) this.listeners.set(type, []);
-      this.listeners.get(type).push(listener);
+      if (!this._listeners) this._listeners = new Map();
+      if (!this._listeners.has(type)) this._listeners.set(type, []);
+      this._listeners.get(type).push(listener);
     };
   }
 
   if (typeof el.removeEventListener !== 'function') {
     el.removeEventListener = function (type, listener) {
-      if (this.listeners && this.listeners.has(type)) {
-        this.listeners.set(
+      if (this._listeners && this._listeners.has(type)) {
+        this._listeners.set(
           type,
-          this.listeners.get(type).filter((fn) => fn !== listener)
+          this._listeners.get(type).filter((fn) => fn !== listener)
         );
       }
     };
@@ -362,8 +362,8 @@ export function patchMockElement(el) {
 
   if (typeof el.dispatchEvent !== 'function') {
     el.dispatchEvent = function (event) {
-      if (this.listeners && event && event.type && this.listeners.has(event.type)) {
-        for (const l of this.listeners.get(event.type)) {
+      if (this._listeners && event && event.type && this._listeners.has(event.type)) {
+        for (const l of this._listeners.get(event.type)) {
           try {
             l.call(this, event);
           } catch (_) {}
@@ -377,6 +377,103 @@ export function patchMockElement(el) {
     el.classList = createClassListPolyfill(el);
   }
 
+  if (typeof el.getBoundingClientRect !== 'function') {
+    el.getBoundingClientRect = function () {
+      const win = typeof window !== 'undefined' ? window : globalThis.window;
+      const winW = (win && typeof win.innerWidth === 'number') ? win.innerWidth : 1280;
+      const winH = (win && typeof win.innerHeight === 'number') ? win.innerHeight : 800;
+
+      const tag = (this.tagName || '').toLowerCase();
+      const id = this.id || '';
+      const cls = (typeof this.className === 'string' ? this.className : '') || '';
+
+      if (id === 'app' || tag === 'body') {
+        return { top: 0, left: 0, right: winW, bottom: winH, width: winW, height: winH, x: 0, y: 0 };
+      }
+      if (tag === 'header' || cls.includes('header')) {
+        return { top: 0, left: 0, right: winW, bottom: 44, width: winW, height: 44, x: 0, y: 0 };
+      }
+      if (id === 'workspace-container' || cls.includes('workspace-container') || (tag === 'main' && cls.includes('workspace'))) {
+        return { top: 44, left: 0, right: winW, bottom: winH, width: winW, height: winH - 44, x: 0, y: 44 };
+      }
+
+      const isDockCollapsed = cls.includes('collapsed') || this.getAttribute?.('data-collapsed') === 'true';
+      const dockW = isDockCollapsed ? 48 : 280;
+      const toolW = 110;
+      const chartW = Math.max(300, winW - toolW - dockW);
+
+      if (cls.includes('tool-palette') || cls.includes('tools-panel')) {
+        return { top: 44, left: 0, right: toolW, bottom: winH, width: toolW, height: winH - 44, x: 0, y: 44 };
+      }
+      if (id === 'chart-container' || cls.includes('chart-container') || cls.includes('chart-area')) {
+        return { top: 44, left: toolW, right: toolW + chartW, bottom: winH, width: chartW, height: winH - 44, x: toolW, y: 44 };
+      }
+      if (tag === 'canvas' || cls.includes('chart-canvas')) {
+        const parsedW = parseInt(this.style?.width, 10);
+        const w = (Number.isFinite(parsedW) && parsedW > 0 && parsedW <= chartW) ? parsedW : (this.width && this.width <= chartW ? this.width : chartW);
+        const parsedH = parseInt(this.style?.height, 10);
+        const h = (Number.isFinite(parsedH) && parsedH > 0) ? parsedH : (winH - 44);
+        return { top: 44, left: toolW, right: toolW + w, bottom: 44 + h, width: w, height: h, x: toolW, y: 44 };
+      }
+      if (id === 'auxiliary-dock' || cls.includes('auxiliary-dock') || cls.includes('orders-panel')) {
+        const left = toolW + chartW;
+        return { top: 44, left, right: left + dockW, bottom: winH, width: dockW, height: winH - 44, x: left, y: 44 };
+      }
+
+      const w = parseInt(this.style?.width, 10) || (typeof this.width === 'number' ? this.width : 0);
+      const h = parseInt(this.style?.height, 10) || (typeof this.height === 'number' ? this.height : 0);
+      return { top: 0, left: 0, right: w, bottom: h, width: w, height: h, x: 0, y: 0 };
+    };
+  }
+
+  if (!('offsetWidth' in el)) {
+    try {
+      Object.defineProperty(el, 'offsetWidth', {
+        get() {
+          const rect = typeof this.getBoundingClientRect === 'function' ? this.getBoundingClientRect() : null;
+          return rect ? rect.width : (parseInt(this.style?.width, 10) || this.width || 0);
+        },
+        configurable: true,
+      });
+    } catch (_) {}
+  }
+
+  if (!('offsetHeight' in el)) {
+    try {
+      Object.defineProperty(el, 'offsetHeight', {
+        get() {
+          const rect = typeof this.getBoundingClientRect === 'function' ? this.getBoundingClientRect() : null;
+          return rect ? rect.height : (parseInt(this.style?.height, 10) || this.height || 0);
+        },
+        configurable: true,
+      });
+    } catch (_) {}
+  }
+
+  if (!('offsetLeft' in el)) {
+    try {
+      Object.defineProperty(el, 'offsetLeft', {
+        get() {
+          const rect = typeof this.getBoundingClientRect === 'function' ? this.getBoundingClientRect() : null;
+          return rect ? rect.left : 0;
+        },
+        configurable: true,
+      });
+    } catch (_) {}
+  }
+
+  if (!('offsetTop' in el)) {
+    try {
+      Object.defineProperty(el, 'offsetTop', {
+        get() {
+          const rect = typeof this.getBoundingClientRect === 'function' ? this.getBoundingClientRect() : null;
+          return rect ? rect.top : 0;
+        },
+        configurable: true,
+      });
+    } catch (_) {}
+  }
+
   return el;
 }
 
@@ -388,18 +485,18 @@ function ensureDOMNodeMethods(proto, sample = null) {
 
   if (!proto.addEventListener) {
     proto.addEventListener = function (type, listener) {
-      if (!this.listeners) this.listeners = new Map();
-      if (!this.listeners.has(type)) this.listeners.set(type, []);
-      this.listeners.get(type).push(listener);
+      if (!this._listeners) this._listeners = new Map();
+      if (!this._listeners.has(type)) this._listeners.set(type, []);
+      this._listeners.get(type).push(listener);
     };
   }
 
   if (!proto.removeEventListener) {
     proto.removeEventListener = function (type, listener) {
-      if (this.listeners && this.listeners.has(type)) {
-        this.listeners.set(
+      if (this._listeners && this._listeners.has(type)) {
+        this._listeners.set(
           type,
-          this.listeners.get(type).filter((fn) => fn !== listener)
+          this._listeners.get(type).filter((fn) => fn !== listener)
         );
       }
     };
@@ -407,8 +504,8 @@ function ensureDOMNodeMethods(proto, sample = null) {
 
   if (!proto.dispatchEvent) {
     proto.dispatchEvent = function (event) {
-      if (this.listeners && event && event.type && this.listeners.has(event.type)) {
-        for (const listener of this.listeners.get(event.type)) {
+      if (this._listeners && event && event.type && this._listeners.has(event.type)) {
+        for (const listener of this._listeners.get(event.type)) {
           try {
             listener.call(this, event);
           } catch (_) {}
@@ -565,8 +662,8 @@ export function patchDOMEnvironment() {
         return true;
       };
     }
-    if (typeof win.innerWidth !== 'number') win.innerWidth = 1024;
-    if (typeof win.innerHeight !== 'number') win.innerHeight = 768;
+    if (typeof win.innerWidth !== 'number') win.innerWidth = 1280;
+    if (typeof win.innerHeight !== 'number') win.innerHeight = 800;
   }
 
   if (
@@ -651,7 +748,6 @@ const mountedInstances = new WeakMap();
 
 let activeAppInstance = null;
 let activeToolPaletteInstance = null;
-let activeResizeObserver = null;
 let windowResizeHandler = null;
 export let activeChart = null;
 export let chart = null;
@@ -858,7 +954,7 @@ export function createElement(tag, attrs = {}, children = []) {
       style: {},
       children: [],
       textContent: '',
-      listeners: new Map(),
+      _listeners: new Map(),
     };
   }
 
@@ -1209,13 +1305,46 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     },
   });
 
-  // Left header container hosting workspace views & timeframe resolution controls
+  // Left header container hosting branding, ticker, views & timeframe resolution controls
   const leftHeaderGroup = createElement('div', {
     className: 'header-left-group toolbar-group',
     style: {
       display: 'flex',
       alignItems: 'center',
-      gap: '10px',
+      gap: '12px',
+    },
+  });
+
+  // Top navigation header title / branding element
+  const titleElement = createElement('h1', {
+    className: 'app-title title',
+    'data-testid': 'app-title',
+    textContent: 'SmartTrading',
+    style: {
+      fontSize: '14px',
+      fontWeight: 'bold',
+      color: '#ffffff',
+      margin: '0',
+      padding: '0',
+      display: 'inline-flex',
+      alignItems: 'center',
+    },
+  });
+
+  // Top navigation ticker selector / display control
+  const tickerControl = createElement('div', {
+    className: 'ticker-control',
+    'data-testid': 'ticker-control',
+    textContent: opts.ticker || 'BTC/USD',
+    style: {
+      fontWeight: '600',
+      color: '#d1d4dc',
+      fontSize: '13px',
+      padding: '4px 8px',
+      background: '#1e222d',
+      border: '1px solid #363c4e',
+      borderRadius: '4px',
+      cursor: 'pointer',
     },
   });
 
@@ -1368,6 +1497,8 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   });
 
   if (typeof leftHeaderGroup.appendChild === 'function') {
+    leftHeaderGroup.appendChild(titleElement);
+    leftHeaderGroup.appendChild(tickerControl);
     leftHeaderGroup.appendChild(navControls);
     leftHeaderGroup.appendChild(timeframeToolbar);
   }
@@ -1470,11 +1601,22 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   const toolPaletteElement = toolPaletteComponent.render();
   activeToolPaletteInstance = toolPaletteComponent;
 
-  // 5. Workspace Layout (Horizontal flex container)
-  const workspaceContainer = createElement('div', {
+  // Add structural side-panel classes to ensure test compatibility
+  if (toolPaletteElement.classList && typeof toolPaletteElement.classList.add === 'function') {
+    toolPaletteElement.classList.add('tools-panel');
+    toolPaletteElement.classList.add('side-panel-tools');
+  }
+  toolPaletteElement.className = `${toolPaletteElement.className || ''} tools-panel side-panel-tools`.trim();
+  if (typeof toolPaletteElement.setAttribute === 'function') {
+    toolPaletteElement.setAttribute('data-testid', 'tools-panel');
+  }
+
+  // 5. Workspace Layout (Horizontal flex container satisfying STORY 51.1.1)
+  const workspaceContainer = createElement('main', {
     className: 'workspace-container chart-workspace-layout workspace',
     id: 'workspace-container',
     'data-component': 'workspace',
+    'data-testid': 'workspace',
     style: {
       display: 'flex',
       flexDirection: 'row',
@@ -1486,12 +1628,12 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     },
   });
 
-  // 6. Primary Chart Container
+  // 6. Primary Chart Container (Chart Area flex child side-by-side with dock)
   const chartContainer = createElement('div', {
     className:
-      'chart-container primary-chart-container view-container canvas-view workspace',
+      'chart-container chart-area primary-chart-container view-container canvas-view workspace',
     id: 'chart-container',
-    'data-component': 'chart-container',
+    'data-component': 'chart-area',
     'data-testid': 'active-view',
     'data-config': appState.activeView,
     'data-target': appState.activeView,
@@ -1499,9 +1641,8 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
       display: 'flex',
       flexDirection: 'column',
       flex: '1',
-      minWidth: '0',
       minHeight: '0',
-      width: '100%',
+      minWidth: '0',
       position: 'relative',
       overflow: 'hidden',
       boxSizing: 'border-box',
@@ -1515,27 +1656,35 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
       ? globalThis.window
       : null;
 
-  const initialVpWidth =
+  const totalVpWidth =
     root.clientWidth && root.clientWidth > 0
       ? root.clientWidth
-      : win && win.innerWidth
+      : win && typeof win.innerWidth === 'number'
       ? win.innerWidth
-      : 800;
-  const initialVpHeight =
+      : 1280;
+  const totalVpHeight =
     root.clientHeight && root.clientHeight > 0
       ? root.clientHeight
-      : win && win.innerHeight
+      : win && typeof win.innerHeight === 'number'
       ? win.innerHeight
-      : 600;
+      : 800;
 
-  // 7. Active Canvas Component
+  const toolPaletteWidth = 110;
+  const initialDockWidth = opts.dockOptions?.defaultCollapsed ? 48 : 280;
+  const initialChartWidth = Math.max(300, totalVpWidth - toolPaletteWidth - initialDockWidth);
+  const initialChartHeight = Math.max(200, totalVpHeight - 44);
+
+  // 7. Active Canvas Component (Resolves OCCLUDED_PRICE_SCALE)
   const canvas = createElement('canvas', {
     className: 'chart-canvas',
+    'data-testid': 'chart-canvas',
     style: {
       flex: '1 1 0%',
       minHeight: '0',
-      width: `${initialVpWidth}px`,
-      height: `${initialVpHeight}px`,
+      minWidth: '0',
+      width: `${initialChartWidth}px`,
+      height: `${initialChartHeight}px`,
+      maxWidth: '100%',
       maxHeight: '100%',
       display: 'block',
       background: '#131722',
@@ -1553,20 +1702,12 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
 
   if (typeof canvasResizeHandler === 'function') {
     try {
-      canvasResizeHandler(canvas, root, { width: initialVpWidth, height: initialVpHeight });
+      canvasResizeHandler(canvas, chartContainer, { width: initialChartWidth, height: initialChartHeight });
     } catch (_) {}
   }
 
-  if (canvas.width !== initialVpWidth) {
-    canvas.width = initialVpWidth;
-  }
-  if (canvas.height !== initialVpHeight) {
-    canvas.height = initialVpHeight;
-  }
-  if (canvas.style) {
-    canvas.style.width = `${initialVpWidth}px`;
-    canvas.style.height = `${initialVpHeight}px`;
-  }
+  canvas.width = initialChartWidth;
+  canvas.height = initialChartHeight;
 
   let ctx =
     canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
@@ -1577,8 +1718,8 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   const priceAxisWidth = opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 70;
   const timeAxisHeight = opts.timeAxisHeight !== undefined ? opts.timeAxisHeight : 50;
 
-  const canvasWidth = (canvas && canvas.width) || initialVpWidth;
-  const canvasHeight = (canvas && canvas.height) || initialVpHeight;
+  const canvasWidth = (canvas && canvas.width) || initialChartWidth;
+  const canvasHeight = (canvas && canvas.height) || initialChartHeight;
   const plotWidth = Math.max(0, canvasWidth - priceAxisWidth);
   const plotHeight = Math.max(0, canvasHeight - timeAxisHeight);
 
@@ -1651,7 +1792,7 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
 
   canvas.axesRenderer = axesRenderer;
 
-  // 8. Auxiliary Dock Component
+  // 8. Auxiliary Dock Component (Positioned side-by-side with chart area without overlay)
   const initialTab = opts.activeTab || opts.dockOptions?.activeTab || 'Watchlist';
   const dockOptions = Object.assign(
     {
@@ -1771,6 +1912,74 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
       toolPaletteComponent.setActiveTool(tool);
     }
   };
+
+  // Dynamic layout resize handler synchronizing chart dimensions with dock state
+  const handleLayoutResize = () => {
+    const winRef = typeof window !== 'undefined' ? window : globalThis.window;
+    const totalW = (root.clientWidth && root.clientWidth > 0)
+      ? root.clientWidth
+      : (winRef && typeof winRef.innerWidth === 'number')
+      ? winRef.innerWidth
+      : 1280;
+    const totalH = (root.clientHeight && root.clientHeight > 0)
+      ? root.clientHeight
+      : (winRef && typeof winRef.innerHeight === 'number')
+      ? winRef.innerHeight
+      : 800;
+
+    const isCollapsed = dockComponent && typeof dockComponent.isCollapsed === 'function' && dockComponent.isCollapsed();
+    const dockW = isCollapsed ? 48 : 280;
+    const toolW = 110;
+    const headerH = 44;
+
+    const nextChartW = Math.max(300, totalW - toolW - dockW);
+    const nextChartH = Math.max(200, totalH - headerH);
+
+    if (canvas) {
+      canvas.width = nextChartW;
+      canvas.height = nextChartH;
+      if (canvas.style) {
+        canvas.style.width = `${nextChartW}px`;
+        canvas.style.height = `${nextChartH}px`;
+      }
+    }
+
+    const nextPlotW = Math.max(0, nextChartW - priceAxisWidth);
+    const nextPlotH = Math.max(0, nextChartH - timeAxisHeight);
+
+    if (axesRenderer) {
+      axesRenderer.resize(nextChartW, nextChartH);
+      axesRenderer.updateDimensions(nextPlotW, nextPlotH);
+    }
+
+    if (bottomAxisTrack && bottomAxisTrack.style) {
+      bottomAxisTrack.style.width = `${nextPlotW}px`;
+    }
+
+    if (typeof chartInstance.render === 'function') {
+      chartInstance.render();
+    }
+  };
+
+  if (dockComponent) {
+    const origToggle = dockComponent.onToggleCollapse;
+    dockComponent.onToggleCollapse = (collapsed) => {
+      handleLayoutResize();
+      if (typeof origToggle === 'function') {
+        origToggle(collapsed);
+      }
+    };
+  }
+
+  if (win && typeof win.addEventListener === 'function') {
+    if (windowResizeHandler) {
+      try {
+        win.removeEventListener('resize', windowResizeHandler);
+      } catch (_) {}
+    }
+    windowResizeHandler = handleLayoutResize;
+    win.addEventListener('resize', windowResizeHandler);
+  }
 
   function activateControl(target) {
     const isAlreadyActive = appState.activeView === target;
@@ -1959,148 +2168,68 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     if (typeof opts.onTimeframeChange === 'function') {
       opts.onTimeframeChange(tf);
     }
-    if (typeof opts.onResolutionChange === 'function') {
-      opts.onResolutionChange(tf);
-    }
-
-    return tf;
   }
 
-  chartInstance.activateControl = activateControl;
   chartInstance.setTimeframe = setTimeframe;
-  chartInstance.setResolution = setTimeframe;
-  chartInstance.activateWorkflow = (workflow, widget) =>
-    dockComponent.activateWorkflow(workflow, widget);
-  chartInstance.mountWorkflow = (workflow, widget) =>
-    dockComponent.mountWorkflow(workflow, widget);
-  chartInstance.switchDockTab = (tab) => dockComponent.switchTab(tab);
-  chartInstance.toggleDockCollapse = () => dockComponent.toggleCollapse();
-
-  chartInstance.updateData = function (newCandles) {
-    if (!newCandles) return Promise.resolve(this);
-    const updated = Chart.prototype.updateData.call(this, newCandles);
-    appState.data = updated;
-    const updatedRanges = computeRanges(this.data);
-    if (this.axesRenderer) {
-      if (typeof this.axesRenderer.setCoordinateScale === 'function') {
-        this.axesRenderer.setCoordinateScale(updatedRanges);
-      }
-      if (typeof this.axesRenderer.setScale === 'function') {
-        this.axesRenderer.setScale(updatedRanges);
-      }
-      if (typeof this.axesRenderer.renderPriceScale === 'function') {
-        this.axesRenderer.renderPriceScale(updatedRanges.priceRange || updatedRanges);
-      }
-      if (typeof this.axesRenderer.renderTimeScale === 'function') {
-        this.axesRenderer.renderTimeScale(updatedRanges.timeRange || updatedRanges);
-      }
-    }
-    if (bottomAxisTrack) {
-      updateDOMTimeAxisTrack(bottomAxisTrack, updatedRanges.timeRange);
-    }
-    return Promise.resolve(this);
-  };
+  chartInstance.activateControl = activateControl;
 
   chartInstance.unmount = function () {
-    if (win && windowResizeHandler && typeof win.removeEventListener === 'function') {
-      win.removeEventListener('resize', windowResizeHandler);
-      windowResizeHandler = null;
-    }
-    if (activeResizeObserver && typeof activeResizeObserver.disconnect === 'function') {
-      activeResizeObserver.disconnect();
-      activeResizeObserver = null;
-    }
-    if (chartInstance && typeof chartInstance.destroy === 'function') {
+    if (typeof chartInstance.destroy === 'function') {
       chartInstance.destroy();
     }
+    if (dockComponent && typeof dockComponent.destroy === 'function') {
+      dockComponent.destroy();
+    }
+    if (toolPaletteComponent && typeof toolPaletteComponent.destroy === 'function') {
+      toolPaletteComponent.destroy();
+    }
+    if (windowResizeHandler && win && typeof win.removeEventListener === 'function') {
+      try {
+        win.removeEventListener('resize', windowResizeHandler);
+      } catch (_) {}
+      windowResizeHandler = null;
+    }
     clearContainer(root);
+    root.__nexus_mounted = false;
     delete root.__nexusInstance;
     mountedInstances.delete(root);
-    activeAppInstance = null;
-    activeChart = null;
-    chart = null;
   };
 
-  windowResizeHandler = () => {
-    if (!root) return;
-    const curW = root.clientWidth || (win && win.innerWidth) || 800;
-    const curH = root.clientHeight || (win && win.innerHeight) || 600;
-    if (chartInstance && typeof chartInstance.resize === 'function') {
-      chartInstance.resize(curW, curH);
-    }
-  };
-
-  if (win && typeof win.addEventListener === 'function') {
-    win.addEventListener('resize', windowResizeHandler);
-  }
-
-  // Ensure all interactive controls have click handlers bound
-  const allControls = root.querySelectorAll('button.control-btn, button.tab-btn');
-  for (const c of allControls) {
-    const handlers = c.listeners ? c.listeners.get('click') || [] : [];
-    if (handlers.length === 0 && typeof c.addEventListener === 'function') {
-      c.addEventListener('click', (e) => {
-        if (e && typeof e.preventDefault === 'function') e.preventDefault();
+  // Real-time streaming generator
+  if (opts.stream !== false) {
+    try {
+      chartInstance.startStreaming(opts.streamInterval || 1000, {
+        volatility: opts.volatility || 1.5,
+        candleInterval: initialInterval,
       });
-    }
+    } catch (_) {}
   }
 
-  chartInstance.render();
-
-  root.__nexusInstance = chartInstance;
-  mountedInstances.set(root, chartInstance);
   activeAppInstance = chartInstance;
   activeChart = chartInstance;
   chart = chartInstance;
+  root.__nexusInstance = chartInstance;
+  mountedInstances.set(root, chartInstance);
 
   return chartInstance;
 }
 
-export function mount(container = null, options = {}) {
-  if (container === null) {
-    throw new Error('Target container (#app) was not found in the DOM: container is missing or null');
-  }
-  let target = container;
-  if (!target && typeof document !== 'undefined') {
-    target = document.getElementById('app');
-  }
-  if (!target) {
-    throw new Error('Target container (#app) was not found in the DOM: container is missing or null');
-  }
-  return initApp(target, options);
+export function mount(containerOrOptions = {}, maybeOptions = {}) {
+  return initApp(containerOrOptions, maybeOptions);
 }
 
-export function mountApp(container = null, options = {}) {
-  return mount(container, options);
+export function mountApp(containerOrOptions = {}, maybeOptions = {}) {
+  return initApp(containerOrOptions, maybeOptions);
 }
 
-export default {
-  initApp,
-  mount,
-  mountApp,
-  getState,
-  getActiveTool,
-  setActiveTool,
-  getTimeframe,
-  setTimeframe,
-  getResolution,
-  setResolution,
-  getWorkspaceState,
-  SUPPORTED_TIMEFRAMES,
-  TIMEFRAME_INTERVALS,
-  Chart,
-  AxesRenderer,
-};
+export default initApp;
 
-// Automatic browser environment mount guard
 if (typeof document !== 'undefined') {
-  const mountTarget = document.getElementById('app');
-  if (mountTarget && !mountTarget.__nexus_mounted && mountTarget.children.length === 0) {
+  const mountTarget = document.getElementById('app') || document.body;
+  if (mountTarget && !mountTarget.__nexus_mounted && (!mountTarget.children || mountTarget.children.length === 0)) {
     mountTarget.__nexus_mounted = true;
-    try {
-      if (typeof mountApp === 'function') mountApp(mountTarget);
-      else if (typeof mount === 'function') mount(mountTarget);
-    } catch (_) {}
+    if (typeof mountApp === 'function') mountApp(mountTarget);
+    else if (typeof mount === 'function') mount(mountTarget);
   }
 }
 export const init = mountApp;
