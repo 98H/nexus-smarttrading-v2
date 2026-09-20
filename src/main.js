@@ -839,3 +839,4 @@ if (typeof document !== 'undefined') {
     else if (typeof mount === 'function') mount(mountTarget);
   }
 }
+export const initialize = mountApp;
