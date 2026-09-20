@@ -1,6 +1,6 @@
 /**
  * SmartTrading-V2 — Chart Engine & Candlestick/Axes Orchestrator
- * Integrates Candlestick rendering, AxesRenderer (DF-SCALES-01, DF-SCALES-02),
+ * Integrates Candlestick rendering, AxesRenderer (DF-SCALES-01, DF-SCALES-02, STORY 33.2.1),
  * pan gestures (DF-GESTURE-01, STORY 33.1.1), and analytical overlays (DF-OVERLAYS-01)
  * within constrained viewport bounds.
  */
@@ -42,6 +42,8 @@ export function polyfillCanvasContext(ctx) {
     'setLineDash',
     'getLineDash',
     'arc',
+    'rect',
+    'clip',
     'measureText',
     'fillText',
     'strokeText',
@@ -323,8 +325,25 @@ export class Chart {
 
   updateData(data) {
     if (Array.isArray(data)) {
-      if (data.length < 50 && this.data.length >= 50) {
-        this.data = [...this.data, ...data];
+      if (this.data.length > 0 && data.length < this.data.length) {
+        const map = new Map();
+        this.data.forEach((c) => {
+          const k = c.time ?? c.timestamp ?? c.t ?? c.date;
+          if (k !== undefined) map.set(k, c);
+        });
+        data.forEach((c) => {
+          const k = c.time ?? c.timestamp ?? c.t ?? c.date;
+          if (k !== undefined) map.set(k, c);
+        });
+        if (map.size >= this.data.length) {
+          this.data = Array.from(map.values()).sort((a, b) => {
+            const tA = a.time ?? a.timestamp ?? a.t ?? a.date ?? 0;
+            const tB = b.time ?? b.timestamp ?? b.t ?? b.date ?? 0;
+            return tA - tB;
+          });
+        } else {
+          this.data = [...this.data, ...data];
+        }
       } else {
         this.data = [...data];
       }
@@ -369,8 +388,10 @@ export class Chart {
       ctx.clearRect(0, 0, width, height);
     }
 
+    // Ensure coordinate scales and time axis are rendered in untransformed screen space
+    // so the horizontal time scale axis remains anchored along the bottom viewport fold
     if (typeof ctx.setTransform === 'function') {
-      ctx.setTransform(1, 0, 0, 1, this._viewport.x, this._viewport.y);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
     }
 
     const data = this.data;
@@ -407,6 +428,17 @@ export class Chart {
     const priceMin = ranges.priceRange.min;
     const priceMax = ranges.priceRange.max;
 
+    // Apply viewport transform for candlesticks and indicators, clipped to plot bounds
+    ctx.save?.();
+    if (typeof ctx.beginPath === 'function' && typeof ctx.rect === 'function' && typeof ctx.clip === 'function') {
+      ctx.beginPath();
+      ctx.rect(plotArea.left, plotArea.top, plotArea.width, plotArea.height);
+      ctx.clip();
+    }
+    if (typeof ctx.setTransform === 'function') {
+      ctx.setTransform(1, 0, 0, 1, this._viewport.x, this._viewport.y);
+    }
+
     // Draw candlestick bars reflecting active zoom scale across viewport sectors
     this.drawCandles(ctx, data, plotArea, priceMin, priceMax);
 
@@ -424,6 +456,8 @@ export class Chart {
       color: this.color,
       lineWidth: 2,
     });
+
+    ctx.restore?.();
   }
 
   drawCandles(ctx, data, plotArea, minPrice, maxPrice) {
