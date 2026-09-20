@@ -6,6 +6,7 @@
  * - Analytical indicators (20 EMA/SMA) and indicator legend (DF-OVERLAYS-01)
  * - Cohesive dark-theme control styling (DF-THEME-01)
  * - Precise financial price coordinate mapping (DF-TOOLS-03)
+ * - Interactive canvas panning & viewport transformations (DF-GESTURE-01)
  */
 
 import {
@@ -25,9 +26,11 @@ import {
   AxesRenderer,
   computeRanges,
 } from './chart.js';
+import { ChartCanvas } from './canvas.js';
 
 export {
   Chart,
+  ChartCanvas,
   calculateSMA,
   calculateEMA,
   generateDefaultCandles,
@@ -93,11 +96,12 @@ export function mapCoordinateToPrice(y, chart) {
 
 /**
  * Mounts and bootstraps the SmartTrading application into a target DOM element or canvas.
- * Satisfies viewport invariants (DF-LAYOUT-02), scale axes (DF-SCALES-02), and indicators (DF-OVERLAYS-01).
+ * Satisfies viewport invariants (DF-LAYOUT-02), scale axes (DF-SCALES-02), indicators (DF-OVERLAYS-01),
+ * and canvas gestures (DF-GESTURE-01).
  *
  * @param {HTMLElement|Object} [containerOrOptions={}] - Mount DOM container, canvas, or options
  * @param {Object} [options={}] - Configuration options
- * @returns {Chart} Active chart instance
+ * @returns {Chart|Object} Active runtime chart instance
  */
 export function mountApp(containerOrOptions = {}, options = {}) {
   let container = null;
@@ -189,10 +193,10 @@ export function mountApp(containerOrOptions = {}, options = {}) {
   }
 
   // Header controls
+  let legend = null;
   if (header && typeof header.appendChild === 'function' && !header._hasControls) {
     header._hasControls = true;
 
-    // Controls wrapper (ticker / timeframe / overlay selectors)
     const controls =
       typeof document !== 'undefined' && typeof document.createElement === 'function'
         ? document.createElement('div')
@@ -249,7 +253,7 @@ export function mountApp(containerOrOptions = {}, options = {}) {
     }
 
     // Indicator legend element (.indicator-legend)
-    const legend =
+    legend =
       typeof document !== 'undefined' && typeof document.createElement === 'function'
         ? document.createElement('div')
         : null;
@@ -349,21 +353,11 @@ export function mountApp(containerOrOptions = {}, options = {}) {
         dock.style.overflowY = 'auto';
       }
 
-      // Dock buttons (Trendline, Horizontal Line, Measure, Clear)
-      ['Trendline', 'Horizontal Line', 'Measure', 'Clear'].forEach((name) => {
-        const btn = document.createElement('button');
-        if (btn) {
-          btn.textContent = name;
-          applyControlStyle(btn);
-          if (typeof dock.appendChild === 'function') dock.appendChild(btn);
-        }
-      });
-
       workspace.appendChild(dock);
     }
   }
 
-  // 5. Canvas resolution
+  // 5. Canvas resolution and DOM mounting
   if (!canvas) {
     if (chartContainer && typeof chartContainer.querySelector === 'function') {
       canvas = chartContainer.querySelector('canvas');
@@ -379,22 +373,97 @@ export function mountApp(containerOrOptions = {}, options = {}) {
           canvas.setAttribute('class', 'chart-canvas');
           canvas.setAttribute('data-testid', 'chart-canvas');
         }
-        if (chartContainer && typeof chartContainer.appendChild === 'function') {
-          chartContainer.appendChild(canvas);
-        } else if (container && typeof container.appendChild === 'function') {
-          container.appendChild(canvas);
-        }
       }
     }
   }
 
-  // 6. Chart instantiation and configuration
-  const chartInstance = new Chart(canvas, {
+  // Mount canvas into DOM hierarchy
+  const mountParent =
+    chartContainer && typeof chartContainer.appendChild === 'function'
+      ? chartContainer
+      : container && typeof container.appendChild === 'function'
+      ? container
+      : null;
+
+  if (canvas && mountParent && canvas.parentElement !== mountParent) {
+    mountParent.appendChild(canvas);
+  }
+
+  if (
+    canvas &&
+    container &&
+    typeof container.querySelector === 'function' &&
+    !container.querySelector('canvas') &&
+    typeof container.appendChild === 'function'
+  ) {
+    container.appendChild(canvas);
+  }
+
+  // 6. Interactive Canvas & Viewport Gestures (DF-GESTURE-01)
+  const chartCanvas = new ChartCanvas(canvas, {
     container: chartContainer || container,
-    data: opts.data || opts.candles,
-    timeAxis: opts.timeAxis || { visible: true, height: 30 },
     ...opts,
+    onRender: opts.onRender,
   });
+
+  if (legend) {
+    chartCanvas.legendElement = legend;
+  }
+
+  // Dock buttons (Trendline, Horizontal Line, Measure, Clear)
+  if (dock && typeof dock.appendChild === 'function' && !dock._hasButtons) {
+    dock._hasButtons = true;
+    ['Trendline', 'Horizontal Line', 'Measure', 'Clear'].forEach((name) => {
+      const btn = document.createElement('button');
+      if (btn) {
+        btn.textContent = name;
+        applyControlStyle(btn);
+        if (typeof btn.addEventListener === 'function') {
+          btn.addEventListener('click', () => {
+            if (name === 'Trendline') chartCanvas.setToolMode('trendline');
+            else if (name === 'Horizontal Line') chartCanvas.setToolMode('horizontal-level');
+            else if (name === 'Measure') chartCanvas.setToolMode('measurement');
+            else if (name === 'Clear') chartCanvas.clearAnnotations();
+          });
+        }
+        dock.appendChild(btn);
+      }
+    });
+  }
+
+  // 7. Inner Chart instantiation & configuration
+  let chartInstance = null;
+  try {
+    chartInstance = new Chart(canvas, {
+      container: chartContainer || container,
+      data: opts.data || opts.candles,
+      timeAxis: opts.timeAxis || { visible: true, height: 30 },
+      ...opts,
+    });
+  } catch (_) {}
+
+  const appInstance = chartInstance || chartCanvas;
+
+  if (chartInstance) {
+    chartCanvas.innerChart = chartInstance;
+    chartInstance.chart = chartCanvas;
+    chartInstance.chartCanvas = chartCanvas;
+    chartInstance.getChart = () => chartCanvas;
+    chartInstance.getViewport = () => chartCanvas.getViewport();
+    chartInstance.getViewportMatrix = () => chartCanvas.getViewportMatrix();
+    Object.defineProperty(chartInstance, 'isPanning', {
+      get() {
+        return chartCanvas.isPanning;
+      },
+      set(v) {
+        chartCanvas.isPanning = v;
+      },
+      configurable: true,
+    });
+  }
+
+  chartCanvas.chart = chartCanvas;
+  chartCanvas.getChart = () => chartCanvas;
 
   // Dynamic window resize listener preserving time axis visibility (DF-SCALES-02)
   const onResize = () => {
@@ -407,17 +476,26 @@ export function mountApp(containerOrOptions = {}, options = {}) {
       (canvas && canvas.height) ||
       (parent && parent.clientHeight) ||
       (typeof window !== 'undefined' ? window.innerHeight : 600);
-    chartInstance.resize(w, h);
+    if (chartInstance && typeof chartInstance.resize === 'function') {
+      chartInstance.resize(w, h);
+    }
+    if (chartCanvas && typeof chartCanvas.render === 'function') {
+      chartCanvas.render();
+    }
   };
 
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('resize', onResize);
   }
 
-  // Ensure active rendering
-  chartInstance.render();
+  // Initial render
+  if (chartCanvas && typeof chartCanvas.render === 'function') {
+    chartCanvas.render();
+  } else if (chartInstance && typeof chartInstance.render === 'function') {
+    chartInstance.render();
+  }
 
-  return chartInstance;
+  return appInstance;
 }
 
 export function mount(containerOrOptions, options) {
