@@ -66,9 +66,11 @@ export class Chart {
     };
 
     this.isPanning = false;
+    this.isRunning = false;
     this.renderCount = 0;
     this.frameCount = 0;
     this.animationTimer = null;
+    this.animationFrameId = null;
     this.dragStartPoint = { x: 0, y: 0 };
     this.dragStartOffset = { x: 0, y: 0 };
 
@@ -93,19 +95,45 @@ export class Chart {
   }
 
   start(fps = 60) {
-    if (this.animationTimer) return;
+    if (this.animationTimer || this.animationFrameId) return;
+    this.isRunning = true;
     const targetFps = typeof fps === 'number' && fps > 0 ? fps : 60;
     const intervalMs = Math.max(1, Math.round(1000 / targetFps));
-    this.animationTimer = setInterval(() => {
+
+    const step = () => {
       this.frameCount++;
       this.render();
-    }, intervalMs);
+    };
+
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      const loop = () => {
+        if (!this.isRunning) return;
+        step();
+        this.animationFrameId = window.requestAnimationFrame(loop);
+      };
+      this.animationFrameId = window.requestAnimationFrame(loop);
+    } else {
+      this.animationTimer = setInterval(step, intervalMs);
+    }
   }
 
   stop() {
+    this.isRunning = false;
     if (this.animationTimer) {
       clearInterval(this.animationTimer);
       this.animationTimer = null;
+    }
+    if (this.animationFrameId) {
+      const cancel =
+        typeof cancelAnimationFrame === 'function'
+          ? cancelAnimationFrame
+          : typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function'
+            ? window.cancelAnimationFrame
+            : null;
+      if (cancel) {
+        cancel(this.animationFrameId);
+      }
+      this.animationFrameId = null;
     }
   }
 

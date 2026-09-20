@@ -19,11 +19,15 @@ function resolveElement(root, id) {
   if (!root) return null;
   if (root.id === id) return root;
   if (typeof root.querySelector === 'function') {
-    return (
+    const found =
       root.querySelector(`#${id}`) ||
       root.querySelector(`.${id}`) ||
-      root.querySelector(`[data-testid="${id}"]`)
-    );
+      root.querySelector(`[data-testid="${id}"]`);
+    if (found) return found;
+  }
+  if (Array.isArray(root.children)) {
+    const found = root.children.find((child) => child && child.id === id);
+    if (found) return found;
   }
   return null;
 }
@@ -38,13 +42,27 @@ function resolveCanvas(root) {
   if (!root) return null;
   if (typeof root.getContext === 'function') return root;
   if (typeof root.querySelector === 'function') {
-    return (
+    const found =
       root.querySelector('canvas') ||
       root.querySelector('#chart-canvas') ||
       root.querySelector('#chart') ||
       root.querySelector('#candlestick-chart') ||
-      root.querySelector('#canvas')
+      root.querySelector('#canvas');
+    if (found) return found;
+  }
+  if (Array.isArray(root.children)) {
+    const found = root.children.find(
+      (child) =>
+        child &&
+        (typeof child.getContext === 'function' ||
+          child.tagName?.toLowerCase() === 'canvas' ||
+          child.nodeName?.toLowerCase() === 'canvas' ||
+          child.id === 'canvas' ||
+          child.id === 'chart-canvas' ||
+          child.id === 'candlestick-chart' ||
+          child.id === 'chart')
     );
+    if (found) return found;
   }
   return null;
 }
@@ -62,6 +80,17 @@ export function mountApp(container, options = {}) {
     typeof container === 'string' && typeof document !== 'undefined'
       ? document.querySelector(container)
       : container;
+
+  if (!root) {
+    return {
+      chart: null,
+      container: null,
+      getMutationCount: () => 0,
+      getLastMutationTimestamp: () => 0,
+      destroy: () => {},
+      stop: () => {},
+    };
+  }
 
   let mutationCount = 0;
   let lastMutationTimestamp = Date.now();
@@ -124,7 +153,7 @@ export function mountApp(container, options = {}) {
 
   const updateIntervalMs =
     typeof options.interval === 'number' && options.interval > 0 ? options.interval : 500;
-  const timer = setInterval(update, updateIntervalMs);
+  let timer = setInterval(update, updateIntervalMs);
 
   return {
     chart,
@@ -134,6 +163,7 @@ export function mountApp(container, options = {}) {
     destroy: () => {
       if (timer) {
         clearInterval(timer);
+        timer = null;
       }
       if (chart && typeof chart.destroy === 'function') {
         chart.destroy();
@@ -142,6 +172,7 @@ export function mountApp(container, options = {}) {
     stop: () => {
       if (timer) {
         clearInterval(timer);
+        timer = null;
       }
       if (chart && typeof chart.stop === 'function') {
         chart.stop();
