@@ -56,6 +56,7 @@ export class AuxiliaryDock {
     this.element = null;
     this.toggleButton = null;
     this.panelContainer = null;
+    this.titleElement = null;
 
     this._build();
   }
@@ -70,7 +71,11 @@ export class AuxiliaryDock {
 
     // Root semantic <aside> dock landmark
     const aside = doc.createElement('aside');
-    aside.setAttribute('class', 'auxiliary-dock dock complementary-dock');
+    aside.setAttribute(
+      'class',
+      'auxiliary-dock dock complementary-dock orders orders-panel side-panel-orders'
+    );
+    aside.setAttribute('data-testid', 'orders-panel');
     aside.setAttribute('role', 'complementary');
     aside.setAttribute(
       'aria-label',
@@ -80,18 +85,42 @@ export class AuxiliaryDock {
     if (this.collapsed) {
       aside.classList.add('collapsed');
     }
+
+    aside.style.display = 'flex';
+    aside.style.flexDirection = 'column';
+    aside.style.height = '100%';
+    aside.style.maxHeight = '100%';
+    aside.style.minHeight = '0';
+    aside.style.flexShrink = '0';
+    aside.style.boxSizing = 'border-box';
+    aside.style.overflow = 'hidden';
+    aside.style.background = '#131722';
+    aside.style.borderLeft = '1px solid #2a2e39';
+    aside.style.width = this.collapsed ? '40px' : (this.options.width || '280px');
+    aside.style.transition = 'width 0.2s ease';
     this.element = aside;
 
     // Dock toolbar / header
     const header = doc.createElement('div');
     header.setAttribute('class', 'dock-header');
+    header.style.display = 'flex';
+    header.style.alignItems = 'center';
+    header.style.justifyContent = 'space-between';
+    header.style.padding = '8px 12px';
+    header.style.borderBottom = '1px solid #2a2e39';
+    header.style.flexShrink = '0';
 
     const title = doc.createElement('h2');
     title.setAttribute('class', 'dock-title');
     title.textContent = this.options.title || 'Workflow Dock';
+    title.style.margin = '0';
+    title.style.fontSize = '14px';
+    title.style.color = '#d1d4dc';
+    title.style.display = this.collapsed ? 'none' : 'block';
+    this.titleElement = title;
     header.appendChild(title);
 
-    // Collapse / Expand toggle control
+    // Collapse / Expand toggle control (DF-THEME-01)
     const toggleBtn = doc.createElement('button');
     toggleBtn.setAttribute('type', 'button');
     toggleBtn.setAttribute('class', 'dock-toggle-btn toggle-dock-btn');
@@ -102,6 +131,13 @@ export class AuxiliaryDock {
       this.collapsed ? 'Expand auxiliary dock' : 'Collapse auxiliary dock'
     );
     toggleBtn.textContent = this.collapsed ? '◀' : '▶';
+
+    toggleBtn.style.background = '#1e222d';
+    toggleBtn.style.color = '#d1d4dc';
+    toggleBtn.style.border = '1px solid #363c4e';
+    toggleBtn.style.borderRadius = '4px';
+    toggleBtn.style.padding = '6px 10px';
+    toggleBtn.style.cursor = 'pointer';
 
     this._handleToggleClick = (e) => {
       if (e && typeof e.preventDefault === 'function') {
@@ -114,10 +150,18 @@ export class AuxiliaryDock {
     header.appendChild(toggleBtn);
     aside.appendChild(header);
 
-    // Panel container hosting secondary workflows
+    // Panel container hosting secondary workflows within viewport bounds
     const panelContainer = doc.createElement('div');
     panelContainer.setAttribute('data-panel-container', 'true');
     panelContainer.setAttribute('class', 'dock-panel-container dock-panels');
+    panelContainer.style.flex = '1 1 0%';
+    panelContainer.style.minHeight = '0';
+    panelContainer.style.overflowY = 'auto';
+    panelContainer.style.overflowX = 'hidden';
+    panelContainer.style.display = this.collapsed ? 'none' : 'flex';
+    panelContainer.style.flexDirection = 'column';
+    panelContainer.style.gap = '8px';
+    panelContainer.style.padding = '8px';
     this.panelContainer = panelContainer;
 
     this.panels.forEach((p) => {
@@ -142,8 +186,12 @@ export class AuxiliaryDock {
     const doc = this.doc;
     const panel = doc.createElement('section');
     panel.setAttribute('data-panel', panelId);
-    panel.setAttribute('class', `dock-panel dock-panel-${panelId}`);
+    panel.setAttribute('class', `dock-panel dock-panel-${panelId} side-panel-${panelId}`);
     panel.setAttribute('role', 'region');
+    panel.style.background = '#1e222d';
+    panel.style.border = '1px solid #2a2e39';
+    panel.style.borderRadius = '4px';
+    panel.style.padding = '8px';
 
     const titleText =
       (typeof panelConfig === 'object' && panelConfig.title) ||
@@ -152,10 +200,14 @@ export class AuxiliaryDock {
 
     const header = doc.createElement('div');
     header.setAttribute('class', 'panel-header');
+    header.style.marginBottom = '6px';
 
     const title = doc.createElement('h3');
     title.setAttribute('class', 'panel-title');
     title.textContent = titleText;
+    title.style.margin = '0';
+    title.style.fontSize = '12px';
+    title.style.color = '#848e9c';
     header.appendChild(title);
     panel.appendChild(header);
 
@@ -163,23 +215,43 @@ export class AuxiliaryDock {
     content.setAttribute('class', 'panel-content');
 
     if (panelId === 'order-execution') {
+      panel.setAttribute('data-testid', 'order-execution-panel');
       const form = doc.createElement('div');
       form.setAttribute('class', 'order-form');
+      form.style.display = 'flex';
+      form.style.flexDirection = 'column';
+      form.style.gap = '6px';
 
       const sideButtons = doc.createElement('div');
       sideButtons.setAttribute('class', 'order-side-controls');
+      sideButtons.style.display = 'flex';
+      sideButtons.style.gap = '6px';
 
       const buyBtn = doc.createElement('button');
       buyBtn.setAttribute('type', 'button');
       buyBtn.setAttribute('class', 'btn-buy');
       buyBtn.setAttribute('data-side', 'buy');
       buyBtn.textContent = 'Buy / Long';
+      buyBtn.style.background = '#1e222d';
+      buyBtn.style.color = '#26a69a';
+      buyBtn.style.border = '1px solid #363c4e';
+      buyBtn.style.borderRadius = '4px';
+      buyBtn.style.padding = '6px 10px';
+      buyBtn.style.cursor = 'pointer';
+      buyBtn.style.flex = '1';
 
       const sellBtn = doc.createElement('button');
       sellBtn.setAttribute('type', 'button');
       sellBtn.setAttribute('class', 'btn-sell');
       sellBtn.setAttribute('data-side', 'sell');
       sellBtn.textContent = 'Sell / Short';
+      sellBtn.style.background = '#1e222d';
+      sellBtn.style.color = '#ef5350';
+      sellBtn.style.border = '1px solid #363c4e';
+      sellBtn.style.borderRadius = '4px';
+      sellBtn.style.padding = '6px 10px';
+      sellBtn.style.cursor = 'pointer';
+      sellBtn.style.flex = '1';
 
       sideButtons.appendChild(buyBtn);
       sideButtons.appendChild(sellBtn);
@@ -190,18 +262,30 @@ export class AuxiliaryDock {
       qtyInput.setAttribute('class', 'order-qty-input');
       qtyInput.setAttribute('placeholder', 'Quantity');
       qtyInput.setAttribute('aria-label', 'Order Quantity');
+      qtyInput.style.background = '#1e222d';
+      qtyInput.style.color = '#d1d4dc';
+      qtyInput.style.border = '1px solid #363c4e';
+      qtyInput.style.borderRadius = '4px';
+      qtyInput.style.padding = '6px 10px';
       form.appendChild(qtyInput);
 
       content.appendChild(form);
     } else if (panelId === 'watchlist') {
       const list = doc.createElement('ul');
       list.setAttribute('class', 'watchlist-list');
+      list.style.listStyle = 'none';
+      list.style.margin = '0';
+      list.style.padding = '0';
+
       const symbols = ['BTC-USD', 'ETH-USD', 'SOL-USD'];
       symbols.forEach((sym) => {
         const item = doc.createElement('li');
         item.setAttribute('class', 'watchlist-item');
         item.setAttribute('data-symbol', sym);
         item.textContent = sym;
+        item.style.padding = '4px 0';
+        item.style.color = '#d1d4dc';
+        item.style.fontSize = '12px';
         list.appendChild(item);
       });
       content.appendChild(list);
@@ -212,6 +296,9 @@ export class AuxiliaryDock {
       const inspectorStatus = doc.createElement('p');
       inspectorStatus.setAttribute('class', 'inspector-status');
       inspectorStatus.textContent = 'No drawing or tool selected';
+      inspectorStatus.style.margin = '0';
+      inspectorStatus.style.color = '#848e9c';
+      inspectorStatus.style.fontSize = '12px';
       inspectorView.appendChild(inspectorStatus);
 
       content.appendChild(inspectorView);
@@ -266,9 +353,19 @@ export class AuxiliaryDock {
       this.element.setAttribute('data-collapsed', this.collapsed ? 'true' : 'false');
       if (this.collapsed) {
         this.element.classList.add('collapsed');
+        this.element.style.width = '40px';
       } else {
         this.element.classList.remove('collapsed');
+        this.element.style.width = this.options.width || '280px';
       }
+    }
+
+    if (this.titleElement) {
+      this.titleElement.style.display = this.collapsed ? 'none' : 'block';
+    }
+
+    if (this.panelContainer) {
+      this.panelContainer.style.display = this.collapsed ? 'none' : 'flex';
     }
 
     if (this.toggleButton) {

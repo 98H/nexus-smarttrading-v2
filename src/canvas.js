@@ -2,6 +2,7 @@
  * ChartCanvas — Interactive Canvas Viewport & Tool Controller
  * Manages 2D transformation matrix, pan gestures, tool drawing lifecycle
  * (crosshair, trendline, horizontal-level, measurement), animation loops,
+ * indicator overlays (DF-OVERLAYS-01), coordinate price mapping (DF-TOOLS-03),
  * and annotation state.
  */
 
@@ -66,6 +67,9 @@ export class ChartCanvas {
     this._isDrawing = false;
     this.crosshair = { x: 0, y: 0, visible: false };
 
+    this.legendElement = null;
+    this.innerChart = null;
+
     this._animating = false;
     this._rafId = null;
 
@@ -77,31 +81,40 @@ export class ChartCanvas {
 
       if (mode === 'trendline') {
         this._isDrawing = true;
+        const startPrice = this.canvasToPrice(clientY);
         this.currentDrawing = {
           type: 'trendline',
           startX: clientX,
           startY: clientY,
           endX: clientX,
           endY: clientY,
+          startPrice,
+          endPrice: startPrice,
+          price: startPrice,
         };
       } else if (mode === 'measurement') {
         this._isDrawing = true;
+        const startPrice = this.canvasToPrice(clientY);
         this.currentDrawing = {
           type: 'measurement',
           startX: clientX,
           startY: clientY,
           endX: clientX,
           endY: clientY,
+          startPrice,
+          endPrice: startPrice,
           deltaX: 0,
           deltaY: 0,
+          deltaPrice: 0,
         };
       } else if (mode === 'horizontal-level') {
         this._isDrawing = true;
+        const price = this.canvasToPrice(clientY);
         this.currentDrawing = {
           type: 'horizontal-level',
           x: clientX,
           y: clientY,
-          price: clientY,
+          price,
         };
       } else {
         this.isPanning = true;
@@ -124,9 +137,16 @@ export class ChartCanvas {
       if (this._isDrawing && this.currentDrawing) {
         this.currentDrawing.endX = clientX;
         this.currentDrawing.endY = clientY;
+        const currentPrice = this.canvasToPrice(clientY);
+        this.currentDrawing.endPrice = currentPrice;
+
         if (this.currentDrawing.type === 'measurement') {
           this.currentDrawing.deltaX = clientX - this.currentDrawing.startX;
           this.currentDrawing.deltaY = clientY - this.currentDrawing.startY;
+          this.currentDrawing.deltaPrice = currentPrice - (this.currentDrawing.startPrice || 0);
+        } else if (this.currentDrawing.type === 'horizontal-level') {
+          this.currentDrawing.y = clientY;
+          this.currentDrawing.price = currentPrice;
         }
         this.render();
         return;
@@ -146,17 +166,20 @@ export class ChartCanvas {
       const clientY = e.clientY ?? 0;
 
       if (this._isDrawing && this.currentDrawing) {
+        const currentPrice = this.canvasToPrice(clientY);
+        this.currentDrawing.endX = clientX;
+        this.currentDrawing.endY = clientY;
+        this.currentDrawing.endPrice = currentPrice;
+
         if (this.currentDrawing.type === 'trendline') {
-          this.currentDrawing.endX = clientX;
-          this.currentDrawing.endY = clientY;
           this.annotations.push({ ...this.currentDrawing });
         } else if (this.currentDrawing.type === 'measurement') {
-          this.currentDrawing.endX = clientX;
-          this.currentDrawing.endY = clientY;
           this.currentDrawing.deltaX = clientX - this.currentDrawing.startX;
           this.currentDrawing.deltaY = clientY - this.currentDrawing.startY;
+          this.currentDrawing.deltaPrice = currentPrice - (this.currentDrawing.startPrice || 0);
           this.annotations.push({ ...this.currentDrawing });
         } else if (this.currentDrawing.type === 'horizontal-level') {
+          this.currentDrawing.price = currentPrice;
           this.annotations.push({ ...this.currentDrawing });
         }
         this.currentDrawing = null;
@@ -173,11 +196,12 @@ export class ChartCanvas {
       const mode = normalizeToolName(this.toolMode);
 
       if (mode === 'horizontal-level') {
+        const price = this.canvasToPrice(clientY);
         const level = {
           type: 'horizontal-level',
           x: clientX,
           y: clientY,
-          price: clientY,
+          price,
         };
         this.annotations.push(level);
         this.render();
@@ -197,12 +221,23 @@ export class ChartCanvas {
       this.render();
     };
 
+    this._onWheel = (e) => {
+      if (e && typeof e.preventDefault === 'function') {
+        e.preventDefault();
+      }
+      const delta = (e.deltaY || 0) < 0 ? 1.1 : 0.9;
+      this.scaleX = Math.max(0.2, Math.min(10, this.scaleX * delta));
+      this.scaleY = Math.max(0.2, Math.min(10, this.scaleY * delta));
+      this.render();
+    };
+
     if (this.canvas && typeof this.canvas.addEventListener === 'function') {
       this.canvas.addEventListener('mousedown', this._onMouseDown);
       this.canvas.addEventListener('mousemove', this._onMouseMove);
       this.canvas.addEventListener('mouseup', this._onMouseUp);
       this.canvas.addEventListener('mouseleave', this._onMouseLeave);
       this.canvas.addEventListener('click', this._onClick);
+      this.canvas.addEventListener('wheel', this._onWheel);
     }
 
     this.setToolMode(this.toolMode);
@@ -210,6 +245,75 @@ export class ChartCanvas {
     if (this.options.autoAnimate !== false) {
       this.startAnimationLoop();
     }
+  }
+
+  /**
+   * Maps canvas Y coordinate to financial price (DF-TOOLS-03).
+   * price = maxPrice - ((y - plotTop) / plotHeight) * (maxPrice - minPrice)
+   *
+   * @param {number} y
+   * @returns {number}
+   */
+  canvasToPrice(y) {
+    let minPrice = 100;
+    let maxPrice = 200;
+    let plotTop = 0;
+    let plotHeight = (this.canvas && this.canvas.height) || 600;
+
+    if (this.innerChart) {
+      if (this.innerChart.ranges) {
+        minPrice = this.innerChart.ranges.minPrice ?? minPrice;
+        maxPrice = this.innerChart.ranges.maxPrice ?? maxPrice;
+      } else if (this.innerChart.minPrice !== undefined) {
+        minPrice = this.innerChart.minPrice;
+        maxPrice = this.innerChart.maxPrice;
+      }
+      if (this.innerChart.plotTop !== undefined) plotTop = this.innerChart.plotTop;
+      if (this.innerChart.plotHeight !== undefined) plotHeight = this.innerChart.plotHeight;
+      else if (this.innerChart.height !== undefined) {
+        const timeH = this.innerChart.timeScaleHeight || 30;
+        plotHeight = this.innerChart.height - timeH;
+      }
+    } else if (this.options) {
+      if (this.options.minPrice !== undefined) minPrice = this.options.minPrice;
+      if (this.options.maxPrice !== undefined) maxPrice = this.options.maxPrice;
+      if (this.options.plotTop !== undefined) plotTop = this.options.plotTop;
+      if (this.options.plotHeight !== undefined) plotHeight = this.options.plotHeight;
+    }
+
+    return maxPrice - ((y - plotTop) / (plotHeight || 1)) * (maxPrice - minPrice);
+  }
+
+  /**
+   * Maps financial price to canvas Y coordinate.
+   *
+   * @param {number} price
+   * @returns {number}
+   */
+  priceToCanvas(price) {
+    let minPrice = 100;
+    let maxPrice = 200;
+    let plotTop = 0;
+    let plotHeight = (this.canvas && this.canvas.height) || 600;
+
+    if (this.innerChart) {
+      if (this.innerChart.ranges) {
+        minPrice = this.innerChart.ranges.minPrice ?? minPrice;
+        maxPrice = this.innerChart.ranges.maxPrice ?? maxPrice;
+      } else if (this.innerChart.minPrice !== undefined) {
+        minPrice = this.innerChart.minPrice;
+        maxPrice = this.innerChart.maxPrice;
+      }
+      if (this.innerChart.plotTop !== undefined) plotTop = this.innerChart.plotTop;
+      if (this.innerChart.plotHeight !== undefined) plotHeight = this.innerChart.plotHeight;
+      else if (this.innerChart.height !== undefined) {
+        const timeH = this.innerChart.timeScaleHeight || 30;
+        plotHeight = this.innerChart.height - timeH;
+      }
+    }
+
+    const range = maxPrice - minPrice || 1;
+    return plotTop + ((maxPrice - price) / range) * plotHeight;
   }
 
   /**
@@ -366,6 +470,62 @@ export class ChartCanvas {
     }
   }
 
+  _renderIndicatorOverlay() {
+    if (!this.ctx) return;
+    const candles = (this.innerChart && this.innerChart.candles) || [];
+    if (!candles || candles.length === 0) return;
+
+    const period = 20;
+    const k = 2 / (period + 1);
+    let ema = null;
+    const emaValues = [];
+
+    for (let i = 0; i < candles.length; i++) {
+      const close = candles[i].close ?? candles[i].c ?? 0;
+      if (ema === null) {
+        ema = close;
+      } else {
+        ema = close * k + ema * (1 - k);
+      }
+      emaValues.push({ index: i, value: ema });
+    }
+
+    const ctx = this.ctx;
+    if (typeof ctx.save === 'function') ctx.save();
+    if (typeof ctx.beginPath === 'function') ctx.beginPath();
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth = 1.5;
+
+    const w = (this.canvas && this.canvas.width) || 800;
+    const step = w / (candles.length || 1);
+
+    let started = false;
+    for (let i = 0; i < emaValues.length; i++) {
+      const x = i * step + step / 2;
+      const y = this.priceToCanvas(emaValues[i].value);
+      if (!started) {
+        if (typeof ctx.moveTo === 'function') ctx.moveTo(x, y);
+        started = true;
+      } else {
+        if (typeof ctx.lineTo === 'function') ctx.lineTo(x, y);
+      }
+    }
+    if (started && typeof ctx.stroke === 'function') {
+      ctx.stroke();
+    }
+    if (typeof ctx.restore === 'function') ctx.restore();
+
+    if (this.legendElement && emaValues.length > 0) {
+      const lastEma = emaValues[emaValues.length - 1].value;
+      const valSpan = this.legendElement.querySelector
+        ? this.legendElement.querySelector('.indicator-value')
+        : null;
+      if (valSpan) {
+        valSpan.textContent = lastEma.toFixed(2);
+      }
+    }
+  }
+
   _renderToolOverlay() {
     if (!this.ctx) return;
     const ctx = this.ctx;
@@ -414,6 +574,12 @@ export class ChartCanvas {
         if (typeof ctx.moveTo === 'function') ctx.moveTo(0, ann.y);
         if (typeof ctx.lineTo === 'function') ctx.lineTo(w, ann.y);
         if (typeof ctx.stroke === 'function') ctx.stroke();
+
+        const priceText = typeof ann.price === 'number' ? ann.price.toFixed(2) : String(ann.price ?? '');
+        if (priceText && typeof ctx.fillText === 'function') {
+          ctx.fillStyle = '#f59e0b';
+          ctx.fillText(`$${priceText}`, w - 65, ann.y - 4);
+        }
         if (typeof ctx.restore === 'function') ctx.restore();
       } else if (ann.type === 'measurement') {
         if (typeof ctx.save === 'function') ctx.save();
@@ -433,7 +599,8 @@ export class ChartCanvas {
         if (typeof ctx.lineTo === 'function') ctx.lineTo(left, top);
         if (typeof ctx.stroke === 'function') ctx.stroke();
 
-        const text = `ΔX: ${width.toFixed(0)}px, ΔY: ${height.toFixed(0)}px`;
+        const priceDiff = ann.deltaPrice !== undefined ? ann.deltaPrice.toFixed(2) : height.toFixed(0);
+        const text = `ΔX: ${width.toFixed(0)}px, ΔPrice: ${priceDiff}`;
         if (typeof ctx.fillText === 'function') {
           ctx.fillStyle = '#10b981';
           ctx.fillText(text, left + 4, top + 14);
@@ -465,6 +632,7 @@ export class ChartCanvas {
     }
 
     if (this.ctx) {
+      this._renderIndicatorOverlay();
       this._renderDynamicTick(time);
       this._renderToolOverlay();
     }
@@ -484,6 +652,7 @@ export class ChartCanvas {
       this.canvas.removeEventListener('mouseup', this._onMouseUp);
       this.canvas.removeEventListener('mouseleave', this._onMouseLeave);
       this.canvas.removeEventListener('click', this._onClick);
+      this.canvas.removeEventListener('wheel', this._onWheel);
     }
   }
 }
