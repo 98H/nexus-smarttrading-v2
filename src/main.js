@@ -588,6 +588,33 @@ function createDOMElement(tagName, attributes = {}) {
     }
   }
 
+  if (tagName.toLowerCase() === 'canvas') {
+    el.width = Number(attributes.width) || 800;
+    el.height = Number(attributes.height) || 400;
+    if (typeof el.getContext !== 'function') {
+      const drawCalls = [];
+      const ctx = {
+        canvas: el,
+        drawCalls,
+        clearRect: (x, y, w, h) => drawCalls.push({ type: 'clearRect', x, y, w, h }),
+        fillRect: (x, y, w, h) => drawCalls.push({ type: 'fillRect', x, y, w, h }),
+        strokeRect: (x, y, w, h) => drawCalls.push({ type: 'strokeRect', x, y, w, h }),
+        beginPath: () => drawCalls.push({ type: 'beginPath' }),
+        moveTo: (x, y) => drawCalls.push({ type: 'moveTo', x, y }),
+        lineTo: (x, y) => drawCalls.push({ type: 'lineTo', x, y }),
+        stroke: () => drawCalls.push({ type: 'stroke' }),
+        fill: () => drawCalls.push({ type: 'fill' }),
+        save: () => drawCalls.push({ type: 'save' }),
+        restore: () => drawCalls.push({ type: 'restore' }),
+        setTransform: (a, b, c, d, e, f) => drawCalls.push({ type: 'setTransform', a, b, c, d, e, f }),
+      };
+      el.getContext = (contextId) => {
+        if (contextId === '2d') return ctx;
+        return null;
+      };
+    }
+  }
+
   return el;
 }
 
@@ -967,47 +994,13 @@ export const mount = mountApp;
 export const init = mountApp;
 export const initialize = mountApp;
 export const initApp = mountApp;
-
-// Browser Auto-Mount Bootstrap Guard
-
-  const target =
-    container ||
-    (typeof document !== 'undefined'
-      ? (typeof document.getElementById === 'function' ? document.getElementById('app') : null) ||
-        document.body
-      : null);
-  return mountApp(target, options);
-}
-
 export default mountApp;
 
-// Browser Auto-Mount Bootstrap Guard
-// Browser Auto-Mount Bootstrap Guard
 // Browser Auto-Mount Bootstrap Guard
 if (typeof document !== 'undefined') {
   const mountTarget = document.getElementById('app') || document.body;
   if (mountTarget && !mountTarget.__nexus_mounted) {
     mountTarget.__nexus_mounted = true;
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
-  }
-}
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
-  }
-}
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
-  }
-}
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
-  }
-}
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
-  }
-}
     if (typeof mountApp === 'function') mountApp(mountTarget);
     else if (typeof mount === 'function') mount(mountTarget);
   }
