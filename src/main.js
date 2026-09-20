@@ -49,6 +49,10 @@ export function getChart() {
   return chart;
 }
 
+export function getActiveChart() {
+  return chart;
+}
+
 /**
  * Safely resolves the active requestAnimationFrame scheduler across environments.
  *
@@ -517,6 +521,7 @@ export function mountApp(target = '#app', options = {}) {
   // Mount structured descendants into #app root in top-to-bottom sequence
   container.appendChild(headerElement);
   container.appendChild(workspaceContainer);
+  container.appendChild(canvas);
 
   // 3. Generate initial candlestick data series
   const candleCount = opts.candleCount || 75;
@@ -569,12 +574,12 @@ export function mountApp(target = '#app', options = {}) {
     }
 
     canvas.addEventListener('wheel', (e) => {
-      if (e && typeof e.preventDefault === 'function') e.preventDefault();
-      if (chartInstance && typeof chartInstance.zoom === 'function') {
-        const delta = e && e.deltaY < 0 ? 1.1 : 0.9;
-        chartInstance.zoom(delta);
+      if (e && typeof e.preventDefault === 'function') {
+        e.preventDefault();
       }
-      if (typeof opts.onWheel === 'function') opts.onWheel(e);
+      if (typeof opts.onWheel === 'function') {
+        opts.onWheel(e);
+      }
     });
   }
 
@@ -671,6 +676,7 @@ export function mountApp(target = '#app', options = {}) {
   const appInstance = {
     chart: chartInstance,
     getChart: () => chartInstance,
+    getActiveChart: () => chartInstance,
     container,
     canvas,
     toolbar: headerElement,
@@ -741,8 +747,10 @@ export {
 export default mountApp;
 
 // Browser Auto-Mount Bootstrap Guard
-
-// Browser Auto-Mount Bootstrap Guard
+if (typeof document !== 'undefined') {
+  const mountTarget = document.getElementById('app') || document.body;
+  if (mountTarget && !mountTarget.__nexus_mounted) {
+    mountTarget.__nexus_mounted = true;
     if (typeof mountApp === 'function') {
       mountApp(mountTarget);
     } else if (typeof mount === 'function') {

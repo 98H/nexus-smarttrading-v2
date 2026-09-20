@@ -1,7 +1,7 @@
 /**
  * SmartTrading-V2 — Candlestick Chart Engine & Timeseries Aggregation
  * Implements viewport sector coverage, interactive pan gestures,
- * and high-density financial charting across horizontal canvas sectors.
+ * responsive canvas zoom scaling, and high-density financial charting.
  */
 
 /**
@@ -158,6 +158,7 @@ export class Chart {
     this.options = options;
     this.timeframe = options.timeframe || '1m';
     this.sectorCount = options.sectorCount || 4;
+    this.zoomScale = typeof options.zoomScale === 'number' && options.zoomScale > 0 ? options.zoomScale : 1.0;
 
     const inputData =
       (Array.isArray(options.candles) && options.candles.length > 0 && options.candles) ||
@@ -223,6 +224,47 @@ export class Chart {
     };
   }
 
+  /**
+   * Adjusts chart zoom scale by a multiplication factor and re-renders.
+   *
+   * @param {number} factor - Scale multiplier
+   */
+  zoom(factor) {
+    if (typeof factor !== 'number' || isNaN(factor) || factor <= 0) return;
+    const currentScale = typeof this.zoomScale === 'number' && this.zoomScale > 0 ? this.zoomScale : 1.0;
+    this.zoomScale = Math.max(0.01, Math.round(currentScale * factor * 10000) / 10000);
+    this.render();
+  }
+
+  /**
+   * Handles wheel events by zooming in on upward scroll and zooming out on downward scroll.
+   *
+   * @param {WheelEvent|Object} e - Wheel event
+   */
+  handleWheel(e) {
+    if (e && typeof e.preventDefault === 'function') {
+      e.preventDefault();
+    }
+    const deltaY = (e && typeof e.deltaY === 'number') ? e.deltaY : 0;
+    if (deltaY < 0) {
+      this.zoom(1.1);
+    } else if (deltaY > 0) {
+      this.zoom(1 / 1.1);
+    }
+  }
+
+  /**
+   * Offsets viewport horizontally and vertically.
+   *
+   * @param {number} dx - Horizontal delta
+   * @param {number} [dy=0] - Vertical delta
+   */
+  pan(dx, dy = 0) {
+    this.viewportOffset.x += dx;
+    this.viewportOffset.y += dy;
+    this.render();
+  }
+
   _setupInteractivity() {
     if (!this.canvas || typeof this.canvas.addEventListener !== 'function') return;
 
@@ -259,7 +301,7 @@ export class Chart {
     };
 
     const onWheel = (e) => {
-      if (typeof e.preventDefault === 'function') e.preventDefault();
+      this.handleWheel(e);
     };
 
     this.canvas.addEventListener('mousedown', onMouseDown);
@@ -334,7 +376,7 @@ export class Chart {
   }
 
   /**
-   * Renders the candlestick series to the active canvas with applied viewport offset.
+   * Renders the candlestick series to the active canvas with applied viewport offset and zoom scale.
    */
   render() {
     if (!this.canvas || typeof this.canvas.getContext !== 'function') return;
@@ -387,10 +429,12 @@ export class Chart {
 
     const getY = (price) => marginTop + plotHeight * (1 - (price - effectiveMin) / effectiveRange);
 
+    const scale = typeof this.zoomScale === 'number' && this.zoomScale > 0 ? this.zoomScale : 1.0;
     const leftMargin = width * 0.02;
     const rightMargin = width * 0.04;
     const availableWidth = width - leftMargin - rightMargin;
-    const step = n > 1 ? availableWidth / (n - 1) : availableWidth;
+    const baseStep = n > 1 ? availableWidth / (n - 1) : availableWidth;
+    const step = baseStep * scale;
     const candleWidth = Math.max(2, Math.floor(step * 0.7));
 
     for (let i = 0; i < n; i++) {
