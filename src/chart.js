@@ -193,7 +193,9 @@ export class Chart {
 
     if (container && !canvas) {
       if (typeof container.querySelector === 'function') {
-        canvas = container.querySelector('canvas');
+        canvas =
+          container.querySelector('canvas') ||
+          container.querySelector('[data-testid="chart-canvas"]');
       } else if (Array.isArray(container.children)) {
         canvas = container.children.find((child) => child.tagName === 'CANVAS') || null;
       }
@@ -202,9 +204,44 @@ export class Chart {
           typeof document !== 'undefined' && typeof document.createElement === 'function'
             ? document.createElement('canvas')
             : null;
-        if (canvas && typeof container.appendChild === 'function') {
-          container.appendChild(canvas);
+        if (canvas) {
+          canvas.id = 'chart-canvas';
+          canvas.className = 'chart-canvas';
+          if (typeof canvas.setAttribute === 'function') {
+            canvas.setAttribute('data-testid', 'chart-canvas');
+          }
+          const chartHost =
+            (typeof container.querySelector === 'function' &&
+              (container.querySelector('[data-testid="chart-container"]') ||
+                container.querySelector('.chart-workspace') ||
+                container.querySelector('.chart-container') ||
+                container.querySelector('[data-testid="workspace"]') ||
+                container.querySelector('.workspace-container') ||
+                container.querySelector('.workspace'))) ||
+            container;
+
+          if (typeof chartHost.appendChild === 'function') {
+            chartHost.appendChild(canvas);
+          }
         }
+      }
+    }
+
+    // Ensure canvas resides in dedicated chart workspace container instead of direct root sibling
+    if (canvas && container && typeof container.querySelector === 'function') {
+      const chartHost =
+        container.querySelector('[data-testid="chart-container"]') ||
+        container.querySelector('.chart-workspace') ||
+        container.querySelector('.chart-container') ||
+        container.querySelector('[data-testid="workspace"]') ||
+        container.querySelector('.workspace-container') ||
+        container.querySelector('.workspace');
+
+      if (chartHost && canvas.parentElement !== chartHost && typeof chartHost.appendChild === 'function') {
+        if (canvas.parentElement && typeof canvas.parentElement.removeChild === 'function') {
+          canvas.parentElement.removeChild(canvas);
+        }
+        chartHost.appendChild(canvas);
       }
     }
 
