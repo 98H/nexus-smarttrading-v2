@@ -333,7 +333,7 @@ export function initApp(container) {
         } catch (e) {}
       }
       if (child && Array.isArray(child.children)) {
-        const found = child.children.find((c) => c && (c.tagName === 'CANVAS' || c.id === 'chart-canvas'));
+        const found = Array.from(child.children).find((c) => c && (c.tagName === 'CANVAS' || c.id === 'chart-canvas'));
         if (found) {
           existingCanvas = found;
           break;
@@ -668,3 +668,15 @@ export default {
   onRenderAnnotation,
   render,
 };
+
+// Browser Auto-Mount Bootstrap Guard
+if (typeof document !== 'undefined') {
+  const mountTarget = document.getElementById('app') || document.body;
+  if (mountTarget && !mountTarget.__nexus_mounted) {
+    mountTarget.__nexus_mounted = true;
+    if (typeof mountApp === 'function') mountApp(mountTarget);
+    else if (typeof mount === 'function') mount(mountTarget);
+    else if (typeof initApp === 'function') initApp(mountTarget);
+    else if (typeof init === 'function') init(mountTarget);
+  }
+}

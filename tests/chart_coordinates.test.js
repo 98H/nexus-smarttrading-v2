@@ -99,7 +99,7 @@ class MockContainerElement {
 
   querySelector(selector) {
     if (selector === 'canvas' || selector === '#chart-canvas') {
-      return this.children.find((c) => c.tagName === 'CANVAS') || null;
+      return Array.from(this.children).find((c) => c.tagName === 'CANVAS') || null;
     }
     return null;
   }
