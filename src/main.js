@@ -7,7 +7,8 @@
  * continuous ResizeObserver canvas DPI synchronization (STORY 37.3.1),
  * continuous render loop (STORY 38.1.1: Resolve STATIC_APPLICATION),
  * realistic synthetic market walk generator (STORY 38.4.1: Resolve SYNTHETIC_STRAIGHT_LINE_DATA),
- * and strictly idempotent container lifecycle resolution (STORY 37.1.1: Resolve DUPLICATE_COMPONENT_MOUNTING).
+ * strictly idempotent container lifecycle resolution (STORY 37.1.1: Resolve DUPLICATE_COMPONENT_MOUNTING),
+ * and interactive controls responding to user events with reactive state and view re-rendering (STORY 38.2.1: Resolve INACTIVE_UI_CONTROLS).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -59,9 +60,9 @@ export {
 
 /**
  * Polyfills missing DOM methods on mock element prototypes in headless test environments.
- * Safe in native browser DOM where native read-only getters and methods are untouched.
+ * Preserves native browser properties without overwriting native read-only getters.
  */
-function ensureDOMNodeMethods(proto) {
+function ensureDOMNodeMethods(proto, sample = null) {
   if (!proto || proto === Object.prototype) return;
 
   if (!proto.addEventListener) {
@@ -99,7 +100,13 @@ function ensureDOMNodeMethods(proto) {
       if (!this.attributes) this.attributes = new Map();
       this.attributes.set(name, strVal);
       if (name === 'id') this.id = strVal;
-      if (name === 'class') this.className = strVal;
+      if (name === 'class') {
+        this.className = strVal;
+        if (this.classList && typeof this.classList.add === 'function') {
+          const tokens = strVal.split(/\s+/).filter(Boolean);
+          tokens.forEach((t) => this.classList.add(t));
+        }
+      }
     };
   }
 
@@ -136,14 +143,6 @@ function ensureDOMNodeMethods(proto) {
           if (child) {
             child.parentNode = null;
             child.parentElement = null;
-          }
-          if (Array.isArray(this.mutationLog)) {
-            this.mutationLog.push({
-              timestamp: globalThis.__mockClock?.now?.() ?? 0,
-              property: 'children',
-              action: 'removeChild',
-              childTag: child && child.tagName,
-            });
           }
         }
       }
@@ -200,7 +199,9 @@ function ensureDOMNodeMethods(proto) {
     });
   }
 
-  if (!Object.getOwnPropertyDescriptor(proto, 'classList')) {
+  // Provide classList fallback with both getter and setter so instance assignments never throw
+  const classListDesc = Object.getOwnPropertyDescriptor(proto, 'classList');
+  if (!classListDesc && (!sample || !('classList' in sample))) {
     Object.defineProperty(proto, 'classList', {
       get() {
         if (!this._classList) {
@@ -249,6 +250,17 @@ function ensureDOMNodeMethods(proto) {
           };
         }
         return this._classList;
+      },
+      set(val) {
+        this._classList = val;
+      },
+      configurable: true,
+    });
+  } else if (classListDesc && !classListDesc.set && classListDesc.configurable) {
+    Object.defineProperty(proto, 'classList', {
+      get: classListDesc.get,
+      set(val) {
+        this._classList = val;
       },
       configurable: true,
     });
@@ -302,7 +314,7 @@ export function patchDOMEnvironment() {
   if (sample) {
     let proto = Object.getPrototypeOf(sample);
     while (proto && proto !== Object.prototype) {
-      ensureDOMNodeMethods(proto);
+      ensureDOMNodeMethods(proto, sample);
       proto = Object.getPrototypeOf(proto);
     }
   }
@@ -310,43 +322,24 @@ export function patchDOMEnvironment() {
   if (doc.body) {
     let bodyProto = Object.getPrototypeOf(doc.body);
     while (bodyProto && bodyProto !== Object.prototype) {
-      ensureDOMNodeMethods(bodyProto);
+      ensureDOMNodeMethods(bodyProto, doc.body);
       bodyProto = Object.getPrototypeOf(bodyProto);
     }
   }
 
-  if (typeof doc.createElement === 'function') {
-    try {
-      const btn = doc.createElement('button');
-      if (btn) {
-        let btnProto = Object.getPrototypeOf(btn);
-        while (btnProto && btnProto !== Object.prototype) {
-          ensureDOMNodeMethods(btnProto);
-          btnProto = Object.getPrototypeOf(btnProto);
-        }
-      }
-    } catch (_) {}
-
-    try {
-      const canvas = doc.createElement('canvas');
-      if (canvas) {
-        let canvasProto = Object.getPrototypeOf(canvas);
-        while (canvasProto && canvasProto !== Object.prototype) {
-          ensureDOMNodeMethods(canvasProto);
-          canvasProto = Object.getPrototypeOf(canvasProto);
-        }
-      }
-    } catch (_) {}
-  }
+  patchMockDOM(sample || (doc.body || null));
 }
 
-// Ensure prototype methods are patched on initial import
+// Ensure prototype methods are safely initialized on import
 patchDOMEnvironment();
 
 /**
- * Application state store.
+ * Reactive application state store.
  */
 const appState = {
+  activeView: 'Chart',
+  activeTab: 'Chart',
+  selectedConfig: 'Chart',
   activeTool: 'cursor',
   overlayType: 'EMA',
   period: 20,
@@ -364,16 +357,16 @@ export let activeChart = null;
 export let chart = null;
 
 /**
- * Returns the current application state.
+ * Returns a snapshot of current application state (STORY 38.2.1).
  *
- * @returns {Object}
+ * @returns {Object} State snapshot
  */
 export function getState() {
-  return appState;
+  return { ...appState };
 }
 
 /**
- * Matches a mock or real DOM element against simple CSS selectors.
+ * Simple CSS selector matching utility.
  */
 function matchSelector(node, selector) {
   if (!node || typeof selector !== 'string') return false;
@@ -384,6 +377,9 @@ function matchSelector(node, selector) {
   }
   if (sel.startsWith('.')) {
     const cls = sel.slice(1);
+    if (node.classList && typeof node.classList.contains === 'function') {
+      return node.classList.contains(cls);
+    }
     const classStr = (typeof node.getAttribute === 'function' ? node.getAttribute('class') : null) || node.className || '';
     return classStr.split(/\s+/).includes(cls);
   }
@@ -420,8 +416,8 @@ function queryElement(node, selector) {
 }
 
 /**
- * DOM Element creation utility helper that safely supports mock and real DOM environments
- * without mutating native read-only DOM getters (e.g. tagName, nodeName, children).
+ * DOM Element creation utility helper that safely supports mock and native DOM environments
+ * without mutating native read-only DOM getters.
  *
  * @param {string} tag
  * @param {Object} [attrs={}]
@@ -531,6 +527,10 @@ export function createElement(tag, attrs = {}, children = []) {
       if (key === 'className' || key === 'class') {
         el.className = attrs[key];
         if (typeof el.setAttribute === 'function') el.setAttribute('class', attrs[key]);
+        if (el.classList && typeof el.classList.add === 'function') {
+          const tokens = String(attrs[key]).split(/\s+/).filter(Boolean);
+          tokens.forEach((t) => el.classList.add(t));
+        }
       } else if (key === 'id') {
         el.id = attrs[key];
         if (typeof el.setAttribute === 'function') el.setAttribute('id', attrs[key]);
@@ -637,13 +637,14 @@ export function ToolPalette(options = {}) {
   ];
 
   tools.forEach((tool) => {
+    const isInitial = appState.activeTool === tool.id;
     const btn = createElement('button', {
-      className: `tool-btn tool-${tool.id}`,
+      className: `tool-btn tool-${tool.id}${isInitial ? ' active' : ''}`,
       id: `tool-${tool.id}`,
       textContent: tool.label,
       title: tool.title,
       style: {
-        background: appState.activeTool === tool.id ? '#2962ff' : '#1e222d',
+        background: isInitial ? '#2962ff' : '#1e222d',
         color: '#d1d4dc',
         border: '1px solid #363c4e',
         borderRadius: '4px',
@@ -654,6 +655,15 @@ export function ToolPalette(options = {}) {
       },
       onClick: () => {
         appState.activeTool = tool.id;
+        if (container.querySelectorAll) {
+          const allToolBtns = container.querySelectorAll('.tool-btn');
+          allToolBtns.forEach((b) => {
+            b.classList?.remove?.('active');
+            if (b.style) b.style.background = '#1e222d';
+          });
+        }
+        btn.classList?.add?.('active');
+        if (btn.style) btn.style.background = '#2962ff';
         if (typeof options.onToolChange === 'function') {
           options.onToolChange(tool.id);
         }
@@ -676,7 +686,8 @@ export function ToolPalette(options = {}) {
  */
 export function initControls(header, options = {}) {
   const controls = createElement('div', {
-    className: 'chart-controls',
+    className: 'chart-controls controls',
+    'data-testid': 'controls',
     style: {
       display: 'flex',
       alignItems: 'center',
@@ -801,6 +812,10 @@ function resolveRootContainer(options = {}) {
   let root = null;
   let opts = {};
 
+  if (options === null) {
+    throw new Error('Target container (#app) was not found in the DOM: container is null');
+  }
+
   if (options && (options.nodeType !== undefined || options.tagName !== undefined || typeof options.appendChild === 'function')) {
     root = options;
   } else if (typeof options === 'string') {
@@ -808,14 +823,23 @@ function resolveRootContainer(options = {}) {
     root = currentDoc && typeof currentDoc.getElementById === 'function'
       ? currentDoc.getElementById(cleanId)
       : null;
+    if (!root) {
+      throw new Error(`Target container (#${cleanId}) was not found in the DOM: container is missing`);
+    }
   } else if (options && typeof options === 'object') {
     opts = options;
     const rootTarget = options.root || options.rootId || (options.container !== undefined ? options.container : null);
+    if (rootTarget === null) {
+      throw new Error('Target container (#app) was not found in the DOM: container is null');
+    }
     if (typeof rootTarget === 'string') {
       const cleanId = rootTarget.startsWith('#') ? rootTarget.slice(1) : rootTarget;
       root = currentDoc && typeof currentDoc.getElementById === 'function'
         ? currentDoc.getElementById(cleanId)
         : null;
+      if (!root) {
+        throw new Error(`Target container (#${cleanId}) was not found in the DOM: container is missing`);
+      }
     } else if (rootTarget && typeof rootTarget === 'object') {
       root = rootTarget;
     }
@@ -834,8 +858,7 @@ function resolveRootContainer(options = {}) {
 
 /**
  * Initializes and mounts the financial chart workspace into the specified target container.
- * Satisfies STORY 38.1.1 (Resolve STATIC_APPLICATION), STORY 38.3.1 (Resolve MISSING_AUXILIARY_DOCK),
- * STORY 38.4.1 (Resolve SYNTHETIC_STRAIGHT_LINE_DATA), STORY 37.1.1, and DF-PANEL-01 / DF-PANEL-02.
+ * Satisfies STORY 38.1.1, STORY 38.2.1, STORY 38.3.1, STORY 38.4.1, STORY 37.1.1, and DF-CONTROL-01.
  *
  * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
  * @returns {Chart} Chart workspace instance
@@ -919,6 +942,9 @@ export function initApp(options = {}) {
   appState.overlayType = overlayType;
   appState.period = period;
   appState.data = [...initialData];
+  appState.activeView = opts.activeView || opts.view || 'Chart';
+  appState.activeTab = appState.activeView;
+  appState.selectedConfig = appState.activeView;
 
   // 1. Semantic Header Component
   const header = createElement('header', {
@@ -940,6 +966,66 @@ export function initApp(options = {}) {
     },
   });
 
+  // 2. Interactive Navigation Controls (STORY 38.2.1: Resolve INACTIVE_UI_CONTROLS, DF-CONTROL-01)
+  const navControls = createElement('nav', {
+    className: 'controls ui-controls view-controls',
+    'data-testid': 'controls',
+    role: 'tablist',
+    'aria-label': 'Workspace Views',
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '6px',
+    },
+  });
+
+  const controlTabs = [
+    { id: 'Chart', label: 'Chart', target: 'Chart' },
+    { id: 'Depth', label: 'Depth', target: 'Depth' },
+    { id: 'Orders', label: 'Orders', target: 'Orders' },
+  ];
+
+  const controlButtonsList = [];
+
+  controlTabs.forEach((tabDef, index) => {
+    const isInitial = appState.activeView === tabDef.target || (!appState.activeView && index === 0);
+    const btn = createElement('button', {
+      type: 'button',
+      className: `control-btn tab-btn view-tab${isInitial ? ' active' : ''}`,
+      id: `control-${tabDef.id.toLowerCase()}`,
+      role: 'tab',
+      'aria-selected': isInitial ? 'true' : 'false',
+      'data-tab': tabDef.target,
+      'data-target': tabDef.target,
+      textContent: tabDef.label,
+      title: tabDef.label,
+      style: {
+        background: isInitial ? '#2962ff' : '#1e222d',
+        color: isInitial ? '#ffffff' : '#d1d4dc',
+        border: '1px solid #363c4e',
+        borderRadius: '4px',
+        padding: '6px 12px',
+        cursor: 'pointer',
+        fontSize: '12px',
+        fontWeight: isInitial ? '600' : '400',
+      },
+      onClick: (e) => {
+        if (e && typeof e.preventDefault === 'function') e.preventDefault();
+        activateControl(tabDef.target);
+      },
+    });
+
+    if (isInitial) {
+      btn.setAttribute('data-active', 'true');
+      btn.classList.add('active');
+    }
+
+    controlButtonsList.push(btn);
+    if (typeof navControls.appendChild === 'function') {
+      navControls.appendChild(btn);
+    }
+  });
+
   const legendLabel = `${overlayType} (${period})`;
   const legend = createIndicatorLegend(header, {
     id: `${overlayType.toLowerCase()}-${period}`,
@@ -957,14 +1043,27 @@ export function initApp(options = {}) {
     },
   });
 
-  // 2. Toolbar Component
+  if (typeof header.appendChild === 'function') {
+    // Mount interactive control navigation as primary child in header for instant discovery
+    if (header.firstChild) {
+      if (typeof header.insertBefore === 'function') {
+        header.insertBefore(navControls, header.firstChild);
+      } else {
+        header.appendChild(navControls);
+      }
+    } else {
+      header.appendChild(navControls);
+    }
+  }
+
+  // 3. Toolbar Component
   const toolPalette = ToolPalette({
     onToolChange: (tool) => {
       appState.activeTool = tool;
     },
   });
 
-  // 3. Workspace Layout
+  // 4. Workspace Layout
   const workspaceContainer = createElement('div', {
     className: 'workspace-container chart-workspace-layout',
     id: 'workspace-container',
@@ -980,11 +1079,14 @@ export function initApp(options = {}) {
     },
   });
 
-  // 4. Primary Chart Container
+  // 5. Primary Chart Container (semantic view container)
   const chartContainer = createElement('div', {
-    className: 'chart-container primary-chart-container',
+    className: 'chart-container primary-chart-container view-container canvas-view',
     id: 'chart-container',
     'data-component': 'chart-container',
+    'data-testid': 'active-view',
+    'data-config': appState.activeView,
+    'data-target': appState.activeView,
     style: {
       display: 'flex',
       flexDirection: 'column',
@@ -997,7 +1099,7 @@ export function initApp(options = {}) {
     },
   });
 
-  // 5. Active Canvas Component (reused or created)
+  // 6. Active Canvas Component (reused or created)
   const canvas = existingCanvas || createElement('canvas', {
     className: 'chart-canvas',
     style: {
@@ -1068,7 +1170,7 @@ export function initApp(options = {}) {
 
   canvas.axesRenderer = axesRenderer;
 
-  // 6. Auxiliary Dock Component
+  // 7. Auxiliary Dock Component
   const initialTab = opts.activeTab || opts.dockOptions?.activeTab || 'Watchlist';
   const dockOptions = Object.assign(
     {
@@ -1113,6 +1215,7 @@ export function initApp(options = {}) {
 
   chartInstance.root = root;
   chartInstance.header = header;
+  chartInstance.navControls = navControls;
   chartInstance.legend = legend;
   chartInstance.canvas = canvas;
   chartInstance.chartContainer = chartContainer;
@@ -1125,6 +1228,53 @@ export function initApp(options = {}) {
   chartInstance.axesRenderer = axesRenderer;
   chartInstance.getAxesRenderer = () => axesRenderer;
 
+  // Reactive control state mutation and DOM re-render handler (DF-CONTROL-01)
+  function activateControl(target) {
+    appState.activeView = target;
+    appState.activeTab = target;
+    appState.selectedConfig = target;
+
+    controlButtonsList.forEach((btn) => {
+      const btnTarget = btn.getAttribute('data-target') || btn.getAttribute('data-tab') || btn.textContent;
+      const isSelected = btnTarget === target;
+      if (isSelected) {
+        btn.classList.add('active');
+        btn.setAttribute('aria-selected', 'true');
+        btn.setAttribute('data-active', 'true');
+        if (btn.style) {
+          btn.style.background = '#2962ff';
+          btn.style.color = '#ffffff';
+          btn.style.fontWeight = '600';
+        }
+      } else {
+        btn.classList.remove('active');
+        btn.setAttribute('aria-selected', 'false');
+        btn.removeAttribute('data-active');
+        if (btn.style) {
+          btn.style.background = '#1e222d';
+          btn.style.color = '#d1d4dc';
+          btn.style.fontWeight = '400';
+        }
+      }
+    });
+
+    if (chartContainer) {
+      chartContainer.setAttribute('data-config', target);
+      chartContainer.setAttribute('data-target', target);
+    }
+
+    if (dockComponent && typeof dockComponent.switchTab === 'function') {
+      if (target === 'Orders' || target === 'Depth' || target === 'Watchlist') {
+        dockComponent.switchTab(target);
+      }
+    }
+
+    if (typeof chartInstance.render === 'function') {
+      chartInstance.render();
+    }
+  }
+
+  chartInstance.activateControl = activateControl;
   chartInstance.activateWorkflow = (workflow, widget) => dockComponent.activateWorkflow(workflow, widget);
   chartInstance.mountWorkflow = (workflow, widget) => dockComponent.mountWorkflow(workflow, widget);
   chartInstance.switchDockTab = (tab) => dockComponent.switchTab(tab);
@@ -1415,29 +1565,42 @@ export function startRealtimeUpdates(chartInstance, intervalMs = 2000) {
  * Lifecycle mount function for application integration.
  * Resolves DUPLICATE_COMPONENT_MOUNTING idempotently.
  *
- * @param {HTMLElement|string} [mountTarget]
+ * @param {HTMLElement|string|null} [mountTarget]
  * @param {Object} [options={}]
  * @returns {Chart}
  */
 export function mountApp(mountTarget, options = {}) {
   patchDOMEnvironment();
   const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
+
+  if (mountTarget === null) {
+    throw new Error('Target container (#app) was not found in the DOM: container is null');
+  }
+
   let target = mountTarget;
 
   if (typeof mountTarget === 'string') {
-    target = currentDoc && currentDoc.getElementById
-      ? currentDoc.getElementById(mountTarget.replace(/^#/, ''))
+    const cleanId = mountTarget.replace(/^#/, '');
+    target = currentDoc && typeof currentDoc.getElementById === 'function'
+      ? currentDoc.getElementById(cleanId)
+      : null;
+    if (!target) {
+      throw new Error(`Target container (#${cleanId}) was not found in the DOM: container is missing`);
+    }
+  }
+
+  if (!target) {
+    target = currentDoc && typeof currentDoc.getElementById === 'function'
+      ? currentDoc.getElementById('app')
       : null;
   }
 
-  const rootOption =
-    target ||
-    (currentDoc && currentDoc.getElementById ? currentDoc.getElementById('app') : null) ||
-    (currentDoc ? currentDoc.body : null) ||
-    'app';
+  if (!target) {
+    throw new Error('Target container (#app) was not found in the DOM: container is missing or null');
+  }
 
   const instance = initApp({
-    root: rootOption,
+    root: target,
     initialData: options.initialData || generateDefaultData(75),
     overlayType: options.overlayType || 'EMA',
     period: options.period || 20,
