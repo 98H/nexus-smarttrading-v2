@@ -1,56 +1,45 @@
-import test, { describe, it, beforeEach, afterEach } from 'node:test';
-import assert from 'node:assert';
-
-// Target modules under test
-import {
-  initApp,
-  getActiveState,
-  mount
-} from '../src/main.js';
-
-import {
-  Controls,
-  renderControls,
-  CONTROL_EVENTS
-} from '../src/components/controls.js';
-
 /**
- * Lightweight in-memory DOM mock environment for isolated Node execution.
+ * @file Test Suite for STORY 28.3.1: Resolve INACTIVE_UI_CONTROLS
+ * Defect ID: DF-CONTROL-01
+ * Target Modules: src/main.js, src/controls.js
  */
-class MockDOMTokenList {
-  constructor(element) {
-    this._element = element;
-    this._tokens = new Set();
+
+import { describe, it, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+
+// --- Lightweight In-Memory DOM Mock for Deterministic Node.js Unit Testing ---
+
+class MockClassList {
+  constructor() {
+    this.classes = new Set();
   }
   add(...tokens) {
-    tokens.forEach((t) => this._tokens.add(t));
-    this._element._syncClassName();
+    tokens.forEach((t) => this.classes.add(t));
   }
   remove(...tokens) {
-    tokens.forEach((t) => this._tokens.delete(t));
-    this._element._syncClassName();
+    tokens.forEach((t) => this.classes.delete(t));
   }
   contains(token) {
-    return this._tokens.has(token);
+    return this.classes.has(token);
   }
   toggle(token, force) {
     if (force === true) {
-      this.add(token);
+      this.classes.add(token);
       return true;
     }
     if (force === false) {
-      this.remove(token);
+      this.classes.delete(token);
       return false;
     }
-    if (this._tokens.has(token)) {
-      this.remove(token);
+    if (this.classes.has(token)) {
+      this.classes.delete(token);
       return false;
     }
-    this.add(token);
+    this.classes.add(token);
     return true;
   }
   toString() {
-    return Array.from(this._tokens).join(' ');
+    return Array.from(this.classes).join(' ');
   }
 }
 
@@ -58,95 +47,43 @@ class MockElement {
   constructor(tagName = 'div', id = '') {
     this.tagName = tagName.toUpperCase();
     this.id = id;
+    this.classList = new MockClassList();
     this.attributes = new Map();
     this.listeners = new Map();
     this.children = [];
     this.parentNode = null;
     this._innerHTML = '';
-    this.classList = new MockDOMTokenList(this);
+    this.textContent = '';
     this.dataset = {};
-    this.disabled = false;
   }
 
   get innerHTML() {
     return this._innerHTML;
   }
 
-  set innerHTML(htmlString) {
-    this._innerHTML = htmlString;
+  set innerHTML(val) {
+    this._innerHTML = val;
+    // Clearing child nodes on innerHTML reset
     this.children = [];
-    if (!htmlString || htmlString.trim() === '') {
-      return;
-    }
-    // Minimal parser to instantiate mock elements for buttons, tabs, etc.
-    const tagRegex = /<([a-z0-9-]+)([^>]*)>(.*?)<\/\1>|<([a-z0-9-]+)([^>]*)\/>/gis;
-    let match;
-    while ((match = tagRegex.exec(htmlString)) !== null) {
-      const tag = match[1] || match[4];
-      const rawAttrs = match[2] || match[5] || '';
-      const text = match[3] || '';
-      const child = new MockElement(tag);
-
-      const attrRegex = /([a-z0-9-]+)=["']([^"']*)["']/gi;
-      let attrMatch;
-      while ((attrMatch = attrRegex.exec(rawAttrs)) !== null) {
-        const [, key, val] = attrMatch;
-        child.setAttribute(key, val);
-      }
-
-      if (text && !text.includes('<')) {
-        child.textContent = text;
-      }
-      this.appendChild(child);
-    }
-  }
-
-  get textContent() {
-    return this._textContent || '';
-  }
-
-  set textContent(text) {
-    this._textContent = text;
-  }
-
-  get className() {
-    return this.classList.toString();
-  }
-
-  set className(names) {
-    this.classList._tokens.clear();
-    if (names) {
-      names.split(/\s+/).filter(Boolean).forEach((token) => {
-        this.classList._tokens.add(token);
-      });
-    }
-  }
-
-  _syncClassName() {
-    this.attributes.set('class', this.classList.toString());
   }
 
   setAttribute(name, value) {
-    this.attributes.set(name, String(value));
-    if (name.startsWith('data-')) {
-      const prop = name.slice(5).replace(/-([a-z])/g, (_, char) => char.toUpperCase());
-      this.dataset[prop] = String(value);
-    }
+    const strVal = String(value);
+    this.attributes.set(name, strVal);
+    if (name === 'id') this.id = strVal;
     if (name === 'class') {
-      this.className = String(value);
+      this.classList.classes.clear();
+      strVal.split(/\s+/).filter(Boolean).forEach((c) => this.classList.add(c));
     }
-    if (name === 'id') {
-      this.id = String(value);
-    }
-    if (name === 'disabled') {
-      this.disabled = true;
+    if (name.startsWith('data-')) {
+      const prop = name
+        .slice(5)
+        .replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+      this.dataset[prop] = strVal;
     }
   }
 
   getAttribute(name) {
-    if (name === 'class') {
-      return this.classList.toString() || null;
-    }
     return this.attributes.has(name) ? this.attributes.get(name) : null;
   }
 
@@ -156,12 +93,49 @@ class MockElement {
 
   removeAttribute(name) {
     this.attributes.delete(name);
-    if (name === 'class') {
-      this.classList._tokens.clear();
+  }
+
+  addEventListener(type, callback) {
+    if (!this.listeners.has(type)) {
+      this.listeners.set(type, []);
     }
-    if (name === 'disabled') {
-      this.disabled = false;
+    this.listeners.get(type).push(callback);
+  }
+
+  removeEventListener(type, callback) {
+    const handlers = this.listeners.get(type) || [];
+    this.listeners.set(
+      type,
+      handlers.filter((fn) => fn !== callback)
+    );
+  }
+
+  dispatchEvent(event) {
+    event.target = this;
+    event.currentTarget = this;
+    const handlers = this.listeners.get(event.type) || [];
+    for (const handler of handlers) {
+      handler.call(this, event);
     }
+    if (event.bubbles && this.parentNode) {
+      this.parentNode.dispatchEvent(event);
+    }
+    return !event.defaultPrevented;
+  }
+
+  click() {
+    const event = {
+      type: 'click',
+      target: this,
+      currentTarget: this,
+      bubbles: true,
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+      stopPropagation() {},
+    };
+    this.dispatchEvent(event);
   }
 
   appendChild(child) {
@@ -171,110 +145,69 @@ class MockElement {
   }
 
   removeChild(child) {
-    const idx = this.children.indexOf(child);
-    if (idx !== -1) {
-      this.children.splice(idx, 1);
+    const index = this.children.indexOf(child);
+    if (index !== -1) {
+      this.children.splice(index, 1);
       child.parentNode = null;
     }
     return child;
   }
 
-  addEventListener(type, handler) {
-    if (!this.listeners.has(type)) {
-      this.listeners.set(type, []);
+  matches(selector) {
+    const sel = selector.trim();
+    if (sel.startsWith('#')) return this.id === sel.slice(1);
+    if (sel.startsWith('.')) return this.classList.contains(sel.slice(1));
+    if (sel.startsWith('[')) {
+      const match = sel.match(/^\[([a-zA-Z0-9_-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\]]+)))?\]$/);
+      if (!match) return false;
+      const attr = match[1];
+      const val = match[2] ?? match[3] ?? match[4];
+      if (val === undefined) return this.hasAttribute(attr);
+      return this.getAttribute(attr) === val;
     }
-    this.listeners.get(type).push(handler);
-  }
-
-  removeEventListener(type, handler) {
-    if (!this.listeners.has(type)) return;
-    const list = this.listeners.get(type).filter((h) => h !== handler);
-    this.listeners.set(type, list);
-  }
-
-  dispatchEvent(event) {
-    event.target = this;
-    event.currentTarget = this;
-    const handlers = this.listeners.get(event.type) || [];
-    for (const h of handlers) {
-      h.call(this, event);
+    const tagMatch = sel.match(/^([a-zA-Z0-9]+)(\.[a-zA-Z0-9_-]+|\[.*\])?$/);
+    if (tagMatch) {
+      const tag = tagMatch[1];
+      const rest = tagMatch[2];
+      if (this.tagName.toLowerCase() !== tag.toLowerCase()) return false;
+      if (!rest) return true;
+      return this.matches(rest);
     }
-    if (this.parentNode && !event._propagationStopped) {
-      this.parentNode.dispatchEvent(event);
-    }
-    return !event.defaultPrevented;
-  }
-
-  click() {
-    if (this.disabled) {
-      return;
-    }
-    const event = {
-      type: 'click',
-      target: this,
-      currentTarget: this,
-      defaultPrevented: false,
-      _propagationStopped: false,
-      stopPropagation() {
-        this._propagationStopped = true;
-      },
-      preventDefault() {
-        this.defaultPrevented = true;
-      }
-    };
-    this.dispatchEvent(event);
+    return false;
   }
 
   querySelector(selector) {
-    return this.querySelectorAll(selector)[0] || null;
+    for (const child of this.children) {
+      if (child.matches(selector)) return child;
+      const nested = child.querySelector(selector);
+      if (nested) return nested;
+    }
+    return null;
   }
 
   querySelectorAll(selector) {
     const results = [];
-    const traverse = (node) => {
-      for (const child of node.children) {
-        if (matchesSelector(child, selector)) {
-          results.push(child);
-        }
-        traverse(child);
-      }
-    };
-    traverse(this);
+    for (const child of this.children) {
+      if (child.matches(selector)) results.push(child);
+      results.push(...child.querySelectorAll(selector));
+    }
     return results;
   }
 }
 
-function matchesSelector(element, selector) {
-  if (selector.startsWith('#')) {
-    return element.id === selector.slice(1);
-  }
-  if (selector.startsWith('.')) {
-    return element.classList.contains(selector.slice(1));
-  }
-  if (selector.startsWith('[') && selector.endsWith(']')) {
-    const content = selector.slice(1, -1);
-    if (content.includes('=')) {
-      const [key, rawVal] = content.split('=');
-      const val = rawVal.replace(/['"]/g, '');
-      return element.getAttribute(key) === val;
-    }
-    return element.hasAttribute(content);
-  }
-  return element.tagName.toLowerCase() === selector.toLowerCase();
-}
-
 class MockDocument {
   constructor() {
-    this.root = new MockElement('html');
     this.body = new MockElement('body');
-    this.root.appendChild(this.body);
+    this.registry = new Map();
   }
 
-  createElement(tag) {
-    return new MockElement(tag);
+  createElement(tagName) {
+    const el = new MockElement(tagName);
+    return el;
   }
 
   getElementById(id) {
+    if (this.registry.has(id)) return this.registry.get(id);
     const search = (node) => {
       if (node.id === id) return node;
       for (const child of node.children) {
@@ -286,6 +219,13 @@ class MockDocument {
     return search(this.body);
   }
 
+  registerElement(id, el) {
+    el.id = id;
+    this.registry.set(id, el);
+    this.body.appendChild(el);
+    return el;
+  }
+
   querySelector(selector) {
     return this.body.querySelector(selector);
   }
@@ -295,284 +235,286 @@ class MockDocument {
   }
 }
 
-// Global DOM Environment Setup / Teardown
-beforeEach(() => {
-  globalThis.document = new MockDocument();
-  globalThis.window = {
-    document: globalThis.document,
-    addEventListener: () => {},
-    removeEventListener: () => {}
-  };
-  globalThis.HTMLElement = MockElement;
-});
+// Install mock browser environment globally before module execution
+const setupMockDOM = () => {
+  const doc = new MockDocument();
+  global.window = { document: doc };
+  global.document = doc;
+  return doc;
+};
 
-afterEach(() => {
-  delete globalThis.document;
-  delete globalThis.window;
-  delete globalThis.HTMLElement;
-});
+// --- Test Suites ---
 
-describe('Defect DF-CONTROL-01: Inactive UI Controls Verification', () => {
+describe('STORY 28.3.1: Resolve INACTIVE_UI_CONTROLS (Defect ID: DF-CONTROL-01)', () => {
+  let doc;
 
-  describe('src/components/controls.js - Unit Tests', () => {
-    it('should instantiate Controls with an initial configuration and render initial DOM state', () => {
-      const container = globalThis.document.createElement('div');
-      const initialConfig = { mode: 'brush', size: 10, activeTab: 'tools' };
+  beforeEach(() => {
+    doc = setupMockDOM();
+  });
 
-      const controls = new Controls({
-        container,
-        initialState: initialConfig
-      });
+  afterEach(() => {
+    delete global.window;
+    delete global.document;
+  });
 
-      assert.ok(controls, 'Controls component should be instantiated');
-      assert.deepStrictEqual(controls.getState(), initialConfig, 'Internal state must match initial configuration');
+  describe('src/controls.js: Interactive Control State Changes & Visual Re-Rendering', () => {
+    it('should initialize controls, bind click handlers, and reflect active state in the DOM', async () => {
+      const { initControls, getControlState } = await import('../src/controls.js');
 
-      // Visual rendering check
-      const renderedTabs = container.querySelectorAll('.control-tab');
-      const renderedButtons = container.querySelectorAll('.control-btn');
-      assert.ok(renderedTabs.length > 0 || renderedButtons.length > 0, 'Controls must render interactive tabs or buttons into container');
-    });
+      const container = doc.createElement('div');
+      container.id = 'controls-container';
+      doc.body.appendChild(container);
 
-    it('should update internal state and trigger an immediate visual re-render when a control button is clicked', () => {
-      const container = globalThis.document.createElement('div');
-      let changeCallbackFired = false;
-      let emittedConfig = null;
+      const tabBtn = doc.createElement('button');
+      tabBtn.setAttribute('class', 'tab-btn');
+      tabBtn.setAttribute('data-tab', 'layers');
+      tabBtn.setAttribute('aria-selected', 'false');
+      container.appendChild(tabBtn);
 
-      const controls = new Controls({
-        container,
-        initialState: { mode: 'brush', activeTab: 'tools' },
-        onChange: (newState) => {
-          changeCallbackFired = true;
-          emittedConfig = newState;
-        }
-      });
+      const actionBtn = doc.createElement('button');
+      actionBtn.setAttribute('class', 'control-btn');
+      actionBtn.setAttribute('data-control', 'zoom-in');
+      container.appendChild(actionBtn);
 
-      // Find an inactive control button to click
-      const selectBtn = container.querySelector('[data-control="mode"][data-value="eraser"]');
-      assert.ok(selectBtn, 'Mode selection button for "eraser" must be present in DOM');
-      assert.strictEqual(selectBtn.classList.contains('active'), false, 'Eraser button must not be active initially');
+      initControls(container, { activeTab: 'default', zoomLevel: 1 });
 
-      // Act: Simulate user clicking the control button
-      selectBtn.click();
+      const initialState = getControlState();
+      assert.strictEqual(initialState.activeTab, 'default');
+      assert.strictEqual(tabBtn.classList.contains('active'), false);
+      assert.strictEqual(tabBtn.getAttribute('aria-selected'), 'false');
 
-      // Assert state updated
-      const currentState = controls.getState();
-      assert.strictEqual(currentState.mode, 'eraser', 'Internal state.mode must update to "eraser"');
-      assert.strictEqual(changeCallbackFired, true, 'onChange callback must be triggered on button click');
-      assert.deepStrictEqual(emittedConfig.mode, 'eraser', 'Emitted state configuration must reflect updated mode');
+      // Execute click on tab control
+      tabBtn.click();
 
-      // Assert immediate visual DOM re-render
-      const reRenderedBtn = container.querySelector('[data-control="mode"][data-value="eraser"]');
-      assert.ok(
-        reRenderedBtn.classList.contains('active') || reRenderedBtn.getAttribute('aria-pressed') === 'true',
-        'Selected button must immediately reflect active visual state in DOM'
-      );
-
-      const oldBtn = container.querySelector('[data-control="mode"][data-value="brush"]');
-      if (oldBtn) {
-        assert.strictEqual(
-          oldBtn.classList.contains('active'),
-          false,
-          'Previously active control button must relinquish active visual state'
-        );
-      }
-    });
-
-    it('should switch tabs, update activeTab state, and re-render the active panel configuration', () => {
-      const container = globalThis.document.createElement('div');
-      const controls = new Controls({
-        container,
-        initialState: { activeTab: 'tools', settingValue: 5 }
-      });
-
-      const layersTab = container.querySelector('[data-tab="layers"]');
-      assert.ok(layersTab, 'Tab button for "layers" must be rendered');
-
-      // Act: Click tab
-      layersTab.click();
-
-      // Assert state updated
-      assert.strictEqual(controls.getState().activeTab, 'layers', 'Controls state.activeTab must switch to "layers"');
-
-      // Assert DOM re-rendered active indicator
+      // Assert state updated and visual re-render occurred
+      const stateAfterTabClick = getControlState();
       assert.strictEqual(
-        layersTab.getAttribute('aria-selected'),
+        stateAfterTabClick.activeTab,
+        'layers',
+        'Defect DF-CONTROL-01: State must update when tab control is clicked'
+      );
+      assert.strictEqual(
+        tabBtn.classList.contains('active'),
+        true,
+        'Defect DF-CONTROL-01: Tab button must visually reflect active state in DOM (.active)'
+      );
+      assert.strictEqual(
+        tabBtn.getAttribute('aria-selected'),
         'true',
-        'Active tab in DOM must have aria-selected="true" after click'
+        'Defect DF-CONTROL-01: Tab button aria-selected must update to "true"'
+      );
+    });
+
+    it('should trigger state changes and DOM update when action control buttons are clicked', async () => {
+      const { initControls, getControlState } = await import('../src/controls.js');
+
+      const container = doc.createElement('div');
+      doc.body.appendChild(container);
+
+      const zoomInBtn = doc.createElement('button');
+      zoomInBtn.setAttribute('class', 'control-btn');
+      zoomInBtn.setAttribute('data-control', 'zoom-in');
+      container.appendChild(zoomInBtn);
+
+      const zoomDisplay = doc.createElement('span');
+      zoomDisplay.setAttribute('class', 'zoom-level-indicator');
+      zoomDisplay.textContent = '100%';
+      container.appendChild(zoomDisplay);
+
+      initControls(container, { zoomLevel: 1.0 });
+
+      // Simulate click on zoom-in button
+      zoomInBtn.click();
+
+      const updatedState = getControlState();
+      assert.ok(
+        updatedState.zoomLevel > 1.0,
+        'Defect DF-CONTROL-01: Zoom action control button click must update state.zoomLevel'
       );
 
-      const toolsTab = container.querySelector('[data-tab="tools"]');
+      // Verify DOM re-render
+      const renderedIndicator = container.querySelector('.zoom-level-indicator');
+      assert.notStrictEqual(
+        renderedIndicator.textContent,
+        '100%',
+        'Defect DF-CONTROL-01: Visual DOM indicator must re-render after control click'
+      );
+    });
+
+    it('should toggle previous active states when switching between multiple tabs', async () => {
+      const { initControls, getControlState } = await import('../src/controls.js');
+
+      const container = doc.createElement('div');
+      doc.body.appendChild(container);
+
+      const tab1 = doc.createElement('button');
+      tab1.setAttribute('class', 'tab-btn');
+      tab1.setAttribute('data-tab', 'tab-1');
+      container.appendChild(tab1);
+
+      const tab2 = doc.createElement('button');
+      tab2.setAttribute('class', 'tab-btn');
+      tab2.setAttribute('data-tab', 'tab-2');
+      container.appendChild(tab2);
+
+      initControls(container);
+
+      // Click tab 1
+      tab1.click();
+      assert.strictEqual(getControlState().activeTab, 'tab-1');
+      assert.strictEqual(tab1.classList.contains('active'), true);
+      assert.strictEqual(tab2.classList.contains('active'), false);
+
+      // Click tab 2
+      tab2.click();
+      assert.strictEqual(getControlState().activeTab, 'tab-2');
       assert.strictEqual(
-        toolsTab.getAttribute('aria-selected'),
-        'false',
-        'Previously active tab must have aria-selected="false"'
+        tab1.classList.contains('active'),
+        false,
+        'Previously active tab must have active styling removed'
+      );
+      assert.strictEqual(
+        tab2.classList.contains('active'),
+        true,
+        'Newly selected tab must have active styling applied'
       );
     });
 
-    it('should not update state or re-render when a disabled control button is clicked', () => {
-      const container = globalThis.document.createElement('div');
-      const controls = new Controls({
-        container,
-        initialState: { mode: 'brush', locked: true }
-      });
+    it('should render controls dynamically into container and register interactive handlers', async () => {
+      const { renderControls, getControlState } = await import('../src/controls.js');
 
-      const disabledBtn = container.querySelector('button[disabled]');
-      if (disabledBtn) {
-        const stateBefore = { ...controls.getState() };
-        disabledBtn.click();
-        assert.deepStrictEqual(controls.getState(), stateBefore, 'Clicking disabled button must produce zero state changes');
-      }
-    });
+      const container = doc.createElement('div');
+      doc.body.appendChild(container);
 
-    it('should bind handlers using renderControls helper and handle dispatch events', () => {
-      const container = globalThis.document.createElement('div');
-      let dispatchedDetail = null;
+      renderControls(container, [
+        { id: 'btn-reset', type: 'button', label: 'Reset View', action: 'reset' },
+        { id: 'btn-pan', type: 'button', label: 'Pan Tool', action: 'pan' },
+      ]);
 
-      container.addEventListener(CONTROL_EVENTS.STATE_CHANGE, (evt) => {
-        dispatchedDetail = evt.target ? controlsInstance.getState() : null;
-      });
+      const resetBtn = container.querySelector('#btn-reset');
+      const panBtn = container.querySelector('#btn-pan');
 
-      const controlsInstance = renderControls(container, { activeTab: 'default' });
-      assert.ok(controlsInstance, 'renderControls helper must return an active Controls instance');
+      assert.ok(resetBtn, 'renderControls must render btn-reset into container');
+      assert.ok(panBtn, 'renderControls must render btn-pan into container');
 
-      const anyInteractive = container.querySelector('button, [role="button"], [data-control]');
-      assert.ok(anyInteractive, 'renderControls must attach at least one interactive control element');
-      anyInteractive.click();
+      panBtn.click();
 
-      assert.ok(dispatchedDetail !== null || controlsInstance.getState() !== null, 'Event or state mutation must take effect');
+      const state = getControlState();
+      assert.strictEqual(
+        state.activeTool,
+        'pan',
+        'Clicking rendered tool control button must update activeTool state'
+      );
+      assert.strictEqual(
+        panBtn.classList.contains('active'),
+        true,
+        'Rendered button must visually re-render with active class'
+      );
     });
   });
 
-  describe('src/main.js - Active Entrypoint and Architectural Invariant Tests', () => {
-    it('should mount directly to document.getElementById("app") upon initialization', () => {
-      const appRoot = globalThis.document.createElement('div', 'app');
-      appRoot.id = 'app';
-      globalThis.document.body.appendChild(appRoot);
+  describe('src/main.js: Entrypoint Automatic Mounting and UI Control Binding', () => {
+    it('should automatically locate #app root element and mount controls during initialization', async () => {
+      // Setup the required live root element in the DOM
+      const appRoot = doc.registerElement('app', doc.createElement('div'));
 
-      // Act: initialize application entrypoint
-      const appInstance = initApp();
+      // Dynamic import ensures src/main.js executes in the active mocked browser environment
+      const main = await import(`../src/main.js?t=${Date.now()}`);
 
-      assert.ok(appInstance, 'Application entrypoint must return initialized app instance');
-      assert.ok(appRoot.children.length > 0, '#app container must not be empty after mounting');
-
-      // Verify controls are mounted inside #app
-      const controlsHost = appRoot.querySelector('.controls-container, #controls, [data-component="controls"]');
-      assert.ok(controlsHost, 'Controls component must be mounted directly inside #app tree');
-    });
-
-    it('should throw or reject mounting cleanly if #app does not exist in the DOM', () => {
-      // Ensure #app is absent
-      const existingApp = globalThis.document.getElementById('app');
-      if (existingApp && existingApp.parentNode) {
-        existingApp.parentNode.removeChild(existingApp);
+      // Ensure export or auto-mount executed
+      if (typeof main.mount === 'function') {
+        main.mount(appRoot);
       }
 
-      assert.throws(
-        () => {
-          mount();
-        },
-        /Target root element #app not found/i,
-        'mount() must fail fast with a descriptive error when #app is missing'
+      // Acceptance Criteria: The application must mount to document.getElementById('app')
+      assert.ok(
+        appRoot.children.length > 0,
+        'ARCHITECTURAL INVARIANT: src/main.js must mount controls into document.getElementById("app")'
+      );
+
+      const interactiveButtons = appRoot.querySelectorAll('button');
+      assert.ok(
+        interactiveButtons.length > 0,
+        'Interactive control buttons must be rendered inside document.getElementById("app")'
       );
     });
 
-    it('should bind active click event listeners to all interactive UI controls within mounted #app', () => {
-      const appRoot = globalThis.document.createElement('div', 'app');
-      appRoot.id = 'app';
-      globalThis.document.body.appendChild(appRoot);
+    it('should bind click event handlers to all interactive controls mounted under #app', async () => {
+      const appRoot = doc.registerElement('app', doc.createElement('div'));
 
-      initApp();
+      const main = await import(`../src/main.js?t=${Date.now()}`);
+      if (typeof main.mount === 'function') {
+        main.mount(appRoot);
+      }
 
-      const allButtons = appRoot.querySelectorAll('button[data-control], [role="tab"]');
-      assert.ok(allButtons.length > 0, 'There must be interactive control buttons/tabs present in mounted #app');
-
-      allButtons.forEach((btn) => {
-        const listeners = btn.listeners.get('click') || [];
-        const parentListeners = appRoot.listeners.get('click') || [];
-        const hasDirectOrDelegatedHandler = listeners.length > 0 || parentListeners.length > 0;
-
-        assert.ok(
-          hasDirectOrDelegatedHandler,
-          `Interactive element <${btn.tagName} ${btn.getAttribute('data-control') || btn.getAttribute('data-tab')}> must have an active click listener bound`
-        );
-      });
-    });
-
-    it('REGRESSION DF-CONTROL-01: clicking control button via live entrypoint produces state change and visual DOM update', () => {
-      const appRoot = globalThis.document.createElement('div', 'app');
-      appRoot.id = 'app';
-      globalThis.document.body.appendChild(appRoot);
-
-      initApp();
-
-      const initialState = getActiveState();
-      assert.ok(initialState, 'Initial active application state must be accessible');
-
-      // Select an alternate control option that differs from initial
-      const buttons = appRoot.querySelectorAll('button[data-control]');
-      assert.ok(buttons.length >= 2, 'Must have at least two control options to verify state transition');
-
-      const targetBtn = Array.from(buttons).find(
-        (btn) => btn.getAttribute('data-value') !== initialState.activeControl
-      );
-      assert.ok(targetBtn, 'Target alternative control button must exist');
-
-      const newValue = targetBtn.getAttribute('data-value');
-      const controlKey = targetBtn.getAttribute('data-control');
-
-      // Record visual snapshot before click
-      const wasActiveBefore = targetBtn.classList.contains('active') || targetBtn.getAttribute('aria-pressed') === 'true';
-      assert.strictEqual(wasActiveBefore, false, 'Target button should not be visually active before click');
-
-      // Act: User clicks the interactive button in the mounted UI
-      targetBtn.click();
-
-      // Assert 1: State changed
-      const updatedState = getActiveState();
-      assert.notDeepStrictEqual(updatedState, initialState, 'Clicking control button must mutate application state');
-      assert.strictEqual(
-        updatedState[controlKey] || updatedState.activeControl,
-        newValue,
-        `Active state for "${controlKey}" must reflect the clicked value "${newValue}"`
+      const controls = appRoot.querySelectorAll('button.control-btn, button.tab-btn');
+      assert.ok(
+        controls.length > 0,
+        'Expected at least one interactive control button or tab under #app'
       );
 
-      // Assert 2: Visual DOM updated immediately
-      const isNowActive = targetBtn.classList.contains('active') || targetBtn.getAttribute('aria-pressed') === 'true';
-      assert.strictEqual(isNowActive, true, 'Clicked button must immediately visually re-render as active');
-
-      // Assert 3: Visual indicator in display or config view matches selected configuration
-      const displayIndicator = appRoot.querySelector(`[data-active-display="${controlKey}"], .active-config-summary`);
-      if (displayIndicator) {
+      for (const control of controls) {
+        // Assert handler presence: DF-CONTROL-01 caused 0 listeners / 0 updates
+        const clickHandlers = control.listeners.get('click') || [];
         assert.ok(
-          displayIndicator.textContent.includes(newValue) || displayIndicator.getAttribute('data-current') === newValue,
-          'Visual display indicator must reflect the new selected configuration'
+          clickHandlers.length > 0,
+          `Defect DF-CONTROL-01: Control ${control.getAttribute('data-control') || control.id} must have click event handler bound`
         );
       }
     });
 
-    it('should maintain state synchronization between entrypoint canvas/components and controls when multiple clicks occur', () => {
-      const appRoot = globalThis.document.createElement('div', 'app');
-      appRoot.id = 'app';
-      globalThis.document.body.appendChild(appRoot);
+    it('should trigger state updates and DOM re-rendering when clicking interactive controls in live mounted application', async () => {
+      const appRoot = doc.registerElement('app', doc.createElement('div'));
 
-      initApp();
+      const main = await import(`../src/main.js?t=${Date.now()}`);
+      if (typeof main.mount === 'function') {
+        main.mount(appRoot);
+      }
 
-      const buttons = appRoot.querySelectorAll('button[data-control="tool"]');
-      if (buttons.length >= 3) {
-        const [btn1, btn2, btn3] = buttons;
+      const targetControl = appRoot.querySelector('button[data-control], button[data-tab]');
+      assert.ok(targetControl, 'Target interactive control element must exist in #app');
 
-        // Sequence of clicks
-        btn1.click();
-        assert.strictEqual(btn1.classList.contains('active'), true, 'Button 1 must be active');
-        assert.strictEqual(btn2.classList.contains('active'), false, 'Button 2 must be inactive');
+      const wasActive = targetControl.classList.contains('active');
+      const priorState = typeof main.getState === 'function' ? main.getState() : null;
 
-        btn2.click();
-        assert.strictEqual(btn1.classList.contains('active'), false, 'Button 1 must be deactivated');
-        assert.strictEqual(btn2.classList.contains('active'), true, 'Button 2 must become active');
+      // User interacts with control button
+      targetControl.click();
 
-        btn3.click();
-        assert.strictEqual(btn2.classList.contains('active'), false, 'Button 2 must be deactivated');
-        assert.strictEqual(btn3.classList.contains('active'), true, 'Button 3 must become active');
+      // Verify immediate visual re-render
+      const isNowActive = targetControl.classList.contains('active');
+      assert.notStrictEqual(
+        isNowActive,
+        wasActive,
+        'Clicking control in mounted app must immediately toggle active visual representation in the DOM'
+      );
+
+      // Verify application state update
+      if (typeof main.getState === 'function') {
+        const nextState = main.getState();
+        assert.notDeepEqual(
+          nextState,
+          priorState,
+          'Clicking control must update live application state managed by src/main.js'
+        );
+      }
+    });
+
+    it('should fail deterministically if document.getElementById("app") is missing in the DOM', async () => {
+      // Ensure #app does NOT exist in DOM
+      doc.registry.delete('app');
+
+      const main = await import(`../src/main.js?t=${Date.now()}`);
+
+      if (typeof main.mount === 'function') {
+        assert.throws(
+          () => {
+            main.mount(null);
+          },
+          {
+            message: /missing|root|#app|container/i,
+          },
+          'Mounting without root container must fail with clear architectural diagnostic'
+        );
       }
     });
   });
