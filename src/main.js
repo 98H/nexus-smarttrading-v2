@@ -524,6 +524,8 @@ function ensureDOMNodeMethods(proto, sample = null) {
  * Patches the active DOM environment in mock / headless testing contexts.
  */
 export function patchDOMEnvironment() {
+  if (typeof window !== 'undefined' && typeof window.document !== 'undefined' && window.document.nodeType === 9) return;
+
   ensureSelectorCompatibility();
 
   const win =
@@ -2101,3 +2103,6 @@ if (typeof document !== 'undefined') {
     } catch (_) {}
   }
 }
+export const init = mountApp;
+
+export const initialize = mountApp;
