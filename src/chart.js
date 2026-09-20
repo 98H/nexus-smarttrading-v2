@@ -160,20 +160,67 @@ export function aggregateCandles(candles, timeframe) {
  * Manages rendering, scaling, viewport panning, coordinate axes, and real-time updates.
  */
 export class Chart {
-  constructor(canvasOrOptions, maybeOptions = {}) {
-    let canvas = null;
-    let options = {};
-
-    if (canvasOrOptions && (canvasOrOptions.getContext || canvasOrOptions.tagName === 'CANVAS')) {
-      canvas = canvasOrOptions;
-      options = maybeOptions || {};
-    } else if (canvasOrOptions && typeof canvasOrOptions === 'object') {
-      canvas = canvasOrOptions.canvas || null;
-      options = canvasOrOptions;
-    } else {
-      options = maybeOptions || {};
+  constructor(containerOrCanvas, maybeOptions = {}) {
+    if (!containerOrCanvas || typeof containerOrCanvas !== 'object') {
+      throw new Error('Chart container element cannot be null or invalid');
     }
 
+    const options = maybeOptions || {};
+    let canvas = null;
+    let container = null;
+
+    if (
+      containerOrCanvas.tagName === 'CANVAS' ||
+      (typeof containerOrCanvas.getContext === 'function' && !containerOrCanvas.appendChild)
+    ) {
+      canvas = containerOrCanvas;
+      container = containerOrCanvas.parentElement || null;
+    } else if (typeof containerOrCanvas.appendChild === 'function') {
+      container = containerOrCanvas;
+      if (Array.isArray(container.children)) {
+        canvas = container.children.find((child) => child.tagName === 'CANVAS') || null;
+      }
+      if (!canvas) {
+        canvas =
+          typeof document !== 'undefined' && typeof document.createElement === 'function'
+            ? document.createElement('canvas')
+            : null;
+        if (canvas) {
+          container.appendChild(canvas);
+        }
+      }
+    } else {
+      throw new Error('Chart container element must be a valid DOM node');
+    }
+
+    const width =
+      typeof options.width === 'number'
+        ? options.width
+        : (canvas && typeof canvas.width === 'number' && canvas.width > 0
+            ? canvas.width
+            : (container && typeof container.clientWidth === 'number' && container.clientWidth > 0
+                ? container.clientWidth
+                : (container && typeof container.width === 'number' && container.width > 0
+                    ? container.width
+                    : 800)));
+
+    const height =
+      typeof options.height === 'number'
+        ? options.height
+        : (canvas && typeof canvas.height === 'number' && canvas.height > 0
+            ? canvas.height
+            : (container && typeof container.clientHeight === 'number' && container.clientHeight > 0
+                ? container.clientHeight
+                : (container && typeof container.height === 'number' && container.height > 0
+                    ? container.height
+                    : 600)));
+
+    if (canvas) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+
+    this.container = container;
     this.canvas = canvas;
     this.options = options;
     this.timeframe = options.timeframe || '1m';
@@ -210,6 +257,7 @@ export class Chart {
 
     this._intervalId = null;
     this._listeners = [];
+    this._windowListeners = [];
 
     this._setupInteractivity();
 
@@ -222,6 +270,17 @@ export class Chart {
     this.candles = Array.isArray(data) ? [...data] : [];
     this.data = this.candles;
     this.candleCount = this.candles.length;
+  }
+
+  update(data) {
+    if (data) {
+      this.setData(data);
+    }
+    this.render();
+  }
+
+  getData() {
+    return this.candles;
   }
 
   getViewportOffset() {
@@ -253,11 +312,6 @@ export class Chart {
     };
   }
 
-  /**
-   * Adjusts chart zoom scale by a multiplication factor and re-renders.
-   *
-   * @param {number} factor - Scale multiplier
-   */
   zoom(factor) {
     if (typeof factor !== 'number' || isNaN(factor) || factor <= 0) return;
     const currentScale = typeof this.zoomScale === 'number' && this.zoomScale > 0 ? this.zoomScale : 1.0;
@@ -265,11 +319,6 @@ export class Chart {
     this.draw();
   }
 
-  /**
-   * Handles wheel events by zooming in on upward scroll and zooming out on downward scroll.
-   *
-   * @param {WheelEvent|Object} e - Wheel event
-   */
   handleWheel(e) {
     if (e && typeof e.preventDefault === 'function') {
       e.preventDefault();
@@ -282,12 +331,6 @@ export class Chart {
     }
   }
 
-  /**
-   * Offsets viewport horizontally and vertically.
-   *
-   * @param {number} dx - Horizontal delta
-   * @param {number} [dy=0] - Vertical delta
-   */
   pan(dx, dy = 0) {
     this.viewportOffset.x += dx;
     this.viewportOffset.y += dy;
@@ -295,65 +338,89 @@ export class Chart {
   }
 
   _setupInteractivity() {
-    if (!this.canvas || typeof this.canvas.addEventListener !== 'function') return;
+    if (this.canvas && typeof this.canvas.addEventListener === 'function') {
+      const onMouseDown = (e) => {
+        if (e.button !== undefined && e.button !== 0) return;
+        this.isPanning = true;
+        const clientX = e.clientX ?? e.x ?? 0;
+        const clientY = e.clientY ?? e.y ?? 0;
+        this._panStart = { x: clientX, y: clientY };
+        this._initialOffset = { x: this.viewportOffset.x, y: this.viewportOffset.y };
+      };
 
-    const onMouseDown = (e) => {
-      if (e.button !== undefined && e.button !== 0) return;
-      this.isPanning = true;
-      const clientX = e.clientX ?? e.x ?? 0;
-      const clientY = e.clientY ?? e.y ?? 0;
-      this._panStart = { x: clientX, y: clientY };
-      this._initialOffset = { x: this.viewportOffset.x, y: this.viewportOffset.y };
-    };
+      const onMouseMove = (e) => {
+        if (!this.isPanning) return;
+        if (e.buttons !== undefined && e.buttons === 0) {
+          this.isPanning = false;
+          return;
+        }
+        const clientX = e.clientX ?? e.x ?? 0;
+        const clientY = e.clientY ?? e.y ?? 0;
+        const dx = clientX - this._panStart.x;
+        const dy = clientY - this._panStart.y;
+        this.viewportOffset.x = this._initialOffset.x + dx;
+        this.viewportOffset.y = this._initialOffset.y + dy;
+        this.draw();
+      };
 
-    const onMouseMove = (e) => {
-      if (!this.isPanning) return;
-      if (e.buttons !== undefined && e.buttons === 0) {
+      const onMouseUp = () => {
         this.isPanning = false;
-        return;
-      }
-      const clientX = e.clientX ?? e.x ?? 0;
-      const clientY = e.clientY ?? e.y ?? 0;
-      const dx = clientX - this._panStart.x;
-      const dy = clientY - this._panStart.y;
-      this.viewportOffset.x = this._initialOffset.x + dx;
-      this.viewportOffset.y = this._initialOffset.y + dy;
-      this.draw();
-    };
+      };
 
-    const onMouseUp = () => {
-      this.isPanning = false;
-    };
+      const onMouseLeave = () => {
+        this.isPanning = false;
+      };
 
-    const onMouseLeave = () => {
-      this.isPanning = false;
-    };
+      const onWheel = (e) => {
+        this.handleWheel(e);
+      };
 
-    const onWheel = (e) => {
-      this.handleWheel(e);
-    };
+      this.canvas.addEventListener('mousedown', onMouseDown);
+      this.canvas.addEventListener('mousemove', onMouseMove);
+      this.canvas.addEventListener('mouseup', onMouseUp);
+      this.canvas.addEventListener('mouseleave', onMouseLeave);
+      this.canvas.addEventListener('wheel', onWheel);
 
-    this.canvas.addEventListener('mousedown', onMouseDown);
-    this.canvas.addEventListener('mousemove', onMouseMove);
-    this.canvas.addEventListener('mouseup', onMouseUp);
-    this.canvas.addEventListener('mouseleave', onMouseLeave);
-    this.canvas.addEventListener('wheel', onWheel);
+      this._listeners = [
+        { type: 'mousedown', handler: onMouseDown },
+        { type: 'mousemove', handler: onMouseMove },
+        { type: 'mouseup', handler: onMouseUp },
+        { type: 'mouseleave', handler: onMouseLeave },
+        { type: 'wheel', handler: onWheel },
+      ];
+    }
 
-    this._listeners = [
-      { type: 'mousedown', handler: onMouseDown },
-      { type: 'mousemove', handler: onMouseMove },
-      { type: 'mouseup', handler: onMouseUp },
-      { type: 'mouseleave', handler: onMouseLeave },
-      { type: 'wheel', handler: onWheel },
-    ];
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      const onResize = () => {
+        if (this.container) {
+          const w = this.container.clientWidth || this.container.width;
+          const h = this.container.clientHeight || this.container.height;
+          if (w && h && (w !== this.canvas.width || h !== this.canvas.height)) {
+            this.resize(w, h);
+            return;
+          }
+        }
+        this.render();
+      };
+      window.addEventListener('resize', onResize);
+      this._windowListeners.push({ type: 'resize', handler: onResize });
+    }
   }
 
   _removeInteractivity() {
-    if (!this.canvas || typeof this.canvas.removeEventListener !== 'function') return;
-    for (const { type, handler } of this._listeners) {
-      this.canvas.removeEventListener(type, handler);
+    if (this.canvas && typeof this.canvas.removeEventListener === 'function') {
+      for (const { type, handler } of this._listeners) {
+        this.canvas.removeEventListener(type, handler);
+      }
+      this._listeners = [];
     }
-    this._listeners = [];
+
+    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      for (const { type, handler } of this._windowListeners) {
+        window.removeEventListener(type, handler);
+      }
+      this._windowListeners = [];
+    }
   }
 
   getTimeframe() {
@@ -425,28 +492,40 @@ export class Chart {
     const ctx = this.canvas.getContext('2d');
     if (!ctx) return;
 
-    const width = this.canvas.width || 800;
-    const height = this.canvas.height || 500;
+    const width = this.canvas.width || this.options.width || 800;
+    const height = this.canvas.height || this.options.height || 600;
 
     const layout = this.options.layout || {};
-    const rightMargin = typeof layout.rightMargin === 'number'
-      ? layout.rightMargin
-      : (typeof this.options.rightMargin === 'number' ? this.options.rightMargin : 60);
+    const priceScaleWidth =
+      typeof this.options.priceScaleWidth === 'number'
+        ? this.options.priceScaleWidth
+        : (typeof layout.priceScaleWidth === 'number'
+            ? layout.priceScaleWidth
+            : (typeof layout.rightMargin === 'number'
+                ? layout.rightMargin
+                : (typeof this.options.rightMargin === 'number' ? this.options.rightMargin : 60)));
 
-    const bottomMargin = typeof layout.bottomMargin === 'number'
-      ? layout.bottomMargin
-      : (typeof this.options.bottomMargin === 'number' ? this.options.bottomMargin : 30);
+    const timeScaleHeight =
+      typeof this.options.timeScaleHeight === 'number'
+        ? this.options.timeScaleHeight
+        : (typeof layout.timeScaleHeight === 'number'
+            ? layout.timeScaleHeight
+            : (typeof layout.bottomMargin === 'number'
+                ? layout.bottomMargin
+                : (typeof this.options.bottomMargin === 'number' ? this.options.bottomMargin : 30)));
 
-    const topMargin = typeof layout.topMargin === 'number'
-      ? layout.topMargin
-      : (typeof this.options.topMargin === 'number' ? this.options.topMargin : 10);
+    const topMargin =
+      typeof layout.topMargin === 'number'
+        ? layout.topMargin
+        : (typeof this.options.topMargin === 'number' ? this.options.topMargin : 10);
 
-    const leftMargin = typeof layout.leftMargin === 'number'
-      ? layout.leftMargin
-      : (typeof this.options.leftMargin === 'number' ? this.options.leftMargin : 10);
+    const leftMargin =
+      typeof layout.leftMargin === 'number'
+        ? layout.leftMargin
+        : (typeof this.options.leftMargin === 'number' ? this.options.leftMargin : 10);
 
-    const plotWidth = width - rightMargin;
-    const plotHeight = height - bottomMargin;
+    const plotWidth = width - priceScaleWidth;
+    const plotHeight = height - timeScaleHeight;
 
     if (typeof ctx.clearRect === 'function') {
       ctx.clearRect(0, 0, width, height);
@@ -472,7 +551,7 @@ export class Chart {
     }
 
     const priceRange = maxPrice - minPrice || 1;
-    const pad = priceRange * 0.25;
+    const pad = priceRange * 0.15;
     const effectiveMin = minPrice - pad;
     const effectiveMax = maxPrice + pad;
     const effectiveRange = effectiveMax - effectiveMin;
@@ -488,7 +567,7 @@ export class Chart {
     const baseStep = n > 1 ? availableWidth / (n - 1) : availableWidth;
     const step = baseStep * scale;
 
-    // Compute Price Ticks (encompasses minPrice and maxPrice)
+    // Compute Price Ticks
     const priceTickCount = 5;
     const priceTicks = [];
     for (let i = 0; i < priceTickCount; i++) {
@@ -502,15 +581,26 @@ export class Chart {
     // Compute Time Ticks
     const timeTickCount = Math.min(Math.max(3, n), 5);
     const timeTicks = [];
-    for (let i = 0; i < timeTickCount; i++) {
-      const idx = n > 1 ? Math.round((i * (n - 1)) / (timeTickCount - 1)) : i;
-      const c = candles[idx] || (candles[0] || { time: Date.now() });
-      const t = c.time ?? c.timestamp ?? Date.now();
-      const x = Math.round(leftMargin + idx * step + candleWidth / 2);
-      timeTicks.push({
-        time: t,
-        x,
-      });
+    if (n > 0) {
+      for (let i = 0; i < timeTickCount; i++) {
+        const idx = n > 1 ? Math.round((i * (n - 1)) / (timeTickCount - 1)) : i;
+        const c = candles[idx] || candles[0];
+        const t = c.time ?? c.timestamp ?? Date.now();
+        const x = Math.round(leftMargin + idx * step + candleWidth / 2);
+        timeTicks.push({
+          time: t,
+          x: Math.min(plotWidth, Math.max(0, x)),
+        });
+      }
+    } else {
+      const defaultCount = 4;
+      for (let i = 0; i < defaultCount; i++) {
+        const x = Math.round((plotWidth / (defaultCount + 1)) * (i + 1));
+        timeTicks.push({
+          time: Date.now() - (defaultCount - 1 - i) * 60000,
+          x,
+        });
+      }
     }
 
     // -------------------------------------------------------------------------
@@ -519,7 +609,7 @@ export class Chart {
     ctx.strokeStyle = this.theme.gridColor || '#2a2e39';
     ctx.lineWidth = 1;
 
-    // Horizontal gridlines extending across the plot area horizontally (length >= 400)
+    // Horizontal gridlines extending across chart plot area (0 to plotWidth)
     for (let i = 0; i < priceTicks.length; i++) {
       const y = Math.round(priceTicks[i].y);
       if (typeof ctx.beginPath === 'function') ctx.beginPath();
@@ -528,7 +618,7 @@ export class Chart {
       if (typeof ctx.stroke === 'function') ctx.stroke();
     }
 
-    // Vertical gridlines extending across the plot area vertically (length >= 200)
+    // Vertical gridlines extending across chart plot area (0 to plotHeight)
     for (let i = 0; i < timeTicks.length; i++) {
       const x = Math.round(timeTicks[i].x);
       if (typeof ctx.beginPath === 'function') ctx.beginPath();
@@ -558,12 +648,10 @@ export class Chart {
       ctx.fillStyle = color;
       ctx.strokeStyle = color;
 
-      // Draw candle body first
       if (typeof ctx.fillRect === 'function') {
         ctx.fillRect(candleX, Math.round(bodyTop), candleWidth, Math.round(bodyHeight));
       }
 
-      // Draw high/low wick
       if (typeof ctx.beginPath === 'function') ctx.beginPath();
       if (typeof ctx.moveTo === 'function') ctx.moveTo(candleCenterX, Math.round(highY));
       if (typeof ctx.lineTo === 'function') ctx.lineTo(candleCenterX, Math.round(lowY));
@@ -571,43 +659,55 @@ export class Chart {
     }
 
     // -------------------------------------------------------------------------
-    // STEP 3: Coordinate Axes (Right-hand price scale & Bottom time scale)
+    // STEP 3: Coordinate Axes (Separators, Ticks, and Scale Labels)
     // -------------------------------------------------------------------------
     ctx.strokeStyle = this.theme.axisColor || '#4c525e';
     ctx.fillStyle = this.theme.textColor || '#848e9c';
     ctx.lineWidth = 1;
     ctx.font = '11px sans-serif';
 
-    // Right-hand price scale tick marks and numeric labels
+    // Time scale baseline stroke separating plot area and time scale
+    if (typeof ctx.beginPath === 'function') ctx.beginPath();
+    if (typeof ctx.moveTo === 'function') ctx.moveTo(0, plotHeight);
+    if (typeof ctx.lineTo === 'function') ctx.lineTo(plotWidth, plotHeight);
+    if (typeof ctx.stroke === 'function') ctx.stroke();
+
+    // Price scale baseline stroke separating plot area and price scale
+    if (typeof ctx.beginPath === 'function') ctx.beginPath();
+    if (typeof ctx.moveTo === 'function') ctx.moveTo(plotWidth, 0);
+    if (typeof ctx.lineTo === 'function') ctx.lineTo(plotWidth, plotHeight);
+    if (typeof ctx.stroke === 'function') ctx.stroke();
+
+    // Right-hand price scale tick marks and formatted numeric price labels
     for (let i = 0; i < priceTicks.length; i++) {
       const pt = priceTicks[i];
       const y = Math.round(pt.y);
 
-      // Short horizontal tick mark at x >= plotWidth - 1
+      // Short horizontal tick mark located at x >= plotWidth
       if (typeof ctx.beginPath === 'function') ctx.beginPath();
       if (typeof ctx.moveTo === 'function') ctx.moveTo(plotWidth, y);
       if (typeof ctx.lineTo === 'function') ctx.lineTo(plotWidth + 5, y);
       if (typeof ctx.stroke === 'function') ctx.stroke();
 
-      // Price label on right axis (x >= plotWidth)
+      // Price label placed in the price axis zone (x >= plotWidth)
       const priceLabel = pt.price.toFixed(2);
       if (typeof ctx.fillText === 'function') {
         ctx.fillText(priceLabel, plotWidth + 8, y + 4);
       }
     }
 
-    // Bottom time scale tick marks and formatted time labels
+    // Bottom time scale tick marks and formatted timestamp labels
     for (let i = 0; i < timeTicks.length; i++) {
       const tt = timeTicks[i];
       const x = Math.round(tt.x);
 
-      // Short vertical tick mark at y >= plotHeight - 1
+      // Short vertical tick mark located at y >= plotHeight
       if (typeof ctx.beginPath === 'function') ctx.beginPath();
       if (typeof ctx.moveTo === 'function') ctx.moveTo(x, plotHeight);
       if (typeof ctx.lineTo === 'function') ctx.lineTo(x, plotHeight + 5);
       if (typeof ctx.stroke === 'function') ctx.stroke();
 
-      // Formatted time label in bottom margin (y >= plotHeight)
+      // Formatted timestamp label placed in the time scale zone (y >= plotHeight)
       const timeLabel = formatAxisTime(tt.time);
       if (typeof ctx.fillText === 'function') {
         ctx.fillText(timeLabel, x - 15, plotHeight + 18);
