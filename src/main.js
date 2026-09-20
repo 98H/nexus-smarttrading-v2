@@ -2,8 +2,8 @@
  * SmartTrading-V2 — Main Application Entrypoint
  * Mounts the financial chart workspace, active canvas rendering context,
  * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02), analytical indicator
- * overlays (DF-OVERLAYS-01), live legend components, and interactive zoom/gesture wiring.
- * Satisfies STORY 2.3.1, STORY 30.2.1, STORY 31.1.1, and STORY 31.3.1.
+ * overlays (DF-OVERLAYS-01), live legend components, and the auxiliary dock
+ * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -21,6 +21,7 @@ import {
   updateIndicatorLegend,
   getClosePrice,
 } from './indicators.js';
+import { AuxiliaryDock } from './components/dock.js';
 
 export {
   AxesRenderer,
@@ -35,6 +36,7 @@ export {
   createIndicatorLegend,
   updateIndicatorLegend,
   getClosePrice,
+  AuxiliaryDock,
 };
 
 /**
@@ -85,13 +87,13 @@ export function createElement(tag, attrs = {}, children = []) {
     };
   }
 
-  // Ensure helper methods if missing on mock elements
   if (typeof el.appendChild !== 'function') {
     if (!('children' in el)) {
       el.children = [];
     }
     el.appendChild = function (child) {
       if (Array.isArray(this.children)) {
+        child.parentNode = this;
         this.children.push(child);
       }
       return child;
@@ -101,7 +103,10 @@ export function createElement(tag, attrs = {}, children = []) {
     el.removeChild = function (child) {
       if (Array.isArray(this.children)) {
         const idx = this.children.indexOf(child);
-        if (idx !== -1) this.children.splice(idx, 1);
+        if (idx !== -1) {
+          child.parentNode = null;
+          this.children.splice(idx, 1);
+        }
       }
       return child;
     };
@@ -127,8 +132,10 @@ export function createElement(tag, attrs = {}, children = []) {
     Object.keys(attrs).forEach((key) => {
       if (key === 'className') {
         el.className = attrs[key];
+        if (typeof el.setAttribute === 'function') el.setAttribute('class', attrs[key]);
       } else if (key === 'id') {
         el.id = attrs[key];
+        if (typeof el.setAttribute === 'function') el.setAttribute('id', attrs[key]);
       } else if (key === 'style' && typeof attrs[key] === 'object') {
         if (!el.style) el.style = {};
         Object.assign(el.style, attrs[key]);
@@ -248,85 +255,6 @@ export function ToolPalette(options = {}) {
 }
 
 /**
- * Auxiliary Dock Component (DF-LAYOUT-02).
- *
- * @param {Object} [options={}]
- * @returns {HTMLElement|Object}
- */
-export function AuxiliaryDock(options = {}) {
-  const dock = createElement('div', {
-    className: 'auxiliary-dock',
-    style: {
-      display: 'flex',
-      flexDirection: 'column',
-      width: '240px',
-      background: '#181b24',
-      borderLeft: '1px solid #2a2e39',
-      padding: '12px',
-      gap: '12px',
-      overflowY: 'auto',
-      boxSizing: 'border-box',
-    },
-  });
-
-  const dockHeader = createElement('div', {
-    className: 'dock-header',
-    textContent: 'Market Overview',
-    style: {
-      fontWeight: '600',
-      fontSize: '13px',
-      color: '#787b86',
-      textTransform: 'uppercase',
-      letterSpacing: '0.5px',
-    },
-  });
-  if (typeof dock.appendChild === 'function') {
-    dock.appendChild(dockHeader);
-  }
-
-  const stats = createElement('div', {
-    className: 'dock-stats',
-    style: {
-      display: 'flex',
-      flexDirection: 'column',
-      gap: '8px',
-      fontSize: '12px',
-    },
-  });
-
-  const items = [
-    { label: 'Symbol', value: 'BTC/USD' },
-    { label: 'Timeframe', value: '1m' },
-    { label: 'Indicator', value: `${appState.overlayType} (${appState.period})` },
-  ];
-
-  items.forEach((item) => {
-    const row = createElement('div', {
-      className: 'dock-row',
-      style: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        color: '#d1d4dc',
-      },
-    });
-    const labelSpan = createElement('span', { textContent: item.label, style: { color: '#787b86' } });
-    const valSpan = createElement('span', { textContent: item.value });
-    if (typeof row.appendChild === 'function') {
-      row.appendChild(labelSpan);
-      row.appendChild(valSpan);
-    }
-    if (typeof stats.appendChild === 'function') {
-      stats.appendChild(row);
-    }
-  });
-
-  if (typeof dock.appendChild === 'function') {
-    dock.appendChild(stats);
-  }
-  return dock;
-}
-
-/**
  * Initializes and styles header controls (DF-THEME-01).
  *
  * @param {HTMLElement|Object} header
@@ -391,7 +319,6 @@ export function initControls(header, options = {}) {
 /**
  * Starts an active render loop via requestAnimationFrame
  * to continuously re-render the canvas and prevent static paint detection.
- * Satisfies STORY 30.2.1 (DF-LIVENESS-01).
  *
  * @param {Object} instance Application/chart instance
  * @returns {Function} Stop/cleanup function
@@ -426,30 +353,44 @@ export function startRenderLoop(instance) {
 
 /**
  * Initializes and mounts the financial chart application into the specified DOM target.
- * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.1.1 (Resolve UNRESPONSIVE_CANVAS_ZOOM),
- * and STORY 31.3.1 (DF-SCALES-02).
+ * Satisfies STORY 2.3.1, STORY 30.2.1, STORY 31.1.1, STORY 31.3.1, and STORY 31.4.1.
  *
- * @param {Object} [options={}] Initialization settings
+ * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
  * @returns {Object} Chart workspace instance
  */
 export function initApp(options = {}) {
-  const rootId = options.rootId || 'app';
   let root = null;
+  let opts = {};
 
-  if (typeof rootId === 'string') {
-    const cleanId = rootId.startsWith('#') ? rootId.slice(1) : rootId;
-    root = (typeof document !== 'undefined' && document.getElementById)
+  if (options && (options.nodeType || options.tagName || typeof options.appendChild === 'function')) {
+    root = options;
+  } else if (typeof options === 'string') {
+    const cleanId = options.startsWith('#') ? options.slice(1) : options;
+    root = typeof document !== 'undefined' && document.getElementById
       ? document.getElementById(cleanId)
       : null;
-  } else if (rootId && typeof rootId === 'object') {
-    root = rootId;
+  } else if (options && typeof options === 'object') {
+    opts = options;
+    const rootTarget = options.root || options.rootId || 'app';
+    if (typeof rootTarget === 'string') {
+      const cleanId = rootTarget.startsWith('#') ? rootTarget.slice(1) : rootTarget;
+      root = typeof document !== 'undefined' && document.getElementById
+        ? document.getElementById(cleanId)
+        : null;
+    } else if (rootTarget && typeof rootTarget === 'object') {
+      root = rootTarget;
+    }
+  }
+
+  if (!root && typeof document !== 'undefined' && document.getElementById) {
+    root = document.getElementById('app');
   }
 
   if (!root) {
-    throw new Error(`Target container '${rootId}' was not found in the DOM`);
+    throw new Error("Target container was not found in the DOM");
   }
 
-  // Layout styling: 100vh responsive flex layout with overflow hidden (DF-LAYOUT-02 / STORY 31.3.1)
+  // Viewport & Layout (DF-LAYOUT-02): 100vh responsive flex layout with overflow hidden
   if (root.style) {
     root.style.display = 'flex';
     root.style.flexDirection = 'column';
@@ -476,18 +417,18 @@ export function initApp(options = {}) {
     }
   }
 
-  const overlayType = options.overlayType || 'EMA';
-  const period = Number(options.period) || 20;
-  const overlayColor = options.color || '#FF9800';
-  const initialData = Array.isArray(options.initialData)
-    ? [...options.initialData]
+  const overlayType = opts.overlayType || 'EMA';
+  const period = Number(opts.period) || 20;
+  const overlayColor = opts.color || '#FF9800';
+  const initialData = Array.isArray(opts.initialData)
+    ? [...opts.initialData]
     : generateDefaultData(30);
 
   appState.overlayType = overlayType;
   appState.period = period;
   appState.data = [...initialData];
 
-  // Create Chart Header (DF-OVERLAYS-01)
+  // Header Bar (DF-OVERLAYS-01)
   const header = createElement('div', {
     className: 'chart-header',
     style: {
@@ -505,7 +446,6 @@ export function initApp(options = {}) {
     },
   });
 
-  // Create Indicator Legend
   const legendLabel = `${overlayType} (${period})`;
   const legend = createIndicatorLegend(header, {
     id: `${overlayType.toLowerCase()}-${period}`,
@@ -513,7 +453,6 @@ export function initApp(options = {}) {
     color: overlayColor,
   });
 
-  // Dark-themed indicator selector controls (DF-THEME-01)
   initControls(header, {
     overlayType,
     onOverlayChange: (newType) => {
@@ -524,9 +463,10 @@ export function initApp(options = {}) {
     },
   });
 
-  // Main Workspace: flex-row hosting chart and auxiliary dock horizontally side-by-side (DF-LAYOUT-02)
+  // Main Workspace: flex-row hosting primary canvas and auxiliary dock side-by-side (DF-LAYOUT-02)
   const workspace = createElement('div', {
     className: 'main-workspace',
+    id: 'main-workspace',
     style: {
       display: 'flex',
       flexDirection: 'row',
@@ -545,8 +485,11 @@ export function initApp(options = {}) {
     },
   });
 
+  // Primary Canvas Container (STORY 31.4.1)
   const chartContainer = createElement('div', {
     className: 'chart-container',
+    id: 'canvas-container',
+    'data-testid': 'primary-canvas',
     style: {
       flex: '1 1 0%',
       minHeight: '0',
@@ -574,8 +517,8 @@ export function initApp(options = {}) {
     },
   });
 
-  const canvasWidth = options.width || (canvas && canvas.width) || 800;
-  const canvasHeight = options.height || (canvas && canvas.height) || 600;
+  const canvasWidth = opts.width || (canvas && canvas.width) || 800;
+  const canvasHeight = opts.height || (canvas && canvas.height) || 600;
   canvas.width = canvasWidth;
   canvas.height = canvasHeight;
 
@@ -584,12 +527,11 @@ export function initApp(options = {}) {
     polyfillCanvasContext(ctx);
   }
 
-  // AxesRenderer instance for scale markers and gridlines
   const axesRenderer = new AxesRenderer({
     canvas,
     context: ctx,
-    priceAxisWidth: options.priceAxisWidth !== undefined ? options.priceAxisWidth : 70,
-    timeAxisHeight: options.timeAxisHeight !== undefined ? options.timeAxisHeight : 50,
+    priceAxisWidth: opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 70,
+    timeAxisHeight: opts.timeAxisHeight !== undefined ? opts.timeAxisHeight : 50,
   });
 
   canvas.axesRenderer = axesRenderer;
@@ -598,29 +540,21 @@ export function initApp(options = {}) {
     chartContainer.appendChild(canvas);
   }
 
-  const dock = AuxiliaryDock();
+  // Auxiliary Dock (DF-PANEL-01, STORY 31.4.1)
+  const dockComponent = new AuxiliaryDock(opts.dockOptions || {});
+  const dockElement = dockComponent.getElement();
 
   if (typeof workspace.appendChild === 'function') {
     workspace.appendChild(toolPalette);
     workspace.appendChild(chartContainer);
-    workspace.appendChild(dock);
+    workspace.appendChild(dockElement);
   }
 
-  // Mount components
   if (typeof root.appendChild === 'function') {
     root.appendChild(header);
     root.appendChild(workspace);
   }
 
-  // In shallow mock DOMs (where querySelector only scans direct children), ensure canvas is attached to root
-  if (typeof root.querySelector === 'function') {
-    const foundCanvas = root.querySelector('canvas');
-    if (!foundCanvas && typeof root.appendChild === 'function') {
-      root.appendChild(canvas);
-    }
-  }
-
-  // Chart manager instance (wires zoom wheel handler and viewport calculation)
   const chart = new Chart(canvas, {
     data: initialData,
     overlayType,
@@ -628,9 +562,9 @@ export function initApp(options = {}) {
     color: overlayColor,
     legend,
     axesRenderer,
-    initialZoom: options.initialZoom || options.zoom || 1.0,
-    minZoom: options.minZoom !== undefined ? options.minZoom : 0.2,
-    maxZoom: options.maxZoom !== undefined ? options.maxZoom : 5.0,
+    initialZoom: opts.initialZoom || opts.zoom || 1.0,
+    minZoom: opts.minZoom !== undefined ? opts.minZoom : 0.2,
+    maxZoom: opts.maxZoom !== undefined ? opts.maxZoom : 5.0,
   });
 
   const instance = {
@@ -638,11 +572,22 @@ export function initApp(options = {}) {
     header,
     legend,
     canvas,
+    chartContainer,
     workspace,
     toolPalette,
-    dock,
+    dock: dockComponent,
+    dockElement,
     chart,
     axesRenderer,
+    activateWorkflow: (workflow, widget) => {
+      return dockComponent.activateWorkflow(workflow, widget);
+    },
+    mountWorkflow: (workflow, widget) => {
+      return dockComponent.mountWorkflow(workflow, widget);
+    },
+    toggleDockCollapse: () => {
+      return dockComponent.toggleCollapse();
+    },
     getZoom: () => chart.getZoom(),
     setZoom: (z) => chart.setZoom(z),
     getAxesRenderer: () => axesRenderer,
@@ -698,11 +643,20 @@ export function initApp(options = {}) {
     },
   };
 
+  // Wire custom workflow:change event listener on the app root
+  if (typeof root.addEventListener === 'function') {
+    root.addEventListener('workflow:change', (e) => {
+      const wf = e?.detail?.workflow;
+      if (wf) {
+        instance.activateWorkflow(wf, e?.detail?.widget);
+      }
+    });
+  }
+
   instance.onDataUpdate = instance.updateData;
   activeAppInstance = instance;
   activeChart = chart;
 
-  // Window resize handler triggering coordinate axes redrawing
   const handleResize = () => {
     const w = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : (canvas.width || 800);
     const h = (typeof window !== 'undefined' && window.innerHeight) ? window.innerHeight : (canvas.height || 600);
@@ -721,33 +675,14 @@ export function initApp(options = {}) {
     window.addEventListener('resize', handleResize);
   }
 
-  // Initial render
   instance.render();
-
-  // Active continuous render loop (DF-LIVENESS-01 / STORY 30.2.1)
   instance.stopRenderLoop = startRenderLoop(instance);
 
-  // Interactive mouse handlers
   if (canvas && typeof canvas.addEventListener === 'function') {
     let isDragging = false;
-    let dragStartX = 0;
-    let dragStartY = 0;
-
-    canvas.addEventListener('mousedown', (e) => {
-      isDragging = true;
-      dragStartX = e.clientX || 0;
-      dragStartY = e.clientY || 0;
-    });
-
-    canvas.addEventListener('mousemove', () => {
-      if (isDragging) {
-        // Drag interaction
-      }
-    });
-
-    canvas.addEventListener('mouseup', () => {
-      isDragging = false;
-    });
+    canvas.addEventListener('mousedown', () => { isDragging = true; });
+    canvas.addEventListener('mousemove', () => {});
+    canvas.addEventListener('mouseup', () => { isDragging = false; });
   }
 
   return instance;
@@ -775,8 +710,8 @@ export function teardown() {
 /**
  * Updates real-time candle data and redraws coordinate axes and overlays.
  *
- * @param {Object|Array<Object>} targetOrData - Application instance or candle batch
- * @param {Array<Object>} [maybeCandles] - Updated price candle series
+ * @param {Object|Array<Object>} targetOrData
+ * @param {Array<Object>} [maybeCandles]
  * @returns {Promise<Object>}
  */
 export function updateCandleData(targetOrData, maybeCandles) {
@@ -849,8 +784,8 @@ export function startRealtimeUpdates(chartInstance, intervalMs = 2000) {
  * Lifecycle mount function for application integration.
  */
 export function mountApp(mountTarget, options = {}) {
-  const target = (typeof mountTarget === 'string')
-    ? (typeof document !== 'undefined' ? document.getElementById(mountTarget.replace(/^#/, '')) : null)
+  const target = typeof mountTarget === 'string'
+    ? typeof document !== 'undefined' ? document.getElementById(mountTarget.replace(/^#/, '')) : null
     : mountTarget;
 
   if (target && target.__nexus_instance) {
@@ -878,22 +813,15 @@ export function mountApp(mountTarget, options = {}) {
   return instance;
 }
 
-/**
- * Alias mount function.
- */
 export const mount = mountApp;
-
-/**
- * Alias mountChart function.
- */
 export const mountChart = initApp;
 
 /**
  * Lifecycle initialization function supporting module export patterns.
  */
 export function init(mountTarget, options = {}) {
-  const target = (typeof mountTarget === 'string')
-    ? (typeof document !== 'undefined' ? document.getElementById(mountTarget.replace(/^#/, '')) : null)
+  const target = typeof mountTarget === 'string'
+    ? typeof document !== 'undefined' ? document.getElementById(mountTarget.replace(/^#/, '')) : null
     : (mountTarget || (typeof document !== 'undefined' ? (document.getElementById('app') || document.body) : null));
 
   if (!target) return null;
@@ -907,14 +835,7 @@ export function init(mountTarget, options = {}) {
   return instance;
 }
 
-/**
- * Lifecycle start alias.
- */
 export const start = init;
-
-/**
- * Default export lifecycle function.
- */
 export default init;
 
 // Browser auto-mount guard
