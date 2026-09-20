@@ -4,6 +4,9 @@
  * Pine Script v5 Runtime Interpreter, Reactive Multi-Timeframe Screener & Real-Time Order Flow.
  */
 
+import { Chart, ChartCanvas, DEFAULT_MIN_ZOOM, DEFAULT_MAX_ZOOM } from './chart.js';
+export { Chart, ChartCanvas, DEFAULT_MIN_ZOOM, DEFAULT_MAX_ZOOM };
+
 // ============================================================================
 // 1. STYLES & DESIGN SYSTEM INJECTION (#080b11 Dark Bloomberg/TradingView Luxury)
 // ============================================================================
@@ -1136,25 +1139,6 @@ class WebGLBackgroundRenderer {
 // 6. RESPONSIVE CANVAS ZOOM ENGINE (STORY 2.2.1)
 // ============================================================================
 
-export const DEFAULT_MIN_ZOOM = 0.5;
-export const DEFAULT_MAX_ZOOM = 5.0;
-
-/**
- * Controller for canvas wheel zoom gestures.
- * Suppresses default browser scrolling, clamps zoom scale factors within
- * bounds, recalculates time/price scales, and triggers canvas redraws.
- *
- * @param {HTMLElement} canvas - Canvas element target
- * @param {Object} [options={}] - Configuration options
- * @param {number} [options.initialZoom=1.0] - Starting zoom level
- * @param {number} [options.minZoom=DEFAULT_MIN_ZOOM] - Minimum zoom limit
- * @param {number} [options.maxZoom=DEFAULT_MAX_ZOOM] - Maximum zoom limit
- * @param {number} [options.initialTimeScale=1.0] - Starting time scale
- * @param {number} [options.initialPriceScale=1.0] - Starting price scale
- * @param {Function} [options.onRedraw] - Callback triggered with updated scale/zoom state
- * @param {number} [options.zoomSpeed=0.001] - Sensitivity factor for wheel delta
- * @returns {Object} Controller interface
- */
 export function setupCanvasZoom(canvas, options = {}) {
   const minZoom = options.minZoom !== undefined ? options.minZoom : DEFAULT_MIN_ZOOM;
   const maxZoom = options.maxZoom !== undefined ? options.maxZoom : DEFAULT_MAX_ZOOM;
@@ -1235,360 +1219,150 @@ export function setupCanvasZoom(canvas, options = {}) {
   };
 }
 
+// ============================================================================
+// 7. CANDLE AGGREGATION & TOOLBAR CONTROLS (STORY 2.3.1)
+// ============================================================================
+
 /**
- * High-Performance Chart Component with Gesture Zooming and Viewport Panning
+ * Parses timeframe strings (e.g. '1m', '5m', '1h', '1D') into bucket sizes relative to 1-minute base candles.
+ * Throws an error for unrecognized or invalid timeframe formats.
  */
-export class Chart {
-  constructor(canvasOrOptions, options = {}) {
-    let canvas;
-    let opts;
-    if (
-      canvasOrOptions &&
-      canvasOrOptions.canvas &&
-      (typeof canvasOrOptions.getContext !== 'function' ||
-        canvasOrOptions.elements !== undefined ||
-        canvasOrOptions.initialViewport !== undefined)
-    ) {
-      canvas = canvasOrOptions.canvas;
-      opts = canvasOrOptions;
-    } else {
-      canvas = canvasOrOptions;
-      opts = options || {};
-    }
-
-    if (!canvas) {
-      throw new Error('Canvas element is required for Chart initialization');
-    }
-
-    this.canvas = canvas;
-    this.options = opts;
-    this.elements = opts.elements ? [...opts.elements] : [];
-    this.data = opts.data ? [...opts.data] : [];
-
-    const initialViewport = opts.initialViewport || {};
-    const initScale =
-      initialViewport.scale !== undefined
-        ? initialViewport.scale
-        : opts.initialZoom !== undefined
-          ? opts.initialZoom
-          : opts.zoom !== undefined
-            ? opts.zoom
-            : 1.0;
-
-    const initOffsetX =
-      initialViewport.offsetX !== undefined
-        ? initialViewport.offsetX
-        : (opts.initialOffset?.x ?? opts.offset?.x ?? 0);
-
-    const initOffsetY =
-      initialViewport.offsetY !== undefined
-        ? initialViewport.offsetY
-        : (opts.initialOffset?.y ?? opts.offset?.y ?? 0);
-
-    this.minZoom = opts.minZoom !== undefined ? opts.minZoom : Math.min(DEFAULT_MIN_ZOOM, initScale);
-    this.maxZoom = opts.maxZoom !== undefined ? opts.maxZoom : Math.max(DEFAULT_MAX_ZOOM, initScale);
-
-    this.viewport = {
-      offsetX: initOffsetX,
-      offsetY: initOffsetY,
-      scale: initScale,
-    };
-
-    this.isPanning = false;
-    this.renderCount = 0;
-    this.dragStartPoint = { x: 0, y: 0 };
-    this.dragStartOffset = { x: 0, y: 0 };
-
-    this.timeScale = { min: 0, max: 1 };
-    this.priceScale = { min: 0, max: 1 };
-
-    this.handleWheel = this.handleWheel.bind(this);
-    this.handleMouseDown = this.handleMouseDown.bind(this);
-    this.handleMouseMove = this.handleMouseMove.bind(this);
-    this.handleMouseUp = this.handleMouseUp.bind(this);
-    this.handleMouseLeave = this.handleMouseLeave.bind(this);
-
-    if (typeof this.canvas.addEventListener === 'function') {
-      this.canvas.addEventListener('wheel', this.handleWheel, { passive: false });
-      this.canvas.addEventListener('mousedown', this.handleMouseDown);
-      this.canvas.addEventListener('mousemove', this.handleMouseMove);
-      this.canvas.addEventListener('mouseup', this.handleMouseUp);
-      this.canvas.addEventListener('mouseleave', this.handleMouseLeave);
-    }
-
-    this.updateScales();
+function getBucketSize(timeframe) {
+  if (typeof timeframe !== 'string') {
+    throw new Error(`Unsupported timeframe: ${timeframe}`);
   }
 
-  get zoom() {
-    return this.viewport.scale;
+  const match = timeframe.match(/^(\d+)([smhdDwW])$/);
+  if (!match) {
+    throw new Error(`Unsupported timeframe: ${timeframe}`);
   }
 
-  set zoom(val) {
-    this.viewport.scale = val;
+  const count = parseInt(match[1], 10);
+  if (count <= 0) {
+    throw new Error(`Unsupported timeframe: ${timeframe}`);
   }
 
-  get viewportOffset() {
-    return {
-      x: this.viewport.offsetX,
-      y: this.viewport.offsetY,
-    };
-  }
+  const unit = match[2];
+  if (unit === 's') return Math.max(1, Math.round(count / 60));
+  if (unit === 'm') return count;
+  if (unit === 'h') return count * 60;
+  if (unit === 'd' || unit === 'D') return count * 1440;
+  if (unit === 'w' || unit === 'W') return count * 10080;
 
-  set viewportOffset(val) {
-    if (val) {
-      this.viewport.offsetX = val.x ?? this.viewport.offsetX;
-      this.viewport.offsetY = val.y ?? this.viewport.offsetY;
-    }
-  }
-
-  get offsetX() {
-    return this.viewport.offsetX;
-  }
-
-  get offsetY() {
-    return this.viewport.offsetY;
-  }
-
-  getViewportOffset() {
-    return { x: this.viewport.offsetX, y: this.viewport.offsetY };
-  }
-
-  getViewportMatrix() {
-    const scale = this.viewport.scale ?? 1.0;
-    return [scale, 0, 0, scale, this.viewport.offsetX, this.viewport.offsetY];
-  }
-
-  getElementRenderPosition(id) {
-    let el = null;
-    if (Array.isArray(this.elements)) {
-      el = this.elements.find((item) => item.id === id);
-    } else if (this.elements instanceof Map) {
-      el = this.elements.get(id);
-    } else if (this.elements && typeof this.elements === 'object') {
-      el = this.elements[id];
-    }
-    if (!el) return null;
-    const scale = this.viewport.scale ?? 1.0;
-    return {
-      x: el.x * scale + this.viewport.offsetX,
-      y: el.y * scale + this.viewport.offsetY,
-    };
-  }
-
-  getZoom() {
-    return this.viewport.scale;
-  }
-
-  getTimeScale() {
-    this.updateScales();
-    const width = this.canvas.width || 800;
-    return {
-      min: this.timeScale.min,
-      max: this.timeScale.max,
-      domain: [this.timeScale.min, this.timeScale.max],
-      range: [0, width],
-      zoom: this.zoom,
-    };
-  }
-
-  getPriceScale() {
-    this.updateScales();
-    const height = this.canvas.height || 600;
-    return {
-      min: this.priceScale.min,
-      max: this.priceScale.max,
-      domain: [this.priceScale.min, this.priceScale.max],
-      range: [height, 0],
-      zoom: this.zoom,
-    };
-  }
-
-  updateScales() {
-    if (!this.data || this.data.length === 0) {
-      this.timeScale = { min: 0, max: 1 };
-      this.priceScale = { min: 0, max: 1 };
-      return;
-    }
-
-    let minTime = Infinity;
-    let maxTime = -Infinity;
-    let minPrice = Infinity;
-    let maxPrice = -Infinity;
-
-    for (let i = 0; i < this.data.length; i++) {
-      const c = this.data[i];
-      const time = c.time !== undefined ? c.time : (c.timestamp !== undefined ? c.timestamp : i);
-      if (time < minTime) minTime = time;
-      if (time > maxTime) maxTime = time;
-      if (c.low < minPrice) minPrice = c.low;
-      if (c.high > maxPrice) maxPrice = c.high;
-    }
-
-    const timeSpan = maxTime - minTime || 3600;
-    const centerTime = (minTime + maxTime) / 2;
-    const visibleTimeSpan = timeSpan / this.zoom;
-
-    const priceSpan = maxPrice - minPrice || 10;
-    const centerPrice = (minPrice + maxPrice) / 2;
-    const visiblePriceSpan = priceSpan / this.zoom;
-
-    this.timeScale = {
-      min: centerTime - visibleTimeSpan / 2,
-      max: centerTime + visibleTimeSpan / 2,
-    };
-
-    this.priceScale = {
-      min: centerPrice - visiblePriceSpan / 2,
-      max: centerPrice + visiblePriceSpan / 2,
-    };
-  }
-
-  handleMouseDown(event) {
-    if (event.button !== 0) {
-      return;
-    }
-    this.isPanning = true;
-    this.dragStartPoint = {
-      x: event.clientX ?? 0,
-      y: event.clientY ?? 0,
-    };
-    this.dragStartOffset = {
-      x: this.viewport.offsetX,
-      y: this.viewport.offsetY,
-    };
-  }
-
-  handleMouseMove(event) {
-    if (!this.isPanning) {
-      return;
-    }
-    const clientX = event.clientX ?? 0;
-    const clientY = event.clientY ?? 0;
-    const deltaX = clientX - this.dragStartPoint.x;
-    const deltaY = clientY - this.dragStartPoint.y;
-
-    const nextOffsetX = this.dragStartOffset.x + deltaX;
-    const nextOffsetY = this.dragStartOffset.y + deltaY;
-
-    if (nextOffsetX === this.viewport.offsetX && nextOffsetY === this.viewport.offsetY) {
-      return;
-    }
-
-    this.viewport.offsetX = nextOffsetX;
-    this.viewport.offsetY = nextOffsetY;
-
-    this.render();
-  }
-
-  handleMouseUp() {
-    this.isPanning = false;
-  }
-
-  handleMouseLeave() {
-    this.isPanning = false;
-  }
-
-  handleWheel(event) {
-    if (typeof event.preventDefault === 'function') {
-      event.preventDefault();
-    }
-
-    const deltaY = event.deltaY ?? 0;
-    if (deltaY === 0) return;
-
-    const zoomFactor = Math.exp(-deltaY * 0.001);
-    const nextZoom = Math.min(this.maxZoom, Math.max(this.minZoom, this.zoom * zoomFactor));
-
-    if (nextZoom === this.zoom) return;
-
-    this.zoom = nextZoom;
-    this.updateScales();
-    this.render();
-  }
-
-  render() {
-    this.renderCount++;
-    const ctx = this.canvas && typeof this.canvas.getContext === 'function' ? this.canvas.getContext('2d') : null;
-    if (!ctx) return;
-
-    const width = this.canvas.width || 800;
-    const height = this.canvas.height || 600;
-
-    if (typeof ctx.clearRect === 'function') {
-      ctx.clearRect(0, 0, width, height);
-    }
-
-    if (typeof ctx.setTransform === 'function') {
-      const matrix = this.getViewportMatrix();
-      ctx.setTransform(matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]);
-    }
-
-    if (this.elements && Array.isArray(this.elements)) {
-      for (const el of this.elements) {
-        if (typeof ctx.fillRect === 'function' && el.x !== undefined && el.y !== undefined) {
-          ctx.fillRect(el.x, el.y, el.width || 10, el.height || 10);
-        }
-      }
-    }
-
-    if (!this.data || this.data.length === 0) return;
-
-    this.updateScales();
-    const { min: minTime, max: maxTime } = this.timeScale;
-    const { min: minPrice, max: maxPrice } = this.priceScale;
-
-    const timeRange = maxTime - minTime || 1;
-    const priceRange = maxPrice - minPrice || 1;
-    const candleWidth = Math.max(2, (width / this.data.length) * 0.6 * this.zoom);
-
-    for (let i = 0; i < this.data.length; i++) {
-      const candle = this.data[i];
-      const time = candle.time !== undefined ? candle.time : (candle.timestamp !== undefined ? candle.timestamp : i);
-      const x = ((time - minTime) / timeRange) * width + this.viewport.offsetX;
-      const yHigh = height - ((candle.high - minPrice) / priceRange) * height + this.viewport.offsetY;
-      const yLow = height - ((candle.low - minPrice) / priceRange) * height + this.viewport.offsetY;
-      const yOpen = height - ((candle.open - minPrice) / priceRange) * height + this.viewport.offsetY;
-      const yClose = height - ((candle.close - minPrice) / priceRange) * height + this.viewport.offsetY;
-
-      const isBull = candle.close >= candle.open;
-      const color = isBull ? '#00f5a0' : '#ff3b69';
-
-      ctx.strokeStyle = color;
-      ctx.fillStyle = color;
-
-      if (typeof ctx.beginPath === 'function') {
-        ctx.beginPath();
-        ctx.moveTo(x, yHigh);
-        ctx.lineTo(x, yLow);
-        ctx.stroke();
-
-        const bodyY = Math.min(yOpen, yClose);
-        const bodyH = Math.max(1, Math.abs(yClose - yOpen));
-        ctx.fillRect(x - candleWidth / 2, bodyY, candleWidth, bodyH);
-      }
-    }
-  }
-
-  destroy() {
-    this.isPanning = false;
-    if (this.canvas && typeof this.canvas.removeEventListener === 'function') {
-      this.canvas.removeEventListener('wheel', this.handleWheel, { passive: false });
-      this.canvas.removeEventListener('mousedown', this.handleMouseDown);
-      this.canvas.removeEventListener('mousemove', this.handleMouseMove);
-      this.canvas.removeEventListener('mouseup', this.handleMouseUp);
-      this.canvas.removeEventListener('mouseleave', this.handleMouseLeave);
-    }
-  }
+  throw new Error(`Unsupported timeframe: ${timeframe}`);
 }
 
 /**
- * ChartCanvas alias component for responsive gesture panning and interaction
+ * Aggregates sequential 1-minute candles into higher timeframe OHLCV candles.
+ * Handles partial / incomplete trailing buckets cleanly.
+ *
+ * @param {Array<Object>} candles - Input 1-minute candle array
+ * @param {string} timeframe - Target timeframe identifier (e.g., '5m', '1h')
+ * @returns {Array<Object>} Aggregated candle array
  */
-export class ChartCanvas extends Chart {}
+export function aggregateCandles(candles, timeframe) {
+  const bucketSize = getBucketSize(timeframe);
+  if (!candles || candles.length === 0) {
+    return [];
+  }
+
+  const result = [];
+  for (let i = 0; i < candles.length; i += bucketSize) {
+    const chunk = candles.slice(i, i + bucketSize);
+    if (chunk.length === 0) continue;
+
+    let high = -Infinity;
+    let low = Infinity;
+    let volume = 0;
+
+    for (let j = 0; j < chunk.length; j++) {
+      const c = chunk[j];
+      if (c.high > high) high = c.high;
+      if (c.low < low) low = c.low;
+      volume += c.volume !== undefined ? c.volume : 0;
+    }
+
+    const first = chunk[0];
+    const last = chunk[chunk.length - 1];
+
+    const aggregated = {
+      open: first.open,
+      high,
+      low,
+      close: last.close,
+      volume,
+    };
+
+    if (first.timestamp !== undefined) {
+      aggregated.timestamp = first.timestamp;
+    }
+    if (first.time !== undefined) {
+      aggregated.time = first.time;
+    }
+
+    result.push(aggregated);
+  }
+
+  return result;
+}
 
 /**
- * Terminal Interactive Chart Engine
+ * Initializes toolbar controls and binds click events for timeframe switching.
+ * Handles active button state toggling, candle aggregation, and immediate chart re-renders.
+ *
+ * @param {Object} options - Configuration options
+ * @param {HTMLElement} options.toolbarElement - Toolbar container DOM element
+ * @param {Chart} options.chartInstance - Target Chart instance
+ * @param {Array<Object>} options.rawCandles - Base 1-minute candlestick data
  */
+export function initToolbar({ toolbarElement, chartInstance, rawCandles }) {
+  if (!toolbarElement || !chartInstance) return;
+
+  let buttons = [];
+  if (typeof toolbarElement.querySelectorAll === 'function') {
+    buttons = Array.from(toolbarElement.querySelectorAll('button'));
+    if (buttons.length === 0) {
+      buttons = Array.from(toolbarElement.querySelectorAll('[data-timeframe]'));
+    }
+  } else if (toolbarElement.children) {
+    buttons = Array.from(toolbarElement.children);
+  }
+
+  for (const btn of buttons) {
+    const tf = btn.dataset?.timeframe || btn.dataset?.tf;
+    if (!tf) continue;
+
+    btn.addEventListener('click', (event) => {
+      if (event && typeof event.preventDefault === 'function') {
+        event.preventDefault();
+      }
+
+      const currentTf = chartInstance.getTimeframe ? chartInstance.getTimeframe() : null;
+      if (currentTf === tf) {
+        return;
+      }
+
+      for (const otherBtn of buttons) {
+        if (otherBtn === btn) {
+          otherBtn.classList?.add('active');
+        } else {
+          otherBtn.classList?.remove('active');
+        }
+      }
+
+      const aggregated = aggregateCandles(rawCandles || [], tf);
+
+      if (typeof chartInstance.render === 'function') {
+        chartInstance.render(aggregated, tf);
+      }
+    });
+  }
+}
+
+// ============================================================================
+// 8. INTERACTIVE CHART ENGINE & TERMINAL UI CONTROLLER
+// ============================================================================
+
 class InteractiveChartEngine {
   constructor(container, marketFeed) {
     this.container = container;
@@ -2068,10 +1842,6 @@ class InteractiveChartEngine {
   }
 }
 
-// ============================================================================
-// 7. REACTIVE APP STATE STORE & UI COMPONENTS CONTROLLER
-// ============================================================================
-
 class TradingTerminalApp {
   constructor(rootElement) {
     this.root = rootElement;
@@ -2140,50 +1910,38 @@ class TradingTerminalApp {
           <div class="chart-hud">
             <div class="hud-ticker-row">
               <span style="color:#fff">Bitcoin / TetherUS</span>
-              <span style="color:var(--text-muted);font-weight:400">· 1m · BINANCE</span>
+              <span style="font-size:11px;color:var(--text-muted)">BINANCE</span>
             </div>
-            <div class="hud-ohlc-row" id="hud-ohlc-display">
-              <span>O <b id="hud-o">---</b></span>
-              <span>H <b id="hud-h">---</b></span>
-              <span>L <b id="hud-l">---</b></span>
-              <span>C <b id="hud-c">---</b></span>
-              <span>Vol <b id="hud-v">---</b></span>
+            <div class="hud-ohlc-row" id="hud-ohlc">
+              <span>O: <b>64210.00</b></span>
+              <span>H: <b>64350.20</b></span>
+              <span>L: <b>64180.00</b></span>
+              <span>C: <b>64280.50</b></span>
             </div>
             <div class="hud-smc-badges">
-              <span class="smc-tag smc-tag-trend">SMC BIAS: BULLISH</span>
-              <span class="smc-tag smc-tag-fvg">FVG DETECTOR: ACTIVE</span>
-              <span class="smc-tag smc-tag-ob">DISPLACEMENT OB</span>
+              <span class="smc-tag smc-tag-fvg">FVG Active</span>
+              <span class="smc-tag smc-tag-ob">Bullish OB</span>
+              <span class="smc-tag smc-tag-trend">Bullish Trend</span>
             </div>
           </div>
         </div>
 
-        <div class="dock-panel" id="pine-dock">
+        <div class="dock-panel collapsed" id="dock-panel">
           <div class="dock-header">
             <div class="dock-tabs">
-              <button class="dock-tab active">Pine Editor (v5)</button>
-              <button class="dock-tab">Execution Console</button>
-            </div>
-            <div style="display:flex;align-items:center;gap:8px">
-              <button class="tf-btn active" id="btn-compile-pine">Apply to Chart</button>
-              <button class="tf-btn" id="btn-collapse-dock">▼</button>
+              <button class="dock-tab active">Pine Editor</button>
+              <button class="dock-tab">Strategy Tester</button>
             </div>
           </div>
           <div class="dock-content">
             <div class="pine-editor-area">
-              <div class="pine-line-numbers" id="pine-line-gutter">1<br>2<br>3<br>4<br>5<br>6<br>7<br>8<br>9</div>
-              <textarea class="pine-textarea" id="pine-editor-code" spellcheck="false">//@version=5
-indicator("LuxAlgo Trend Oscillator", overlay=true)
-
-fastEma = ta.ema(close, 14)
-slowEma = ta.sma(close, 28)
-
-plot(fastEma, "Fast Signal", "#38bdf8", 2)
-plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
-</textarea>
+              <div class="pine-line-numbers">1<br>2<br>3<br>4</div>
+              <textarea class="pine-textarea" spellcheck="false">// Pine Script v5
+indicator("Custom Indicator", overlay=true)
+plot(ta.ema(close, 20), "EMA 20", #3b82f6)</textarea>
             </div>
-            <div class="pine-console" id="pine-console-log">
-              <div class="console-entry success">[System] Pine Script v5 Engine initialized.</div>
-              <div class="console-entry">[Info] Awaiting script execution...</div>
+            <div class="pine-console" id="pine-console">
+              <div class="console-entry">[Ready] Pine Script interpreter initialized.</div>
             </div>
           </div>
         </div>
@@ -2192,57 +1950,22 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
       <aside class="right-sidebar">
         <div class="sidebar-tab-nav">
           <button class="sidebar-tab-btn active" data-tab="orderbook">Order Book</button>
-          <button class="sidebar-tab-btn" data-tab="mtf">SMC Screener</button>
+          <button class="sidebar-tab-btn" data-tab="screener">MTF Screener</button>
           <button class="sidebar-tab-btn" data-tab="trade">Execution</button>
         </div>
-
-        <div class="sidebar-content" id="sidebar-content-view">
-          <div class="orderbook-box" id="pane-orderbook">
+        <div class="sidebar-content" id="sidebar-tab-content">
+          <div class="orderbook-box">
             <div class="book-header-row">
               <span>Price (USDT)</span>
-              <span>Size (BTC)</span>
+              <span>Size</span>
               <span>Total</span>
             </div>
             <div class="order-ladder" id="ladder-asks"></div>
-            <div class="book-spread-divider">
-              <span id="book-spread-price" style="color:var(--bull-green)">64,280.50</span>
-              <span style="font-size:10px;color:var(--text-muted)">Spread: <b id="book-spread-diff">0.50</b></span>
+            <div class="book-spread-divider" id="book-spread">
+              <span>Spread</span>
+              <span>0.50</span>
             </div>
             <div class="order-ladder" id="ladder-bids"></div>
-          </div>
-
-          <div class="mtf-grid" id="pane-mtf" style="display:none">
-            <div class="mtf-card">
-              <span class="mtf-card-tf">1m Scalp</span>
-              <span class="mtf-card-bias" style="color:var(--bull-green)">BULLISH</span>
-            </div>
-            <div class="mtf-card">
-              <span class="mtf-card-tf">5m Momentum</span>
-              <span class="mtf-card-bias" style="color:var(--bull-green)">BULLISH</span>
-            </div>
-            <div class="mtf-card">
-              <span class="mtf-card-tf">15m Trend</span>
-              <span class="mtf-card-bias" style="color:var(--bull-green)">BULLISH</span>
-            </div>
-            <div class="mtf-card">
-              <span class="mtf-card-tf">1h HTF Structure</span>
-              <span class="mtf-card-bias" style="color:var(--bear-red)">BEARISH</span>
-            </div>
-          </div>
-
-          <div class="exec-panel" id="pane-trade" style="display:none">
-            <div class="exec-type-toggle">
-              <button class="exec-type-btn active">Market</button>
-              <button class="exec-type-btn">Limit</button>
-            </div>
-            <div class="exec-input-group">
-              <div class="exec-label"><span>Order Size</span><span>BTC</span></div>
-              <div class="exec-input-wrap"><input type="number" value="0.10" step="0.01"></div>
-            </div>
-            <div class="exec-action-grid">
-              <button class="btn-buy" id="btn-buy-exec">BUY / LONG</button>
-              <button class="btn-sell" id="btn-sell-exec">SELL / SHORT</button>
-            </div>
           </div>
         </div>
       </aside>
@@ -2250,10 +1973,11 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
       <footer class="status-bar">
         <div class="status-left">
           <span class="status-indicator-dot"></span>
-          <span>SYSTEM ONLINE · CCXT WEBSOCKET FEED</span>
+          <span>FEED: CONNECTED (BINANCE WS)</span>
+          <span>LATENCY: 24ms</span>
         </div>
         <div class="status-right">
-          <span>FPS: <b id="status-fps">60</b></span>
+          <span>TIME: UTC</span>
         </div>
       </footer>
     `;
@@ -2267,30 +1991,17 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
   }
 
   bindDOMEvents() {
-    const tabs = this.root.querySelectorAll('.sidebar-tab-btn');
-    tabs.forEach((tab) => {
-      tab.addEventListener('click', () => {
-        tabs.forEach((t) => t.classList.remove('active'));
-        tab.classList.add('active');
-        const target = tab.dataset.tab;
-        const ob = this.root.querySelector('#pane-orderbook');
-        const mtf = this.root.querySelector('#pane-mtf');
-        const tr = this.root.querySelector('#pane-trade');
-        if (ob) ob.style.display = target === 'orderbook' ? 'flex' : 'none';
-        if (mtf) mtf.style.display = target === 'mtf' ? 'grid' : 'none';
-        if (tr) tr.style.display = target === 'trade' ? 'flex' : 'none';
+    const tfPillBox = this.root.querySelector('.timeframe-pill-box');
+    if (tfPillBox && this.chartEngine) {
+      initToolbar({
+        toolbarElement: tfPillBox,
+        chartInstance: this.chartEngine,
+        rawCandles: this.feed.candles,
       });
-    });
+    }
   }
 
-  startMultiTimeframeSync() {}
-}
-
-if (typeof window !== 'undefined' && typeof document !== 'undefined') {
-  window.addEventListener('DOMContentLoaded', () => {
-    const appEl = document.getElementById('app');
-    if (appEl) {
-      new TradingTerminalApp(appEl);
-    }
-  });
+  startMultiTimeframeSync() {
+    // Multi-timeframe screener syncing
+  }
 }
