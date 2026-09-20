@@ -1,8 +1,8 @@
 /**
  * SmartTrading-V2 — Charting Engine
  * Implements financial chart rendering, price/time scales, candlestick series,
- * indicator overlays, and layout geometry.
- * Satisfies STORY 29.4.1: Resolve SPARSE_DATA_SERIES (Defect ID: DF-GRAPHICS-01).
+ * indicator overlays, layout geometry, and interactive pan gestures.
+ * Satisfies STORY 29.4.1 (DF-GRAPHICS-01) and STORY 29.2.1 (DF-GESTURE-01).
  */
 
 export const PERIOD_DEFAULT = 20;
@@ -175,7 +175,7 @@ export function computeCandleRanges(candles = []) {
   if (!Array.isArray(candles) || candles.length === 0) {
     return {
       priceRange: { min: 0, max: 100 },
-      timeRange: { min: 0, max: 1 }
+      timeRange: { min: 0, max: 1 },
     };
   }
 
@@ -202,7 +202,7 @@ export function computeCandleRanges(candles = []) {
 
   return {
     priceRange: { min: minPrice, max: maxPrice },
-    timeRange: { min: minTime, max: maxTime }
+    timeRange: { min: minTime, max: maxTime },
   };
 }
 
@@ -220,18 +220,18 @@ export function renderGrid(ctx, plotArea, width, height) {
   const steps = 5;
   for (let i = 1; i < steps; i++) {
     const y = plotArea.top + (i / steps) * plotArea.height;
-    ctx.beginPath();
-    ctx.moveTo(plotArea.left, y);
-    ctx.lineTo(plotArea.right, y);
-    ctx.stroke();
+    ctx.beginPath?.();
+    ctx.moveTo?.(plotArea.left, y);
+    ctx.lineTo?.(plotArea.right, y);
+    ctx.stroke?.();
   }
 
   for (let i = 1; i < steps; i++) {
     const x = plotArea.left + (i / steps) * plotArea.width;
-    ctx.beginPath();
-    ctx.moveTo(x, plotArea.top);
-    ctx.lineTo(x, plotArea.bottom);
-    ctx.stroke();
+    ctx.beginPath?.();
+    ctx.moveTo?.(x, plotArea.top);
+    ctx.lineTo?.(x, plotArea.bottom);
+    ctx.stroke?.();
   }
   ctx.restore?.();
 }
@@ -243,12 +243,12 @@ export function renderPriceScale(ctx, plotArea, priceRange, width, height) {
   if (!ctx || !plotArea) return;
   ctx.save?.();
 
-  ctx.beginPath();
+  ctx.beginPath?.();
   ctx.strokeStyle = '#2a2e39';
   ctx.lineWidth = 1;
-  ctx.moveTo(plotArea.right, 0);
-  ctx.lineTo(plotArea.right, plotArea.bottom);
-  ctx.stroke();
+  ctx.moveTo?.(plotArea.right, 0);
+  ctx.lineTo?.(plotArea.right, plotArea.bottom);
+  ctx.stroke?.();
 
   ctx.fillStyle = '#787b86';
   ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
@@ -278,12 +278,12 @@ export function renderTimeScale(ctx, plotArea, candles, width, height, reservedB
 
   ctx.save?.();
 
-  ctx.beginPath();
+  ctx.beginPath?.();
   ctx.strokeStyle = '#2a2e39';
   ctx.lineWidth = 1;
-  ctx.moveTo(0, axisLineY);
-  ctx.lineTo(width, axisLineY);
-  ctx.stroke();
+  ctx.moveTo?.(0, axisLineY);
+  ctx.lineTo?.(width, axisLineY);
+  ctx.stroke?.();
 
   if (!Array.isArray(candles) || candles.length === 0) {
     ctx.restore?.();
@@ -323,12 +323,12 @@ export function renderTimeScale(ctx, plotArea, candles, width, height, reservedB
     if (!candle) continue;
     const x = Math.round(plotArea.left + (idx + 0.5) * candleStep);
 
-    ctx.beginPath();
+    ctx.beginPath?.();
     ctx.strokeStyle = '#363c4e';
     ctx.lineWidth = 1;
-    ctx.moveTo(x, axisLineY);
-    ctx.lineTo(x, axisLineY + 4);
-    ctx.stroke();
+    ctx.moveTo?.(x, axisLineY);
+    ctx.lineTo?.(x, axisLineY + 4);
+    ctx.stroke?.();
 
     const text = formatTimestamp(candle.timestamp, isDaily);
     if (typeof ctx.fillText === 'function') {
@@ -366,10 +366,10 @@ export function renderCandlesticksSeries(ctx, plotArea, candles, priceRange) {
 
     ctx.strokeStyle = color;
     ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x, highY);
-    ctx.lineTo(x, lowY);
-    ctx.stroke();
+    ctx.beginPath?.();
+    ctx.moveTo?.(x, highY);
+    ctx.lineTo?.(x, lowY);
+    ctx.stroke?.();
 
     ctx.fillStyle = color;
     const bodyTop = Math.min(openY, closeY);
@@ -377,12 +377,12 @@ export function renderCandlesticksSeries(ctx, plotArea, candles, priceRange) {
     if (typeof ctx.fillRect === 'function') {
       ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, bodyHeight);
     } else {
-      ctx.beginPath();
-      ctx.moveTo(x - candleWidth / 2, bodyTop);
-      ctx.lineTo(x + candleWidth / 2, bodyTop);
-      ctx.lineTo(x + candleWidth / 2, bodyTop + bodyHeight);
-      ctx.lineTo(x - candleWidth / 2, bodyTop + bodyHeight);
-      ctx.stroke();
+      ctx.beginPath?.();
+      ctx.moveTo?.(x - candleWidth / 2, bodyTop);
+      ctx.lineTo?.(x + candleWidth / 2, bodyTop);
+      ctx.lineTo?.(x + candleWidth / 2, bodyTop + bodyHeight);
+      ctx.lineTo?.(x - candleWidth / 2, bodyTop + bodyHeight);
+      ctx.stroke?.();
     }
   }
 
@@ -407,7 +407,7 @@ export function renderOverlay(ctx, plotArea, candles, priceRange, overlayType = 
   ctx.save?.();
   ctx.strokeStyle = isEMA ? '#ff9800' : '#2962ff';
   ctx.lineWidth = 2;
-  ctx.beginPath();
+  ctx.beginPath?.();
 
   let started = false;
   for (let i = 0; i < count; i++) {
@@ -416,14 +416,14 @@ export function renderOverlay(ctx, plotArea, candles, priceRange, overlayType = 
     const x = plotArea.left + (i + 0.5) * candleStep;
     const y = toY(val);
     if (!started) {
-      ctx.moveTo(x, y);
+      ctx.moveTo?.(x, y);
       started = true;
     } else {
-      ctx.lineTo(x, y);
+      ctx.lineTo?.(x, y);
     }
   }
   if (started) {
-    ctx.stroke();
+    ctx.stroke?.();
   }
   ctx.restore?.();
 }
@@ -450,7 +450,7 @@ export class AxesRenderer {
 }
 
 /**
- * Core quantitative Chart class.
+ * Core quantitative Chart class supporting viewport panning and responsive rendering.
  */
 export class Chart {
   constructor(canvasOrOptions = {}, maybeOptions = {}) {
@@ -477,6 +477,14 @@ export class Chart {
 
     this.ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
 
+    // Viewport pan state (STORY 29.2.1: DF-GESTURE-01)
+    this.viewport = { x: 0, y: 0 };
+    this.renderCount = 0;
+    this._isDragging = false;
+    this._lastDragX = 0;
+    this._lastDragY = 0;
+    this._eventTarget = null;
+
     const bottomMargin =
       typeof options.bottomMargin === 'number'
         ? options.bottomMargin
@@ -495,8 +503,8 @@ export class Chart {
         top: 20,
         bottom: reservedBottom,
         left: 20,
-        right: 65
-      }
+        right: 65,
+      },
     };
 
     const initialCandles = options.data || options.candles;
@@ -504,17 +512,112 @@ export class Chart {
     this.data = this.candles;
     this.overlayType = options.overlay || 'SMA (20)';
 
+    if (this.canvas) {
+      this._attachEvents(this.canvas);
+    }
+
     this.updatePlotArea();
   }
 
+  _attachEvents(canvas) {
+    if (!canvas || typeof canvas.addEventListener !== 'function') return;
+    if (this._eventTarget === canvas) return;
+    this._detachEvents();
+    this._eventTarget = canvas;
+
+    this._onMouseDown = (e) => {
+      // Primary mouse button only (0 = left click)
+      if (!e || (e.button !== undefined && e.button !== 0)) return;
+      this._isDragging = true;
+      this._lastDragX = e.clientX ?? 0;
+      this._lastDragY = e.clientY ?? 0;
+    };
+
+    this._onMouseMove = (e) => {
+      if (!this._isDragging || !e) return;
+      const clientX = e.clientX ?? 0;
+      const clientY = e.clientY ?? 0;
+      const dx = clientX - this._lastDragX;
+      const dy = clientY - this._lastDragY;
+      this._lastDragX = clientX;
+      this._lastDragY = clientY;
+      this.pan(dx, dy);
+    };
+
+    this._onMouseUp = () => {
+      this._isDragging = false;
+    };
+
+    this._onMouseLeave = () => {
+      this._isDragging = false;
+    };
+
+    canvas.addEventListener('mousedown', this._onMouseDown);
+    canvas.addEventListener('mousemove', this._onMouseMove);
+    canvas.addEventListener('mouseup', this._onMouseUp);
+    canvas.addEventListener('mouseleave', this._onMouseLeave);
+  }
+
+  _detachEvents() {
+    if (this._eventTarget && typeof this._eventTarget.removeEventListener === 'function') {
+      if (this._onMouseDown) this._eventTarget.removeEventListener('mousedown', this._onMouseDown);
+      if (this._onMouseMove) this._eventTarget.removeEventListener('mousemove', this._onMouseMove);
+      if (this._onMouseUp) this._eventTarget.removeEventListener('mouseup', this._onMouseUp);
+      if (this._onMouseLeave) this._eventTarget.removeEventListener('mouseleave', this._onMouseLeave);
+    }
+    this._eventTarget = null;
+    this._isDragging = false;
+  }
+
+  destroy() {
+    this._detachEvents();
+  }
+
+  getViewportOffset() {
+    return { x: this.viewport.x, y: this.viewport.y };
+  }
+
+  setViewportOffset(x, y) {
+    this.viewport.x = typeof x === 'number' && !isNaN(x) ? x : 0;
+    this.viewport.y = typeof y === 'number' && !isNaN(y) ? y : 0;
+    this.render();
+  }
+
+  pan(dx, dy) {
+    const deltaX = typeof dx === 'number' && !isNaN(dx) ? dx : 0;
+    const deltaY = typeof dy === 'number' && !isNaN(dy) ? dy : 0;
+    this.viewport.x += deltaX;
+    this.viewport.y += deltaY;
+    this.render();
+  }
+
+  resetViewport() {
+    this.viewport.x = 0;
+    this.viewport.y = 0;
+    this.render();
+  }
+
   mount(target) {
-    if (target && (target.getContext || target.tagName === 'CANVAS')) {
-      this.canvas = target;
-      if (typeof target.getContext === 'function') {
-        this.ctx = target.getContext('2d');
+    const canvasElement = target && (target.getContext || target.tagName === 'CANVAS')
+      ? target
+      : target && typeof target.querySelector === 'function'
+      ? target.querySelector('canvas')
+      : this.canvas;
+
+    if (canvasElement) {
+      if (this.canvas !== canvasElement) {
+        this._detachEvents();
+        this.canvas = canvasElement;
+        this._attachEvents(this.canvas);
+      }
+      if (typeof canvasElement.getContext === 'function') {
+        this.ctx = canvasElement.getContext('2d');
       }
     } else if (this.canvas && typeof this.canvas.getContext === 'function') {
       this.ctx = this.canvas.getContext('2d');
+      if (!this._eventTarget) {
+        this._attachEvents(this.canvas);
+      }
     }
 
     if (!this.candles || this.candles.length < 50 || this.candles.length > 100) {
@@ -553,7 +656,7 @@ export class Chart {
         closeY,
         highY,
         lowY,
-        candle: c
+        candle: c,
       };
     });
   }
@@ -572,7 +675,7 @@ export class Chart {
       bottom: h - reservedBottom,
       right: w - reservedRight,
       width: Math.max(10, w - reservedLeft - reservedRight),
-      height: Math.max(10, h - reservedTop - reservedBottom)
+      height: Math.max(10, h - reservedTop - reservedBottom),
     };
   }
 
@@ -622,12 +725,26 @@ export class Chart {
     const ctx = this.ctx || (this.canvas && this.canvas.getContext && this.canvas.getContext('2d'));
     if (!ctx) return;
 
+    this.renderCount++;
     this.updatePlotArea();
     const w = (this.canvas && this.canvas.width) || this.width || 800;
     const h = (this.canvas && this.canvas.height) || this.height || 600;
     const reservedBottom = this.layout.bottomMargin ?? this.layout.padding.bottom;
 
-    ctx.clearRect(0, 0, w, h);
+    if (typeof ctx.setTransform === 'function') {
+      try {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+      } catch {}
+    }
+    if (typeof ctx.clearRect === 'function') {
+      ctx.clearRect(0, 0, w, h);
+    }
+
+    if (typeof ctx.translate === 'function') {
+      try {
+        ctx.translate(this.viewport.x, this.viewport.y);
+      } catch {}
+    }
 
     const ranges = computeCandleRanges(this.candles);
 
