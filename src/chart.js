@@ -98,9 +98,9 @@ export class Chart {
     } else if (
       this.container &&
       Array.isArray(this.container.children) &&
-      this.Array.from(container.children).find((c) => c && c.tagName === 'CANVAS')
+      this.container.children.find((c) => c && c.tagName === 'CANVAS')
     ) {
-      this.canvas = this.Array.from(container.children).find((c) => c && c.tagName === 'CANVAS');
+      this.canvas = this.container.children.find((c) => c && c.tagName === 'CANVAS');
     } else if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
       this.canvas = document.createElement('canvas');
       if (this.container && typeof this.container.appendChild === 'function') {
@@ -124,6 +124,7 @@ export class Chart {
     if (this.canvas) {
       this.canvas.width = width;
       this.canvas.height = height;
+      this.canvas.__chartInstance = this;
     }
 
     this.context =
@@ -169,6 +170,8 @@ export class Chart {
 
     this.viewportOffset = { x: 0, y: 0 };
     this.zoomScale = 1;
+    this.isPanning = false;
+    this.renderCount = 0;
     this.timeframe = opts.timeframe || '1h';
     this.ticker = opts.ticker || 'BTC-USD';
 
@@ -192,6 +195,55 @@ export class Chart {
     if (opts.autoRender !== false) {
       this.render();
     }
+  }
+
+  /**
+   * Returns current viewport offset.
+   *
+   * @returns {{x: number, y: number}}
+   */
+  getViewportOffset() {
+    return { x: this.viewportOffset.x, y: this.viewportOffset.y };
+  }
+
+  /**
+   * Sets viewport offset and redraws scene.
+   *
+   * @param {number} x
+   * @param {number} y
+   */
+  setViewportOffset(x, y) {
+    this.viewportOffset.x = typeof x === 'number' ? x : this.viewportOffset.x;
+    this.viewportOffset.y = typeof y === 'number' ? y : this.viewportOffset.y;
+    this.render();
+  }
+
+  /**
+   * Returns affine viewport transformation matrix [a, b, c, d, e, f].
+   *
+   * @returns {Array<number>&{tx: number, ty: number, e: number, f: number}}
+   */
+  getViewportMatrix() {
+    const scale = this.zoomScale || 1;
+    const matrix = [scale, 0, 0, scale, this.viewportOffset.x, this.viewportOffset.y];
+    matrix.a = scale;
+    matrix.b = 0;
+    matrix.c = 0;
+    matrix.d = scale;
+    matrix.e = this.viewportOffset.x;
+    matrix.f = this.viewportOffset.y;
+    matrix.tx = this.viewportOffset.x;
+    matrix.ty = this.viewportOffset.y;
+    return matrix;
+  }
+
+  /**
+   * Resets viewport offset and scale to default origin.
+   */
+  resetViewport() {
+    this.viewportOffset = { x: 0, y: 0 };
+    this.zoomScale = 1;
+    this.render();
   }
 
   /**
@@ -227,7 +279,7 @@ export class Chart {
       if (
         this.canvas &&
         typeof container.appendChild === 'function' &&
-        this.canvas.parentNode !== container
+        this.canvas.parentElement !== container
       ) {
         container.appendChild(this.canvas);
       }
@@ -396,10 +448,12 @@ export class Chart {
    * Main active draw lifecycle executing coordinate calculations and layer drawing.
    */
   draw() {
+    this.renderCount = (this.renderCount || 0) + 1;
+
     const ctx =
       this.context ||
       (this.canvas && typeof this.canvas.getContext === 'function' ? this.canvas.getContext('2d') : null);
-    if (!ctx) return;
+    if (!ctx) return this;
 
     ensureContextMethods(ctx);
 
@@ -522,7 +576,7 @@ export class Chart {
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x, yHigh);
-      ctx.lineTo(x, yLow);
+      ctx.lineTo(yLow);
       ctx.stroke();
 
       // Draw body
@@ -541,6 +595,8 @@ export class Chart {
   /* -------------------------------------------------------------------------- */
 
   handleMouseDown(e) {
+    if (e && e.button !== undefined && e.button !== 0) return;
+    this.isPanning = true;
     this._isDragging = true;
     this._lastX = (e && e.clientX) || 0;
     this._lastY = (e && e.clientY) || 0;
@@ -551,7 +607,7 @@ export class Chart {
   }
 
   handleMouseMove(e) {
-    if (!this._isDragging) return;
+    if (!this.isPanning && !this._isDragging) return;
     const currentX = (e && e.clientX) || 0;
     const currentY = (e && e.clientY) || 0;
     const dx = currentX - this._lastX;
@@ -566,11 +622,21 @@ export class Chart {
   }
 
   handleMouseUp(e) {
+    this.isPanning = false;
     this._isDragging = false;
   }
 
   onMouseUp(e) {
     this.handleMouseUp(e);
+  }
+
+  handleMouseLeave(e) {
+    this.isPanning = false;
+    this._isDragging = false;
+  }
+
+  onMouseLeave(e) {
+    this.handleMouseLeave(e);
   }
 
   handleWheel(e) {
@@ -619,17 +685,20 @@ export class Chart {
     this._boundMouseDown = (e) => this.onMouseDown(e);
     this._boundMouseMove = (e) => this.onMouseMove(e);
     this._boundMouseUp = (e) => this.onMouseUp(e);
+    this._boundMouseLeave = (e) => this.onMouseLeave(e);
     this._boundWheel = (e) => this.onWheel(e);
     this._boundClick = (e) => this.onClick(e);
 
     this._onMouseDown = this._boundMouseDown;
     this._onMouseMove = this._boundMouseMove;
     this._onMouseUp = this._boundMouseUp;
+    this._onMouseLeave = this._boundMouseLeave;
     this._onWheel = this._boundWheel;
 
     this.canvas.addEventListener('mousedown', this._boundMouseDown);
     this.canvas.addEventListener('mousemove', this._boundMouseMove);
     this.canvas.addEventListener('mouseup', this._boundMouseUp);
+    this.canvas.addEventListener('mouseleave', this._boundMouseLeave);
     this.canvas.addEventListener('wheel', this._boundWheel, { passive: false });
     this.canvas.addEventListener('click', this._boundClick);
   }
@@ -639,6 +708,7 @@ export class Chart {
     if (this._boundMouseDown) this.canvas.removeEventListener('mousedown', this._boundMouseDown);
     if (this._boundMouseMove) this.canvas.removeEventListener('mousemove', this._boundMouseMove);
     if (this._boundMouseUp) this.canvas.removeEventListener('mouseup', this._boundMouseUp);
+    if (this._boundMouseLeave) this.canvas.removeEventListener('mouseleave', this._boundMouseLeave);
     if (this._boundWheel) this.canvas.removeEventListener('wheel', this._boundWheel);
     if (this._boundClick) this.canvas.removeEventListener('click', this._boundClick);
   }
@@ -683,6 +753,9 @@ export class Chart {
     this._unbindEvents();
     if (this.canvas) {
       delete this.canvas.axesRenderer;
+      if (this.canvas.__chartInstance === this) {
+        delete this.canvas.__chartInstance;
+      }
     }
   }
 }
