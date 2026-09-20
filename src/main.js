@@ -2,7 +2,28 @@
  * SmartTrading-V2 — Application Entrypoint
  * Mounts structured workspace layout with top navigation header,
  * interactive candlestick chart engine, and auxiliary side panels.
+ * Stylesheet wiring reference: ./styles.css
  */
+
+/**
+ * Injects dark-theme stylesheet into the document head if not already present.
+ */
+function injectStyles() {
+  if (typeof document !== 'undefined' && document.head) {
+    const existing = document.querySelector ? document.querySelector('link[href*="styles.css"]') : null;
+    if (!existing && typeof document.createElement === 'function') {
+      const link = document.createElement('link');
+      if (typeof link.setAttribute === 'function') {
+        link.setAttribute('rel', 'stylesheet');
+        link.setAttribute('href', './styles.css');
+        link.setAttribute('type', 'text/css');
+      }
+      if (typeof document.head.appendChild === 'function') {
+        document.head.appendChild(link);
+      }
+    }
+  }
+}
 
 /**
  * Creates a lightweight 2D canvas context mock for headless/test environments.
@@ -227,8 +248,9 @@ function buildStructuredLayout(mountTarget) {
     header.appendChild(title);
 
     const tickerControl = createEl('select', {
-      class: 'ticker-control ticker',
+      class: 'ticker-control ticker form-control dark-control',
       'data-testid': 'ticker-control',
+      'data-theme': 'dark',
       name: 'ticker',
     });
     const tickers = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'AAPL', 'NVDA'];
@@ -247,9 +269,10 @@ function buildStructuredLayout(mountTarget) {
       const btn = createEl(
         'button',
         {
-          class: `timeframe-btn${tf === '1h' ? ' active' : ''}`,
+          class: `timeframe-btn btn dark-control${tf === '1h' ? ' active' : ''}`,
           'data-timeframe': tf,
           'data-testid': `timeframe-${tf}`,
+          'data-theme': 'dark',
         },
         tf
       );
@@ -271,8 +294,24 @@ function buildStructuredLayout(mountTarget) {
       class: 'tools-panel side-panel side-panel-tools',
       'data-testid': 'tools-panel',
     });
-    const toolsHeader = createEl('div', { class: 'panel-header' }, 'Tools');
+    const toolsHeader = createEl('div', { class: 'panel-header panel-title' }, 'Tools');
     toolsPanel.appendChild(toolsHeader);
+
+    const tools = ['Crosshair', 'Trendline', 'Indicators'];
+    for (const tool of tools) {
+      const toolBtn = createEl(
+        'button',
+        {
+          class: 'tool-btn btn dark-control',
+          'data-tool': tool.toLowerCase(),
+          'data-testid': `tool-${tool.toLowerCase()}`,
+          'data-theme': 'dark',
+        },
+        tool
+      );
+      toolBtn.addEventListener('click', () => {});
+      toolsPanel.appendChild(toolBtn);
+    }
     workspace.appendChild(toolsPanel);
 
     // Dedicated chart workspace hosting canvas
@@ -282,6 +321,7 @@ function buildStructuredLayout(mountTarget) {
     });
     const canvas = createEl('canvas', {
       id: 'chart-canvas',
+      class: 'chart-canvas',
       'data-testid': 'chart-canvas',
     });
     ensureCanvasCompat(canvas);
@@ -293,8 +333,49 @@ function buildStructuredLayout(mountTarget) {
       class: 'orders-panel side-panel side-panel-orders',
       'data-testid': 'orders-panel',
     });
-    const ordersHeader = createEl('div', { class: 'panel-header' }, 'Orders');
+    const ordersHeader = createEl('div', { class: 'panel-header panel-title' }, 'Orders');
     ordersPanel.appendChild(ordersHeader);
+
+    const orderInputs = createEl('div', { class: 'order-inputs' });
+    const amountLabel = createEl('label', { class: 'input-label' }, 'Amount');
+    const amountInput = createEl('input', {
+      type: 'number',
+      class: 'order-input form-control dark-control',
+      'data-testid': 'order-amount',
+      'data-theme': 'dark',
+      placeholder: 'Amount',
+      value: '1.0',
+    });
+    amountLabel.appendChild(amountInput);
+    orderInputs.appendChild(amountLabel);
+    ordersPanel.appendChild(orderInputs);
+
+    const tradeActions = createEl('div', { class: 'trade-actions' });
+    const buyBtn = createEl(
+      'button',
+      {
+        class: 'btn btn-buy dark-control',
+        'data-testid': 'buy-button',
+        'data-theme': 'dark',
+      },
+      'Buy / Long'
+    );
+    buyBtn.addEventListener('click', () => {});
+    tradeActions.appendChild(buyBtn);
+
+    const sellBtn = createEl(
+      'button',
+      {
+        class: 'btn btn-sell dark-control',
+        'data-testid': 'sell-button',
+        'data-theme': 'dark',
+      },
+      'Sell / Short'
+    );
+    sellBtn.addEventListener('click', () => {});
+    tradeActions.appendChild(sellBtn);
+
+    ordersPanel.appendChild(tradeActions);
     workspace.appendChild(ordersPanel);
 
     mountTarget.appendChild(workspace);
@@ -457,13 +538,19 @@ function startAnimationLoop(renderFn) {
  * Mounts the candlestick chart application into a target container and binds gestures.
  *
  * @param {HTMLElement} [container] - Mount container element (defaults to #app)
- * @returns {object|null} Initialized chart instance
+ * @returns {object} Initialized chart instance
  */
 export function mountApp(container) {
+  injectStyles();
+
   const mountTarget =
-    container ||
-    (typeof document !== 'undefined' ? document.getElementById('app') || document.body : null);
-  if (!mountTarget) return null;
+    container !== undefined
+      ? container
+      : (typeof document !== 'undefined' ? document.getElementById('app') : null);
+
+  if (!mountTarget) {
+    throw new Error('Mount root element #app not found in document.');
+  }
 
   ensureElementCompat(mountTarget);
 
@@ -529,12 +616,23 @@ export function mountApp(container) {
       if (typeof btn.addEventListener === 'function') {
         btn.addEventListener('click', () => {
           for (const b of tfButtons) {
+            if (b.classList && typeof b.classList.delete === 'function') {
+              b.classList.delete('active');
+            }
             if (b.classList && typeof b.classList.remove === 'function') {
               b.classList.remove('active');
+            }
+            if (b.className && typeof b.setAttribute === 'function') {
+              b.setAttribute('class', b.className.replace(/\bactive\b/g, '').trim());
             }
           }
           if (btn.classList && typeof btn.classList.add === 'function') {
             btn.classList.add('active');
+          }
+          if (btn.className && typeof btn.setAttribute === 'function') {
+            if (!btn.className.includes('active')) {
+              btn.setAttribute('class', `${btn.className} active`.trim());
+            }
           }
           const tf = btn.getAttribute ? btn.getAttribute('data-timeframe') : null;
           if (tf) state.timeframe = tf;
@@ -603,7 +701,7 @@ export function mountApp(container) {
  * Alias for mountApp lifecycle function.
  *
  * @param {HTMLElement} [container] - Target DOM container
- * @returns {object|null} Initialized chart instance
+ * @returns {object} Initialized chart instance
  */
 export function mount(container) {
   return mountApp(container);
@@ -613,7 +711,7 @@ export function mount(container) {
  * Application initialization hook.
  *
  * @param {HTMLElement} [container] - Target DOM container
- * @returns {object|null} Initialized chart instance
+ * @returns {object} Initialized chart instance
  */
 export function init(container) {
   return mountApp(container);
@@ -623,7 +721,7 @@ export function init(container) {
  * Alternative initialization hook.
  *
  * @param {HTMLElement} [container] - Target DOM container
- * @returns {object|null} Initialized chart instance
+ * @returns {object} Initialized chart instance
  */
 export function initialize(container) {
   return mountApp(container);
