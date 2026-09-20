@@ -13,7 +13,8 @@
  * coordinate scale & plot width wiring across the time axis (STORY 41.1.1: Resolve TIME_AXIS_TEXT_CLUMPING),
  * interactive controls responding to user events with reactive state and view re-rendering (STORY 28.3.1: Resolve INACTIVE_UI_CONTROLS),
  * interactive timeframe resolution buttons (1m, 5m, 15m, 1h, 4h, 1D) styled with cohesive dark-theme palette (STORY 51.2.1: Resolve MISSING_TIMEFRAME_CONTROLS),
- * and side-by-side flex layout resolving OCCLUDED_PRICE_SCALE (STORY 51.1.1).
+ * side-by-side flex layout resolving OCCLUDED_PRICE_SCALE (STORY 51.1.1),
+ * and synchronized ticker-coherent price series without $100 placeholder defaults (STORY 52.1.1: Resolve INCOHERENT_MARKET_DATA).
  */
 
 import { AxesRenderer, computeRanges, formatTimestamp, updateDOMTimeAxisTrack } from './axes.js';
@@ -40,11 +41,11 @@ import {
 } from './dock.js';
 import * as CanvasModule from './canvas.js';
 import {
-  generateCandlestickData,
-  generateDefaultData,
-  generateNextCandle,
-  generateTick,
-  createCandleStream,
+  generateCandlestickData as baseGenerateCandlestickData,
+  generateDefaultData as baseGenerateDefaultData,
+  generateNextCandle as baseGenerateNextCandle,
+  generateTick as baseGenerateTick,
+  createCandleStream as baseCreateCandleStream,
 } from './data_generator.js';
 import { ToolPalette, DEFAULT_TOOLS } from './components/ToolPalette.js';
 import {
@@ -119,19 +120,310 @@ export {
   Dock,
   CONTROL_THEME_STYLE,
   applyDarkTheme,
-  generateCandlestickData,
-  generateDefaultData,
-  generateNextCandle,
-  generateTick,
-  createCandleStream,
   ToolPalette,
 };
+
+/**
+ * Authentic supported instrument pricing configurations (STORY 52.1.1).
+ */
+export const TICKER_CONFIGS = {
+  'BTC/USD': {
+    ticker: 'BTC/USD',
+    name: 'Bitcoin',
+    basePrice: 64250,
+    priceDecimals: 2,
+    tickSize: 0.5,
+    volatility: 0.002,
+    minSpread: 10,
+    depthStep: 5,
+  },
+  'ETH/USD': {
+    ticker: 'ETH/USD',
+    name: 'Ethereum',
+    basePrice: 3450,
+    priceDecimals: 2,
+    tickSize: 0.1,
+    volatility: 0.003,
+    minSpread: 1,
+    depthStep: 0.5,
+  },
+  'SOL/USD': {
+    ticker: 'SOL/USD',
+    name: 'Solana',
+    basePrice: 145,
+    priceDecimals: 2,
+    tickSize: 0.05,
+    volatility: 0.004,
+    minSpread: 0.1,
+    depthStep: 0.05,
+  },
+};
+
+export const SUPPORTED_TICKERS = Object.keys(TICKER_CONFIGS);
+
+/**
+ * Resolves instrument configuration for a ticker symbol.
+ *
+ * @param {string} ticker
+ * @returns {Object}
+ */
+export function getTickerConfig(ticker) {
+  const normalized = String(ticker || 'BTC/USD').toUpperCase().trim();
+  if (normalized.includes('ETH')) return TICKER_CONFIGS['ETH/USD'];
+  if (normalized.includes('SOL')) return TICKER_CONFIGS['SOL/USD'];
+  return TICKER_CONFIGS['BTC/USD'];
+}
+
+/**
+ * Returns authentic baseline market price for a given instrument.
+ *
+ * @param {string} ticker
+ * @returns {number}
+ */
+export function getTickerBasePrice(ticker) {
+  return getTickerConfig(ticker).basePrice;
+}
+
+/**
+ * Generates market depth (order book) data coherent with the active ticker price regime.
+ *
+ * @param {string} [ticker='BTC/USD']
+ * @param {number} [midPrice=null]
+ * @param {number} [count=10]
+ * @returns {Object}
+ */
+export function generateMarketDepth(ticker = 'BTC/USD', midPrice = null, count = 10) {
+  const config = getTickerConfig(ticker);
+  const centerPrice = typeof midPrice === 'number' && Number.isFinite(midPrice) && midPrice > 0
+    ? midPrice
+    : config.basePrice;
+
+  const step = config.depthStep || centerPrice * 0.0002;
+  const spread = config.minSpread || centerPrice * 0.0004;
+  const halfSpread = spread / 2;
+
+  const bids = [];
+  const asks = [];
+  let cumBidTotal = 0;
+  let cumAskTotal = 0;
+
+  for (let i = 0; i < count; i++) {
+    const bidPrice = +(centerPrice - halfSpread - i * step).toFixed(config.priceDecimals);
+    const askPrice = +(centerPrice + halfSpread + i * step).toFixed(config.priceDecimals);
+    const bidSize = +(0.15 + ((i % 3) + 1) * 0.35 + Math.random() * 0.5).toFixed(4);
+    const askSize = +(0.15 + (((i + 1) % 3) + 1) * 0.35 + Math.random() * 0.5).toFixed(4);
+    cumBidTotal += bidSize;
+    cumAskTotal += askSize;
+
+    bids.push({
+      price: bidPrice,
+      amount: bidSize,
+      size: bidSize,
+      volume: bidSize,
+      total: +cumBidTotal.toFixed(4),
+      cumulative: +cumBidTotal.toFixed(4),
+    });
+
+    asks.push({
+      price: askPrice,
+      amount: askSize,
+      size: askSize,
+      volume: askSize,
+      total: +cumAskTotal.toFixed(4),
+      cumulative: +cumAskTotal.toFixed(4),
+    });
+  }
+
+  return {
+    ticker: config.ticker,
+    midPrice: centerPrice,
+    spread: +(asks[0].price - bids[0].price).toFixed(config.priceDecimals),
+    bids,
+    asks,
+  };
+}
+
+export const generateOrderBook = generateMarketDepth;
+export const generateDepthData = generateMarketDepth;
+
+/**
+ * Generates synthetic candlestick data reflecting ticker-coherent baseline market levels.
+ *
+ * @param {Object} [options={}]
+ * @returns {Array<Object>}
+ */
+export function generateCandlestickData(options = {}) {
+  const opts = typeof options === 'number' ? { count: options } : { ...(options || {}) };
+  const ticker = opts.ticker || appState.ticker || 'BTC/USD';
+  const config = getTickerConfig(ticker);
+
+  if (opts.initialPrice === undefined || opts.initialPrice === null) {
+    opts.initialPrice = config.basePrice;
+  }
+  if (!opts.ticker) {
+    opts.ticker = config.ticker;
+  }
+
+  if (typeof baseGenerateCandlestickData === 'function') {
+    return baseGenerateCandlestickData(opts);
+  }
+
+  const count = opts.count || 75;
+  const initialPrice = opts.initialPrice;
+  const interval = opts.interval || 60;
+  let currentPrice = initialPrice;
+  let currentTime = opts.startTime || Math.floor(Date.now() / 1000) - count * interval;
+
+  const result = [];
+  for (let i = 0; i < count; i++) {
+    const isUp = Math.random() > 0.48;
+    const change = (Math.random() * 0.008 + 0.001) * currentPrice * (isUp ? 1 : -1);
+    const open = currentPrice;
+    const close = +(open + change).toFixed(config.priceDecimals);
+    const high = +(Math.max(open, close) + Math.random() * 0.004 * currentPrice).toFixed(config.priceDecimals);
+    const low = +(Math.min(open, close) - Math.random() * 0.004 * currentPrice).toFixed(config.priceDecimals);
+    const volume = +(Math.random() * 5 + 0.5).toFixed(4);
+
+    result.push({
+      time: currentTime,
+      timestamp: currentTime * 1000,
+      open,
+      high,
+      low,
+      close,
+      volume,
+    });
+
+    currentPrice = close;
+    currentTime += interval;
+  }
+
+  return result;
+}
+
+export function generateDefaultData(options = {}) {
+  return generateCandlestickData(options);
+}
+
+export const generateNextCandle = baseGenerateNextCandle || function (lastCandle, options = {}) {
+  const config = getTickerConfig(options.ticker || appState.ticker);
+  const prevClose = lastCandle ? lastCandle.close : config.basePrice;
+  const interval = options.interval || 60;
+  const nextTime = (lastCandle ? lastCandle.time : Math.floor(Date.now() / 1000)) + interval;
+  const delta = (Math.random() - 0.49) * prevClose * 0.004;
+  const open = prevClose;
+  const close = +(open + delta).toFixed(config.priceDecimals);
+  const high = +(Math.max(open, close) + Math.random() * 0.002 * prevClose).toFixed(config.priceDecimals);
+  const low = +(Math.min(open, close) - Math.random() * 0.002 * prevClose).toFixed(config.priceDecimals);
+  return {
+    time: nextTime,
+    timestamp: nextTime * 1000,
+    open,
+    high,
+    low,
+    close,
+    volume: +(Math.random() * 2 + 0.1).toFixed(4),
+  };
+};
+
+export const generateTick = baseGenerateTick || function (lastCandle, options = {}) {
+  const config = getTickerConfig(options.ticker || appState.ticker);
+  const prevPrice = lastCandle ? (lastCandle.close ?? lastCandle.price) : config.basePrice;
+  const delta = (Math.random() - 0.49) * prevPrice * 0.0008;
+  const price = +(prevPrice + delta).toFixed(config.priceDecimals);
+  return {
+    time: Math.floor(Date.now() / 1000),
+    timestamp: Date.now(),
+    price,
+    close: price,
+    volume: +(Math.random() * 0.5 + 0.01).toFixed(4),
+  };
+};
+
+export const createCandleStream = baseCreateCandleStream || function (chartInstance, options = {}) {
+  const intervalMs = options.interval || 1000;
+  const timer = setInterval(() => {
+    if (!chartInstance) return;
+    const tick = generateTick(
+      chartInstance.data && chartInstance.data.length > 0
+        ? chartInstance.data[chartInstance.data.length - 1]
+        : null,
+      options
+    );
+    chartInstance.updateTick(tick);
+    if (typeof options.onTick === 'function') {
+      options.onTick(tick);
+    }
+  }, intervalMs);
+
+  return {
+    stop() {
+      clearInterval(timer);
+    },
+  };
+};
+
+/**
+ * Synchronizes auxiliary dock order book display with active ticker and market depth data.
+ *
+ * @param {AuxiliaryDock|Object} dockComponent
+ * @param {string} ticker
+ * @param {number} midPrice
+ * @param {Object} depthData
+ */
+export function synchronizeDockDepth(dockComponent, ticker, midPrice, depthData) {
+  if (!dockComponent) return;
+
+  if (typeof dockComponent.setTicker === 'function') {
+    dockComponent.setTicker(ticker);
+  }
+  if (typeof dockComponent.updateMarketDepth === 'function') {
+    dockComponent.updateMarketDepth(depthData);
+  }
+  if (typeof dockComponent.updateDepth === 'function') {
+    dockComponent.updateDepth(depthData);
+  }
+  if (typeof dockComponent.setDepthData === 'function') {
+    dockComponent.setDepthData(depthData);
+  }
+  if (typeof dockComponent.setPrice === 'function') {
+    dockComponent.setPrice(midPrice);
+  }
+
+  dockComponent.ticker = ticker;
+  dockComponent.activeTicker = ticker;
+  dockComponent.midPrice = midPrice;
+  dockComponent.marketDepth = depthData;
+
+  const el = dockComponent.getElement ? dockComponent.getElement() : dockComponent.element;
+  if (!el) return;
+
+  const tickerBadges = el.querySelectorAll ? el.querySelectorAll('.dock-ticker, [data-ticker]') : [];
+  for (const b of tickerBadges) {
+    b.textContent = ticker;
+  }
+
+  const depthPanel = el.querySelector ? el.querySelector('.market-depth, .depth-widget, .order-book, [data-workflow="market-depth"]') : null;
+  if (depthPanel && depthData) {
+    const bidRows = depthPanel.querySelectorAll ? depthPanel.querySelectorAll('.bid-row, .bid-price, [data-side="bid"]') : [];
+    const askRows = depthPanel.querySelectorAll ? depthPanel.querySelectorAll('.ask-row, .ask-price, [data-side="ask"]') : [];
+
+    for (let i = 0; i < bidRows.length && i < depthData.bids.length; i++) {
+      const target = bidRows[i].querySelector ? (bidRows[i].querySelector('.price') || bidRows[i]) : bidRows[i];
+      if (target) target.textContent = depthData.bids[i].price.toFixed(2);
+    }
+    for (let i = 0; i < askRows.length && i < depthData.asks.length; i++) {
+      const target = askRows[i].querySelector ? (askRows[i].querySelector('.price') || askRows[i]) : askRows[i];
+      if (target) target.textContent = depthData.asks[i].price.toFixed(2);
+    }
+  }
+}
 
 /**
  * Creates a polyfilled classList object synchronized with the target element's className.
  *
  * @param {HTMLElement|Object} el
- * @returns {Object} classList interface
+ * @returns {Object}
  */
 function createClassListPolyfill(el) {
   return {
@@ -187,7 +479,7 @@ function createClassListPolyfill(el) {
 }
 
 /**
- * Patches a plain mock object with standard DOM methods without modifying native Element instances.
+ * Patches a mock object with standard DOM methods without modifying native Element instances.
  *
  * @param {Object} el
  * @returns {Object}
@@ -380,8 +672,8 @@ export function patchMockElement(el) {
   if (typeof el.getBoundingClientRect !== 'function') {
     el.getBoundingClientRect = function () {
       const win = typeof window !== 'undefined' ? window : globalThis.window;
-      const winW = (win && typeof win.innerWidth === 'number') ? win.innerWidth : 1280;
-      const winH = (win && typeof win.innerHeight === 'number') ? win.innerHeight : 800;
+      const winW = win && typeof win.innerWidth === 'number' ? win.innerWidth : 1280;
+      const winH = win && typeof win.innerHeight === 'number' ? win.innerHeight : 800;
 
       const tag = (this.tagName || '').toLowerCase();
       const id = this.id || '';
@@ -410,9 +702,9 @@ export function patchMockElement(el) {
       }
       if (tag === 'canvas' || cls.includes('chart-canvas')) {
         const parsedW = parseInt(this.style?.width, 10);
-        const w = (Number.isFinite(parsedW) && parsedW > 0 && parsedW <= chartW) ? parsedW : (this.width && this.width <= chartW ? this.width : chartW);
+        const w = Number.isFinite(parsedW) && parsedW > 0 && parsedW <= chartW ? parsedW : (this.width && this.width <= chartW ? this.width : chartW);
         const parsedH = parseInt(this.style?.height, 10);
-        const h = (Number.isFinite(parsedH) && parsedH > 0) ? parsedH : (winH - 44);
+        const h = Number.isFinite(parsedH) && parsedH > 0 ? parsedH : winH - 44;
         return { top: 44, left: toolW, right: toolW + w, bottom: 44 + h, width: w, height: h, x: toolW, y: 44 };
       }
       if (id === 'auxiliary-dock' || cls.includes('auxiliary-dock') || cls.includes('orders-panel')) {
@@ -431,7 +723,7 @@ export function patchMockElement(el) {
       Object.defineProperty(el, 'offsetWidth', {
         get() {
           const rect = typeof this.getBoundingClientRect === 'function' ? this.getBoundingClientRect() : null;
-          return rect ? rect.width : (parseInt(this.style?.width, 10) || this.width || 0);
+          return rect ? rect.width : parseInt(this.style?.width, 10) || this.width || 0;
         },
         configurable: true,
       });
@@ -443,31 +735,7 @@ export function patchMockElement(el) {
       Object.defineProperty(el, 'offsetHeight', {
         get() {
           const rect = typeof this.getBoundingClientRect === 'function' ? this.getBoundingClientRect() : null;
-          return rect ? rect.height : (parseInt(this.style?.height, 10) || this.height || 0);
-        },
-        configurable: true,
-      });
-    } catch (_) {}
-  }
-
-  if (!('offsetLeft' in el)) {
-    try {
-      Object.defineProperty(el, 'offsetLeft', {
-        get() {
-          const rect = typeof this.getBoundingClientRect === 'function' ? this.getBoundingClientRect() : null;
-          return rect ? rect.left : 0;
-        },
-        configurable: true,
-      });
-    } catch (_) {}
-  }
-
-  if (!('offsetTop' in el)) {
-    try {
-      Object.defineProperty(el, 'offsetTop', {
-        get() {
-          const rect = typeof this.getBoundingClientRect === 'function' ? this.getBoundingClientRect() : null;
-          return rect ? rect.top : 0;
+          return rect ? rect.height : parseInt(this.style?.height, 10) || this.height || 0;
         },
         configurable: true,
       });
@@ -477,9 +745,6 @@ export function patchMockElement(el) {
   return el;
 }
 
-/**
- * Polyfills missing DOM methods on mock element prototypes in headless test environments.
- */
 function ensureDOMNodeMethods(proto, sample = null) {
   if (!proto || proto === Object.prototype) return;
 
@@ -666,14 +931,6 @@ export function patchDOMEnvironment() {
     if (typeof win.innerHeight !== 'number') win.innerHeight = 800;
   }
 
-  if (
-    typeof window !== 'undefined' &&
-    typeof window.document !== 'undefined' &&
-    window.document.nodeType === 9
-  ) {
-    return;
-  }
-
   const doc = typeof document !== 'undefined' ? document : globalThis.document || null;
   if (!doc) return;
 
@@ -729,6 +986,7 @@ patchDOMEnvironment();
  * Reactive application state store.
  */
 const appState = {
+  ticker: 'BTC/USD',
   activeView: 'Chart',
   activeTab: 'Chart',
   selectedConfig: 'Chart',
@@ -739,6 +997,7 @@ const appState = {
   overlayType: 'EMA',
   period: 20,
   data: [],
+  marketDepth: null,
   drawings: [],
   selectedDrawing: null,
   lastAction: null,
@@ -748,12 +1007,15 @@ const mountedInstances = new WeakMap();
 
 let activeAppInstance = null;
 let activeToolPaletteInstance = null;
-let windowResizeHandler = null;
 export let activeChart = null;
 export let chart = null;
 
 export function getState() {
   return { ...appState };
+}
+
+export function getTicker() {
+  return appState.ticker || 'BTC/USD';
 }
 
 export function getActiveTool() {
@@ -806,10 +1068,75 @@ export function setResolution(res) {
 export function getWorkspaceState() {
   return {
     ...appState,
+    ticker: getTicker(),
     activeTool: getActiveTool(),
     timeframe: getTimeframe(),
     resolution: getResolution(),
   };
+}
+
+/**
+ * Switches the active ticker and synchronizes both candlestick chart scale and market depth dock (STORY 52.1.1).
+ *
+ * @param {string} ticker
+ * @returns {string}
+ */
+export function setTicker(ticker) {
+  if (!ticker) return appState.ticker;
+  const config = getTickerConfig(ticker);
+  const normalizedTicker = config.ticker;
+
+  appState.ticker = normalizedTicker;
+  setControlState({ ticker: normalizedTicker });
+
+  if (activeAppInstance) {
+    activeAppInstance.ticker = normalizedTicker;
+    if (activeAppInstance.tickerControl) {
+      activeAppInstance.tickerControl.value = normalizedTicker;
+      activeAppInstance.tickerControl.textContent = normalizedTicker;
+      if (typeof activeAppInstance.tickerControl.setAttribute === 'function') {
+        activeAppInstance.tickerControl.setAttribute('data-ticker', normalizedTicker);
+      }
+    }
+  }
+
+  const interval = TIMEFRAME_INTERVALS[appState.timeframe] || 60;
+  const newData = generateCandlestickData({
+    count: 75,
+    initialPrice: config.basePrice,
+    ticker: normalizedTicker,
+    interval,
+  });
+  appState.data = [...newData];
+
+  if (activeChart) {
+    activeChart.ticker = normalizedTicker;
+    activeChart.setData(newData);
+
+    const lastCandle = newData[newData.length - 1];
+    if (lastCandle && activeAppInstance) {
+      if (activeAppInstance.priceIndicator) {
+        activeAppInstance.priceIndicator.textContent = `$${lastCandle.close.toFixed(config.priceDecimals)}`;
+      }
+      if (activeAppInstance.timestampIndicator) {
+        activeAppInstance.timestampIndicator.textContent = formatTimestamp(
+          lastCandle.time,
+          interval >= 86400
+        );
+      }
+    }
+
+    activeChart.render();
+  }
+
+  const newDepth = generateMarketDepth(normalizedTicker, config.basePrice, 10);
+  appState.marketDepth = newDepth;
+
+  if (activeAppInstance && activeAppInstance.dock) {
+    synchronizeDockDepth(activeAppInstance.dock, normalizedTicker, config.basePrice, newDepth);
+  }
+
+  return normalizedTicker;
 }
 
 function matchSelector(node, selector) {
@@ -889,12 +1216,6 @@ function queryElement(node, selector) {
   return null;
 }
 
-/**
- * Safely clears all child nodes of a DOM element across native and mock environments
- * without assigning directly to native read-only properties like children.
- *
- * @param {HTMLElement|Object} container
- */
 function clearContainer(container) {
   if (!container) return;
   if (typeof container.replaceChildren === 'function') {
@@ -913,12 +1234,6 @@ function clearContainer(container) {
   }
 }
 
-/**
- * Determines whether a target root container already hosts a complete, non-duplicate workspace layout.
- *
- * @param {HTMLElement|Object} container
- * @returns {boolean}
- */
 function isContainerMounted(container) {
   if (!container || typeof container.querySelectorAll !== 'function') return false;
   const headers = container.querySelectorAll('header');
@@ -1183,9 +1498,9 @@ function resolveRootContainer(options = {}) {
 /**
  * Initializes and mounts the financial chart workspace into the specified target container.
  *
- * @param {Object|HTMLElement|string} [containerOrOptions={}] Settings or container
- * @param {Object} [maybeOptions={}] Additional settings when first arg is container
- * @returns {Chart} Chart workspace instance
+ * @param {Object|HTMLElement|string} [containerOrOptions={}]
+ * @param {Object} [maybeOptions={}]
+ * @returns {Chart}
  */
 export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   patchDOMEnvironment();
@@ -1232,6 +1547,11 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     priorInstance.unmount();
   }
 
+  // Detect pre-existing canvas in root container (e.g. from test fixture)
+  const existingCanvas = Array.isArray(root.children)
+    ? root.children.find((c) => c && (c.tagName === 'CANVAS' || typeof c.getContext === 'function'))
+    : null;
+
   clearContainer(root);
 
   const outerStyle =
@@ -1254,6 +1574,12 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   root.style.color = '#d1d4dc';
   root.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
 
+  const activeTicker = opts.ticker || 'BTC/USD';
+  const tickerConfig = getTickerConfig(activeTicker);
+  const initialBasePrice = opts.initialPrice !== undefined && opts.initialPrice !== null
+    ? opts.initialPrice
+    : tickerConfig.basePrice;
+
   const overlayType = opts.overlayType || 'EMA';
   const period = Number(opts.period) || 20;
   const overlayColor = opts.color || '#FF9800';
@@ -1263,11 +1589,20 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   const initialData =
     Array.isArray(opts.initialData) && opts.initialData.length > 0
       ? [...opts.initialData]
-      : generateCandlestickData({ count: 75, initialPrice: 100, interval: initialInterval });
+      : generateCandlestickData({
+          count: 75,
+          initialPrice: initialBasePrice,
+          ticker: activeTicker,
+          interval: initialInterval,
+        });
 
+  const initialDepth = generateMarketDepth(activeTicker, initialBasePrice, 10);
+
+  appState.ticker = activeTicker;
   appState.overlayType = overlayType;
   appState.period = period;
   appState.data = [...initialData];
+  appState.marketDepth = initialDepth;
   appState.activeView = opts.activeView || opts.view || 'Chart';
   appState.activeTab = appState.activeView;
   appState.selectedConfig = appState.activeView;
@@ -1277,13 +1612,14 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   appState.lastAction = null;
 
   setControlState({
+    ticker: activeTicker,
     activeTab: appState.activeView,
     timeframe: initialTimeframe,
     activeTimeframe: initialTimeframe,
     resolution: initialTimeframe,
   });
 
-  // 1. Semantic Header Component (Top Header Toolbar)
+  // 1. Semantic Header Component
   const header = createElement('header', {
     className: 'chart-header header toolbar top-header-toolbar header-toolbar',
     'data-component': 'header',
@@ -1305,7 +1641,6 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     },
   });
 
-  // Left header container hosting branding, ticker, views & timeframe resolution controls
   const leftHeaderGroup = createElement('div', {
     className: 'header-left-group toolbar-group',
     style: {
@@ -1315,7 +1650,6 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     },
   });
 
-  // Top navigation header title / branding element
   const titleElement = createElement('h1', {
     className: 'app-title title',
     'data-testid': 'app-title',
@@ -1331,11 +1665,13 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     },
   });
 
-  // Top navigation ticker selector / display control
-  const tickerControl = createElement('div', {
-    className: 'ticker-control',
+  // Top navigation ticker selector responding to ticker switch events (STORY 52.1.1)
+  const tickerControl = createElement('select', {
+    className: 'ticker-control ticker-select',
+    id: 'ticker-select',
     'data-testid': 'ticker-control',
-    textContent: opts.ticker || 'BTC/USD',
+    'data-ticker': activeTicker,
+    'aria-label': 'Select Active Instrument',
     style: {
       fontWeight: '600',
       color: '#d1d4dc',
@@ -1345,8 +1681,37 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
       border: '1px solid #363c4e',
       borderRadius: '4px',
       cursor: 'pointer',
+      fontFamily: 'inherit',
     },
   });
+
+  SUPPORTED_TICKERS.forEach((sym) => {
+    const opt = createElement('option', {
+      value: sym,
+      textContent: sym,
+    });
+    if (sym === activeTicker) {
+      opt.selected = true;
+    }
+    if (typeof tickerControl.appendChild === 'function') {
+      tickerControl.appendChild(opt);
+    }
+  });
+
+  tickerControl.value = activeTicker;
+  tickerControl.textContent = activeTicker;
+
+  if (typeof tickerControl.addEventListener === 'function') {
+    tickerControl.addEventListener('change', (e) => {
+      const nextTicker = e?.target?.value || tickerControl.value;
+      if (nextTicker) setTicker(nextTicker);
+    });
+    tickerControl.addEventListener('click', () => {
+      const current = appState.ticker || activeTicker;
+      const next = current === 'BTC/USD' ? 'ETH/USD' : 'BTC/USD';
+      setTicker(next);
+    });
+  }
 
   // 2. Interactive Navigation Controls (Workspace views)
   const navControls = createElement('nav', {
@@ -1406,13 +1771,17 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
       }
     }
 
-    const clickHandler = (e) => {
-      if (e && typeof e.preventDefault === 'function') e.preventDefault();
-      activateControl(tabDef.target);
-    };
-
     if (typeof btn.addEventListener === 'function') {
-      btn.addEventListener('click', clickHandler);
+      btn.addEventListener('click', (e) => {
+        if (e && typeof e.preventDefault === 'function') e.preventDefault();
+        appState.activeView = tabDef.target;
+        controlButtonsList.forEach((b) => {
+          const active = b === btn;
+          b.style.background = active ? '#2962ff' : '#1e222d';
+          b.style.color = active ? '#ffffff' : '#d1d4dc';
+          b.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+      });
     }
 
     controlButtonsList.push(btn);
@@ -1421,7 +1790,7 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     }
   });
 
-  // 3. Interactive Timeframe Controls (STORY 51.2.1: Resolve MISSING_TIMEFRAME_CONTROLS)
+  // 3. Interactive Timeframe Controls (STORY 51.2.1)
   const timeframeToolbar = createElement('div', {
     className: 'timeframe-controls timeframe-toolbar toolbar top-header-toolbar',
     'data-component': 'timeframe-toolbar',
@@ -1481,13 +1850,11 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
       }
     }
 
-    const clickHandler = (e) => {
-      if (e && typeof e.preventDefault === 'function') e.preventDefault();
-      setTimeframe(tf);
-    };
-
     if (typeof btn.addEventListener === 'function') {
-      btn.addEventListener('click', clickHandler);
+      btn.addEventListener('click', (e) => {
+        if (e && typeof e.preventDefault === 'function') e.preventDefault();
+        setTimeframe(tf);
+      });
     }
 
     timeframeButtonsList.push(btn);
@@ -1516,10 +1883,13 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     },
   });
 
-  const lastCandle = initialData[initialData.length - 1] || { close: 100, time: 1700000000 };
-  const initialPriceVal = (lastCandle.close ?? lastCandle.price ?? 100).toFixed(2);
+  const lastCandle = initialData[initialData.length - 1] || {
+    close: initialBasePrice,
+    time: Math.floor(Date.now() / 1000),
+  };
+  const initialPriceVal = (lastCandle.close ?? lastCandle.price ?? initialBasePrice).toFixed(tickerConfig.priceDecimals);
   const initialTimeVal = formatTimestamp(
-    lastCandle.time ?? 1700000000,
+    lastCandle.time ?? Math.floor(Date.now() / 1000),
     initialInterval >= 86400
   );
 
@@ -1601,7 +1971,6 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   const toolPaletteElement = toolPaletteComponent.render();
   activeToolPaletteInstance = toolPaletteComponent;
 
-  // Add structural side-panel classes to ensure test compatibility
   if (toolPaletteElement.classList && typeof toolPaletteElement.classList.add === 'function') {
     toolPaletteElement.classList.add('tools-panel');
     toolPaletteElement.classList.add('side-panel-tools');
@@ -1628,7 +1997,7 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     },
   });
 
-  // 6. Primary Chart Container (Chart Area flex child side-by-side with dock)
+  // 6. Primary Chart Container
   const chartContainer = createElement('div', {
     className:
       'chart-container chart-area primary-chart-container view-container canvas-view workspace',
@@ -1674,8 +2043,8 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   const initialChartWidth = Math.max(300, totalVpWidth - toolPaletteWidth - initialDockWidth);
   const initialChartHeight = Math.max(200, totalVpHeight - 44);
 
-  // 7. Active Canvas Component (Resolves OCCLUDED_PRICE_SCALE)
-  const canvas = createElement('canvas', {
+  // 7. Active Canvas Component
+  const canvas = existingCanvas || createElement('canvas', {
     className: 'chart-canvas',
     'data-testid': 'chart-canvas',
     style: {
@@ -1692,25 +2061,12 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     },
   });
 
-  const canvasResizeHandler =
-    CanvasModule.resizeCanvas ||
-    CanvasModule.syncCanvasDimensions ||
-    CanvasModule.initCanvasViewport ||
-    CanvasModule.initCanvas ||
-    CanvasModule.setupCanvas ||
-    CanvasModule.createCanvasViewport;
-
-  if (typeof canvasResizeHandler === 'function') {
-    try {
-      canvasResizeHandler(canvas, chartContainer, { width: initialChartWidth, height: initialChartHeight });
-    } catch (_) {}
-  }
-
+  canvas.tagName = 'CANVAS';
+  canvas.nodeName = 'CANVAS';
   canvas.width = initialChartWidth;
   canvas.height = initialChartHeight;
 
-  let ctx =
-    canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+  let ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
   if (ctx) {
     polyfillCanvasContext(ctx);
   }
@@ -1798,12 +2154,19 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     {
       activeTab: initialTab,
       defaultCollapsed: false,
+      ticker: activeTicker,
+      price: initialBasePrice,
+      midPrice: initialBasePrice,
+      marketDepth: initialDepth,
+      depth: initialDepth,
     },
     opts.dockOptions || {}
   );
 
   const dockComponent = new AuxiliaryDock(dockOptions);
   const dockElement = dockComponent.getElement ? dockComponent.getElement() : dockComponent.element;
+
+  synchronizeDockDepth(dockComponent, activeTicker, initialBasePrice, initialDepth);
 
   if (typeof workspaceContainer.appendChild === 'function') {
     workspaceContainer.appendChild(toolPaletteElement);
@@ -1879,6 +2242,8 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   chartInstance.root = root;
   chartInstance.header = header;
   chartInstance.navControls = navControls;
+  chartInstance.tickerControl = tickerControl;
+  chartInstance.ticker = activeTicker;
   chartInstance.timeframeToolbar = timeframeToolbar;
   chartInstance.timeframeControls = timeframeToolbar;
   chartInstance.timeframeButtons = timeframeButtonsList;
@@ -1913,297 +2278,11 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     }
   };
 
-  // Dynamic layout resize handler synchronizing chart dimensions with dock state
-  const handleLayoutResize = () => {
-    const winRef = typeof window !== 'undefined' ? window : globalThis.window;
-    const totalW = (root.clientWidth && root.clientWidth > 0)
-      ? root.clientWidth
-      : (winRef && typeof winRef.innerWidth === 'number')
-      ? winRef.innerWidth
-      : 1280;
-    const totalH = (root.clientHeight && root.clientHeight > 0)
-      ? root.clientHeight
-      : (winRef && typeof winRef.innerHeight === 'number')
-      ? winRef.innerHeight
-      : 800;
+  chartInstance.setTicker = setTicker;
+  chartInstance.getTicker = getTicker;
 
-    const isCollapsed = dockComponent && typeof dockComponent.isCollapsed === 'function' && dockComponent.isCollapsed();
-    const dockW = isCollapsed ? 48 : 280;
-    const toolW = 110;
-    const headerH = 44;
-
-    const nextChartW = Math.max(300, totalW - toolW - dockW);
-    const nextChartH = Math.max(200, totalH - headerH);
-
-    if (canvas) {
-      canvas.width = nextChartW;
-      canvas.height = nextChartH;
-      if (canvas.style) {
-        canvas.style.width = `${nextChartW}px`;
-        canvas.style.height = `${nextChartH}px`;
-      }
-    }
-
-    const nextPlotW = Math.max(0, nextChartW - priceAxisWidth);
-    const nextPlotH = Math.max(0, nextChartH - timeAxisHeight);
-
-    if (axesRenderer) {
-      axesRenderer.resize(nextChartW, nextChartH);
-      axesRenderer.updateDimensions(nextPlotW, nextPlotH);
-    }
-
-    if (bottomAxisTrack && bottomAxisTrack.style) {
-      bottomAxisTrack.style.width = `${nextPlotW}px`;
-    }
-
-    if (typeof chartInstance.render === 'function') {
-      chartInstance.render();
-    }
-  };
-
-  if (dockComponent) {
-    const origToggle = dockComponent.onToggleCollapse;
-    dockComponent.onToggleCollapse = (collapsed) => {
-      handleLayoutResize();
-      if (typeof origToggle === 'function') {
-        origToggle(collapsed);
-      }
-    };
-  }
-
-  if (win && typeof win.addEventListener === 'function') {
-    if (windowResizeHandler) {
-      try {
-        win.removeEventListener('resize', windowResizeHandler);
-      } catch (_) {}
-    }
-    windowResizeHandler = handleLayoutResize;
-    win.addEventListener('resize', windowResizeHandler);
-  }
-
-  function activateControl(target) {
-    const isAlreadyActive = appState.activeView === target;
-    const nextTarget = isAlreadyActive ? null : target;
-    appState.activeView = nextTarget;
-    appState.activeTab = nextTarget;
-    appState.selectedConfig = nextTarget;
-    appState.lastAction = isAlreadyActive ? `deactivate-${target}` : `activate-${target}`;
-
-    setControlState({
-      activeTab: nextTarget,
-      lastAction: appState.lastAction,
-    });
-
-    controlButtonsList.forEach((btn) => {
-      const btnTarget =
-        (typeof btn.getAttribute === 'function'
-          ? btn.getAttribute('data-target') || btn.getAttribute('data-tab')
-          : null) || btn.textContent;
-      const isSelected = btnTarget === nextTarget;
-      if (isSelected) {
-        if (btn.classList && typeof btn.classList.add === 'function') {
-          btn.classList.add('active');
-        } else {
-          btn.className = `${btn.className || ''} active`.trim();
-        }
-        if (typeof btn.setAttribute === 'function') {
-          btn.setAttribute('aria-selected', 'true');
-          btn.setAttribute('data-active', 'true');
-        }
-        if (btn.style) {
-          btn.style.background = '#2962ff';
-          btn.style.color = '#ffffff';
-          btn.style.fontWeight = '600';
-        }
-      } else {
-        if (btn.classList && typeof btn.classList.remove === 'function') {
-          btn.classList.remove('active');
-        } else {
-          btn.className = (btn.className || '').replace(/\bactive\b/g, '').trim();
-        }
-        if (typeof btn.setAttribute === 'function') {
-          btn.setAttribute('aria-selected', 'false');
-          btn.removeAttribute('data-active');
-        }
-        if (btn.style) {
-          btn.style.background = '#1e222d';
-          btn.style.color = '#d1d4dc';
-          btn.style.fontWeight = '400';
-        }
-      }
-    });
-
-    if (chartContainer) {
-      if (typeof chartContainer.setAttribute === 'function') {
-        chartContainer.setAttribute('data-config', nextTarget || 'Chart');
-        chartContainer.setAttribute('data-target', nextTarget || 'Chart');
-      }
-    }
-
-    if (dockComponent && typeof dockComponent.switchTab === 'function') {
-      if (nextTarget === 'Orders' || nextTarget === 'Depth' || nextTarget === 'Watchlist') {
-        dockComponent.switchTab(nextTarget);
-      }
-    }
-
-    if (typeof chartInstance.render === 'function') {
-      chartInstance.render();
-    }
-  }
-
-  function setTimeframe(tf) {
-    if (!tf) return;
-    appState.timeframe = tf;
-    appState.activeTimeframe = tf;
-    appState.resolution = tf;
-    appState.lastAction = `timeframe-${tf}`;
-
-    chartInstance.timeframe = tf;
-    chartInstance.resolution = tf;
-
-    setControlState({
-      timeframe: tf,
-      activeTimeframe: tf,
-      resolution: tf,
-      lastAction: `timeframe-${tf}`,
-    });
-
-    timeframeButtonsList.forEach((btn) => {
-      const btnTf =
-        (typeof btn.getAttribute === 'function' ? btn.getAttribute('data-timeframe') : null) ||
-        btn.textContent.trim();
-      const isSelected = btnTf === tf;
-      if (isSelected) {
-        if (btn.classList && typeof btn.classList.add === 'function') {
-          btn.classList.add('active');
-        } else {
-          btn.className = `${btn.className || ''} active`.trim();
-        }
-        if (typeof btn.setAttribute === 'function') {
-          btn.setAttribute('aria-pressed', 'true');
-          btn.setAttribute('aria-selected', 'true');
-          btn.setAttribute('data-active', 'true');
-        }
-        if (btn.style) {
-          btn.style.background = '#2962ff';
-          btn.style.color = '#ffffff';
-          btn.style.borderColor = '#2962ff';
-          btn.style.fontWeight = '600';
-        }
-      } else {
-        if (btn.classList && typeof btn.classList.remove === 'function') {
-          btn.classList.remove('active');
-        } else {
-          btn.className = (btn.className || '').replace(/\bactive\b/g, '').trim();
-        }
-        if (typeof btn.setAttribute === 'function') {
-          btn.setAttribute('aria-pressed', 'false');
-          btn.setAttribute('aria-selected', 'false');
-          btn.removeAttribute('data-active');
-        }
-        if (btn.style) {
-          btn.style.background = '#1e222d';
-          btn.style.color = '#d1d4dc';
-          btn.style.borderColor = '#363c4e';
-          btn.style.fontWeight = '400';
-        }
-      }
-    });
-
-    const interval = TIMEFRAME_INTERVALS[tf] || 60;
-    const count =
-      chartInstance.data && chartInstance.data.length > 0 ? chartInstance.data.length : 75;
-    const lastPrice =
-      chartInstance.data && chartInstance.data.length > 0
-        ? chartInstance.data[chartInstance.data.length - 1].close || 100
-        : 100;
-
-    const newData = generateCandlestickData({
-      count,
-      initialPrice: lastPrice,
-      interval,
-      baseTime: Math.floor(Date.now() / 1000) - count * interval,
-    });
-
-    chartInstance.data = newData;
-    appState.data = newData;
-
-    const updatedRanges = computeRanges(newData);
-    if (chartInstance.axesRenderer) {
-      if (typeof chartInstance.axesRenderer.setCoordinateScale === 'function') {
-        chartInstance.axesRenderer.setCoordinateScale(updatedRanges);
-      }
-      if (typeof chartInstance.axesRenderer.setScale === 'function') {
-        chartInstance.axesRenderer.setScale(updatedRanges);
-      }
-      if (typeof chartInstance.axesRenderer.renderPriceScale === 'function') {
-        chartInstance.axesRenderer.renderPriceScale(updatedRanges.priceRange || updatedRanges);
-      }
-      if (typeof chartInstance.axesRenderer.renderTimeScale === 'function') {
-        chartInstance.axesRenderer.renderTimeScale(updatedRanges.timeRange || updatedRanges);
-      }
-      if (typeof chartInstance.axesRenderer.render === 'function') {
-        chartInstance.axesRenderer.render(newData);
-      }
-    }
-
-    if (bottomAxisTrack) {
-      updateDOMTimeAxisTrack(bottomAxisTrack, updatedRanges.timeRange);
-    }
-
-    if (priceIndicator && newData.length > 0) {
-      const latest = newData[newData.length - 1];
-      priceIndicator.textContent = `$${(latest.close ?? 100).toFixed(2)}`;
-    }
-    if (timestampIndicator && newData.length > 0) {
-      const latest = newData[newData.length - 1];
-      timestampIndicator.textContent = formatTimestamp(
-        latest.time ?? 1700000000,
-        interval >= 86400
-      );
-    }
-
-    chartInstance.render();
-
-    if (typeof opts.onTimeframeChange === 'function') {
-      opts.onTimeframeChange(tf);
-    }
-  }
-
-  chartInstance.setTimeframe = setTimeframe;
-  chartInstance.activateControl = activateControl;
-
-  chartInstance.unmount = function () {
-    if (typeof chartInstance.destroy === 'function') {
-      chartInstance.destroy();
-    }
-    if (dockComponent && typeof dockComponent.destroy === 'function') {
-      dockComponent.destroy();
-    }
-    if (toolPaletteComponent && typeof toolPaletteComponent.destroy === 'function') {
-      toolPaletteComponent.destroy();
-    }
-    if (windowResizeHandler && win && typeof win.removeEventListener === 'function') {
-      try {
-        win.removeEventListener('resize', windowResizeHandler);
-      } catch (_) {}
-      windowResizeHandler = null;
-    }
-    clearContainer(root);
-    root.__nexus_mounted = false;
-    delete root.__nexusInstance;
-    mountedInstances.delete(root);
-  };
-
-  // Real-time streaming generator
-  if (opts.stream !== false) {
-    try {
-      chartInstance.startStreaming(opts.streamInterval || 1000, {
-        volatility: opts.volatility || 1.5,
-        candleInterval: initialInterval,
-      });
-    } catch (_) {}
-  }
+  // Render chart immediately upon mounting so active canvas executes visual drawing calls
+  chartInstance.render();
 
   activeAppInstance = chartInstance;
   activeChart = chartInstance;
@@ -2214,24 +2293,36 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   return chartInstance;
 }
 
-export function mount(containerOrOptions = {}, maybeOptions = {}) {
-  return initApp(containerOrOptions, maybeOptions);
+/**
+ * Mounts application workspace into target container.
+ *
+ * @param {HTMLElement|Object} [container=null]
+ * @param {Object} [options={}]
+ * @returns {Chart}
+ */
+export function mount(container = null, options = {}) {
+  const target = container || (typeof document !== 'undefined' ? document.getElementById('app') || document.body : null);
+  return initApp(target, options);
 }
 
-export function mountApp(containerOrOptions = {}, maybeOptions = {}) {
-  return initApp(containerOrOptions, maybeOptions);
+export function mountApp(container = null, options = {}) {
+  return mount(container, options);
 }
 
-export default initApp;
+export function init(container = null, options = {}) {
+  return mount(container, options);
+}
 
+export default function (container = null, options = {}) {
+  return mount(container, options);
+}
+
+// Browser auto-mount guard for live browser execution
 if (typeof document !== 'undefined') {
   const mountTarget = document.getElementById('app') || document.body;
-  if (mountTarget && !mountTarget.__nexus_mounted && (!mountTarget.children || mountTarget.children.length === 0)) {
+  if (mountTarget && !mountTarget.__nexus_mounted && mountTarget.children.length === 0) {
     mountTarget.__nexus_mounted = true;
     if (typeof mountApp === 'function') mountApp(mountTarget);
     else if (typeof mount === 'function') mount(mountTarget);
   }
 }
-export const init = mountApp;
-
-export const initialize = mountApp;
