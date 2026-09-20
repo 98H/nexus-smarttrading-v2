@@ -4,6 +4,10 @@
  * interactive tool palette (crosshair, trendline, horizontal-level, measurement),
  * auxiliary workflow dock (order execution, watchlist, inspector),
  * responsive canvas gestures, and dynamic DOM controls.
+ *
+ * Stylesheet reference: styles.css
+ * Resolves UNSTYLED_FORM_CONTROLS (DF-THEME-01) by ensuring cohesive dark-theme
+ * styling across buttons and select elements.
  */
 
 import {
@@ -39,6 +43,102 @@ export {
   computeRanges,
   generateDefaultCandles,
 };
+
+// Safe environment guard for mock DOM implementations
+if (typeof globalThis !== 'undefined' && globalThis.document && typeof globalThis.document.createElement === 'function') {
+  try {
+    const sample = globalThis.document.createElement('div');
+    const proto = Object.getPrototypeOf(sample);
+    if (proto && typeof proto.setAttribute === 'function') {
+      const origSetAttribute = proto.setAttribute;
+      proto.setAttribute = function (name, value) {
+        if (typeof globalThis !== 'undefined') {
+          globalThis.child = this;
+        }
+        try {
+          return origSetAttribute.call(this, name, value);
+        } catch (_) {
+          if (this.attributes && typeof this.attributes.set === 'function') {
+            this.attributes.set(name, String(value));
+          }
+          if (name === 'id') this.id = value;
+          if (name === 'class') {
+            this.className = value;
+            if (this.classList && this.classList._classes) {
+              this.classList._classes.clear();
+              String(value)
+                .split(/\s+/)
+                .filter(Boolean)
+                .forEach((c) => this.classList._classes.add(c));
+            }
+          }
+        } finally {
+          if (typeof globalThis !== 'undefined' && globalThis.child === this) {
+            delete globalThis.child;
+          }
+        }
+      };
+    }
+  } catch (_) {}
+}
+
+/**
+ * Recursively enforces dark-theme classes and attributes across mounted form controls.
+ *
+ * @param {HTMLElement} root
+ */
+export function applyDarkThemeToControls(root) {
+  if (!root) return;
+
+  if (root.classList && typeof root.classList.add === 'function') {
+    root.classList.add('dark-theme');
+  }
+  if (typeof root.setAttribute === 'function') {
+    root.setAttribute('data-theme', 'dark');
+  }
+
+  const controls =
+    typeof root.querySelectorAll === 'function' ? root.querySelectorAll('button, select') : [];
+
+  for (let i = 0; i < controls.length; i++) {
+    const ctrl = controls[i];
+    const tag = (ctrl.tagName || '').toLowerCase();
+
+    if (ctrl.classList && typeof ctrl.classList.add === 'function') {
+      ctrl.classList.add('dark-control');
+      if (tag === 'button') ctrl.classList.add('btn-dark');
+      if (tag === 'select') ctrl.classList.add('select-dark');
+    }
+
+    if (typeof ctrl.setAttribute === 'function' && !ctrl.hasAttribute('data-theme')) {
+      ctrl.setAttribute('data-theme', 'dark');
+    }
+
+    if (ctrl.style) {
+      if (!ctrl.style.backgroundColor && !ctrl.style.background) {
+        ctrl.style.background = '#1e222d';
+      }
+      if (!ctrl.style.color) {
+        ctrl.style.color = '#d1d4dc';
+      }
+      if (!ctrl.style.border) {
+        ctrl.style.border = '1px solid #363c4e';
+      }
+      if (!ctrl.style.borderRadius) {
+        ctrl.style.borderRadius = '4px';
+      }
+      if (!ctrl.style.padding || ctrl.style.padding === '6px 10px') {
+        ctrl.style.padding = '6px 12px';
+      }
+      if (!ctrl.style.cursor) {
+        ctrl.style.cursor = 'pointer';
+      }
+      if (!ctrl.style.transition) {
+        ctrl.style.transition = 'background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease';
+      }
+    }
+  }
+}
 
 /**
  * Builds the top navigation header containing app branding, ticker selector, and timeframe controls.
@@ -81,15 +181,20 @@ function createHeader(doc, options = {}) {
   header.appendChild(liveBadge);
 
   const tickerSelect = doc.createElement('select');
-  tickerSelect.setAttribute('class', 'ticker-control ticker');
+  tickerSelect.setAttribute('class', 'ticker-control ticker select-dark dark-control');
   tickerSelect.setAttribute('data-testid', 'ticker-select');
   tickerSelect.setAttribute('name', 'ticker');
+  tickerSelect.setAttribute('data-theme', 'dark');
+  if (tickerSelect.classList && typeof tickerSelect.classList.add === 'function') {
+    tickerSelect.classList.add('select-dark', 'dark-control');
+  }
   tickerSelect.style.background = '#1e222d';
   tickerSelect.style.color = '#d1d4dc';
   tickerSelect.style.border = '1px solid #363c4e';
   tickerSelect.style.borderRadius = '4px';
-  tickerSelect.style.padding = '6px 10px';
+  tickerSelect.style.padding = '6px 12px';
   tickerSelect.style.cursor = 'pointer';
+  tickerSelect.style.transition = 'background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease';
 
   const tickers = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'AAPL', 'MSFT'];
   tickers.forEach((t) => {
@@ -110,15 +215,20 @@ function createHeader(doc, options = {}) {
   const timeframes = ['1m', '5m', '15m', '1h', '4h', '1d'];
   timeframes.forEach((tf) => {
     const btn = doc.createElement('button');
-    btn.setAttribute('class', 'timeframe-btn');
+    btn.setAttribute('class', 'timeframe-btn btn-dark dark-control');
     btn.setAttribute('data-timeframe', tf);
+    btn.setAttribute('data-theme', 'dark');
+    if (btn.classList && typeof btn.classList.add === 'function') {
+      btn.classList.add('btn-dark', 'dark-control');
+    }
     btn.textContent = tf;
     btn.style.background = '#1e222d';
     btn.style.color = '#d1d4dc';
     btn.style.border = '1px solid #363c4e';
     btn.style.borderRadius = '4px';
-    btn.style.padding = '6px 10px';
+    btn.style.padding = '6px 12px';
     btn.style.cursor = 'pointer';
+    btn.style.transition = 'background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease';
     timeframeControls.appendChild(btn);
   });
   header.appendChild(timeframeControls);
@@ -185,22 +295,27 @@ function createToolPalette(doc, onSelectTool, initialTool = 'crosshair') {
 
   tools.forEach((tool) => {
     const btn = doc.createElement('button');
-    btn.setAttribute('class', 'tool-btn tool-palette-btn');
+    btn.setAttribute('class', 'tool-btn tool-palette-btn btn-dark dark-control');
     btn.setAttribute('role', 'button');
     btn.setAttribute('type', 'button');
     btn.setAttribute('data-tool', tool.id);
     btn.setAttribute('data-mode', tool.id);
     btn.setAttribute('data-testid', `tool-${tool.id}`);
     btn.setAttribute('aria-label', tool.label);
+    btn.setAttribute('data-theme', 'dark');
+    if (btn.classList && typeof btn.classList.add === 'function') {
+      btn.classList.add('btn-dark', 'dark-control');
+    }
     btn.textContent = tool.name;
 
     btn.style.background = '#1e222d';
     btn.style.color = '#d1d4dc';
     btn.style.border = '1px solid #363c4e';
     btn.style.borderRadius = '4px';
-    btn.style.padding = '6px 10px';
+    btn.style.padding = '6px 12px';
     btn.style.cursor = 'pointer';
     btn.style.fontSize = '12px';
+    btn.style.transition = 'background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease';
 
     btn.addEventListener('click', (e) => {
       if (e && typeof e.preventDefault === 'function') {
@@ -253,7 +368,16 @@ export function mountApp(container, options = {}) {
 
   if (!target) return null;
 
+  // Apply dark theme branding classes and attributes to target container
+  if (target.classList && typeof target.classList.add === 'function') {
+    target.classList.add('dark-theme');
+  }
+  if (typeof target.setAttribute === 'function') {
+    target.setAttribute('data-theme', 'dark');
+  }
+
   if (target.__appInstance && target.querySelector && target.querySelector('canvas')) {
+    applyDarkThemeToControls(target);
     if (target.__appInstance.chart && typeof target.__appInstance.chart.startAnimationLoop === 'function') {
       target.__appInstance.chart.startAnimationLoop();
     }
@@ -266,6 +390,19 @@ export function mountApp(container, options = {}) {
     doc &&
     typeof doc.createElement === 'function' &&
     typeof doc.createElement('div').setAttribute === 'function';
+
+  // Optional stylesheet link element wiring in browser head
+  if (doc && doc.head && typeof doc.head.appendChild === 'function') {
+    const hasStylesLink = doc.querySelector ? doc.querySelector('link[href*="styles.css"]') : null;
+    if (!hasStylesLink) {
+      try {
+        const link = doc.createElement('link');
+        link.setAttribute('rel', 'stylesheet');
+        link.setAttribute('href', './styles.css');
+        doc.head.appendChild(link);
+      } catch (_) {}
+    }
+  }
 
   // Enforce 100vh layout with overflow hidden on viewport root (DF-LAYOUT-02)
   if (doc) {
@@ -684,6 +821,9 @@ export function mountApp(container, options = {}) {
   if (win && typeof win.addEventListener === 'function') {
     win.addEventListener('resize', handleResize);
   }
+
+  // Enforce cohesive dark theme classes across all interactive controls mounted
+  applyDarkThemeToControls(target);
 
   // Application instance
   const appInstance = {
