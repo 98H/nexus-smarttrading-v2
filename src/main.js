@@ -1133,7 +1133,7 @@ class WebGLBackgroundRenderer {
 }
 
 /**
- * High-Performance Candlestick Chart Component with Responsive Gesture Zooming
+ * High-Performance Candlestick Chart Component with Gesture Zooming and Viewport Panning
  */
 export class Chart {
   constructor(canvas, options = {}) {
@@ -1149,15 +1149,52 @@ export class Chart {
     const initZoom = options.initialZoom !== undefined ? options.initialZoom : (options.zoom !== undefined ? options.zoom : 1.0);
     this.zoom = Math.min(this.maxZoom, Math.max(this.minZoom, initZoom));
 
+    const initialOffset = options.initialOffset || options.offset || { x: 0, y: 0 };
+    this.viewportOffset = {
+      x: initialOffset.x ?? 0,
+      y: initialOffset.y ?? 0,
+    };
+    this.isPanning = false;
+    this.dragStartPoint = { x: 0, y: 0 };
+    this.dragStartOffset = { x: 0, y: 0 };
+
     this.timeScale = { min: 0, max: 1 };
     this.priceScale = { min: 0, max: 1 };
 
     this.handleWheel = this.handleWheel.bind(this);
+    this.handleMouseDown = this.handleMouseDown.bind(this);
+    this.handleMouseMove = this.handleMouseMove.bind(this);
+    this.handleMouseUp = this.handleMouseUp.bind(this);
+    this.handleMouseLeave = this.handleMouseLeave.bind(this);
+
     if (typeof this.canvas.addEventListener === 'function') {
       this.canvas.addEventListener('wheel', this.handleWheel);
+      this.canvas.addEventListener('mousedown', this.handleMouseDown);
+      this.canvas.addEventListener('mousemove', this.handleMouseMove);
+      this.canvas.addEventListener('mouseup', this.handleMouseUp);
+      this.canvas.addEventListener('mouseleave', this.handleMouseLeave);
     }
 
     this.updateScales();
+  }
+
+  getViewportOffset() {
+    return { x: this.viewportOffset.x, y: this.viewportOffset.y };
+  }
+
+  get viewport() {
+    return {
+      offsetX: this.viewportOffset.x,
+      offsetY: this.viewportOffset.y,
+    };
+  }
+
+  get offsetX() {
+    return this.viewportOffset.x;
+  }
+
+  get offsetY() {
+    return this.viewportOffset.y;
   }
 
   getZoom() {
@@ -1202,8 +1239,9 @@ export class Chart {
 
     for (let i = 0; i < this.data.length; i++) {
       const c = this.data[i];
-      if (c.time < minTime) minTime = c.time;
-      if (c.time > maxTime) maxTime = c.time;
+      const time = c.time !== undefined ? c.time : (c.timestamp !== undefined ? c.timestamp : i);
+      if (time < minTime) minTime = time;
+      if (time > maxTime) maxTime = time;
       if (c.low < minPrice) minPrice = c.low;
       if (c.high > maxPrice) maxPrice = c.high;
     }
@@ -1225,6 +1263,50 @@ export class Chart {
       min: centerPrice - visiblePriceSpan / 2,
       max: centerPrice + visiblePriceSpan / 2,
     };
+  }
+
+  handleMouseDown(event) {
+    if (event.button !== 0) {
+      return;
+    }
+    this.isPanning = true;
+    this.dragStartPoint = {
+      x: event.clientX ?? 0,
+      y: event.clientY ?? 0,
+    };
+    this.dragStartOffset = {
+      x: this.viewportOffset.x,
+      y: this.viewportOffset.y,
+    };
+  }
+
+  handleMouseMove(event) {
+    if (!this.isPanning) {
+      return;
+    }
+    const clientX = event.clientX ?? 0;
+    const clientY = event.clientY ?? 0;
+    const deltaX = clientX - this.dragStartPoint.x;
+    const deltaY = clientY - this.dragStartPoint.y;
+
+    this.viewportOffset = {
+      x: this.dragStartOffset.x + deltaX,
+      y: this.dragStartOffset.y + deltaY,
+    };
+
+    this.render();
+  }
+
+  handleMouseUp() {
+    if (this.isPanning) {
+      this.isPanning = false;
+    }
+  }
+
+  handleMouseLeave() {
+    if (this.isPanning) {
+      this.isPanning = false;
+    }
   }
 
   handleWheel(event) {
@@ -1269,11 +1351,12 @@ export class Chart {
 
     for (let i = 0; i < this.data.length; i++) {
       const candle = this.data[i];
-      const x = ((candle.time - minTime) / timeRange) * width;
-      const yHigh = height - ((candle.high - minPrice) / priceRange) * height;
-      const yLow = height - ((candle.low - minPrice) / priceRange) * height;
-      const yOpen = height - ((candle.open - minPrice) / priceRange) * height;
-      const yClose = height - ((candle.close - minPrice) / priceRange) * height;
+      const time = candle.time !== undefined ? candle.time : (candle.timestamp !== undefined ? candle.timestamp : i);
+      const x = ((time - minTime) / timeRange) * width + this.viewportOffset.x;
+      const yHigh = height - ((candle.high - minPrice) / priceRange) * height + this.viewportOffset.y;
+      const yLow = height - ((candle.low - minPrice) / priceRange) * height + this.viewportOffset.y;
+      const yOpen = height - ((candle.open - minPrice) / priceRange) * height + this.viewportOffset.y;
+      const yClose = height - ((candle.close - minPrice) / priceRange) * height + this.viewportOffset.y;
 
       const isBull = candle.close >= candle.open;
       const color = isBull ? '#00f5a0' : '#ff3b69';
@@ -1297,9 +1380,18 @@ export class Chart {
   destroy() {
     if (this.canvas && typeof this.canvas.removeEventListener === 'function') {
       this.canvas.removeEventListener('wheel', this.handleWheel);
+      this.canvas.removeEventListener('mousedown', this.handleMouseDown);
+      this.canvas.removeEventListener('mousemove', this.handleMouseMove);
+      this.canvas.removeEventListener('mouseup', this.handleMouseUp);
+      this.canvas.removeEventListener('mouseleave', this.handleMouseLeave);
     }
   }
 }
+
+/**
+ * ChartCanvas alias component for responsive gesture panning and interaction
+ */
+export class ChartCanvas extends Chart {}
 
 /**
  * Terminal Interactive Chart Engine
@@ -2054,9 +2146,8 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
           <div class="depth-bar" style="width:${depthPct}%"></div>
           <span>${item.price.toFixed(2)}</span>
           <span>${item.size.toFixed(3)}</span>
-          <span style="color:var(--text-muted)">${item.total.toFixed(3)}</span>
-        </div>
-      `;
+          <span>${item.total.toFixed(3)}</span>
+        </div>`;
     }).join('');
 
     ladderBids.innerHTML = book.bids.slice(0, 9).map(item => {
@@ -2066,18 +2157,63 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
           <div class="depth-bar" style="width:${depthPct}%"></div>
           <span>${item.price.toFixed(2)}</span>
           <span>${item.size.toFixed(3)}</span>
-          <span style="color:var(--text-muted)">${item.total.toFixed(3)}</span>
-        </div>
-      `;
+          <span>${item.total.toFixed(3)}</span>
+        </div>`;
     }).join('');
   }
 
   bindDOMEvents() {
-    document.querySelectorAll('.tf-btn[data-tf]').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        document.querySelectorAll('.tf-btn[data-tf]').forEach(b => b.classList.remove('active'));
-        e.currentTarget.classList.add('active');
-        this.activeTimeframe = e.currentTarget.dataset.tf;
+    const btnTogglePine = document.getElementById('btn-toggle-pine-dock');
+    const pineDock = document.getElementById('pine-dock');
+    if (btnTogglePine && pineDock) {
+      btnTogglePine.addEventListener('click', () => {
+        this.isDockCollapsed = !this.isDockCollapsed;
+        pineDock.classList.toggle('collapsed', this.isDockCollapsed);
+      });
+    }
+
+    const btnCollapse = document.getElementById('btn-collapse-dock');
+    if (btnCollapse && pineDock) {
+      btnCollapse.addEventListener('click', () => {
+        this.isDockCollapsed = !this.isDockCollapsed;
+        pineDock.classList.toggle('collapsed', this.isDockCollapsed);
+      });
+    }
+
+    const btnCompile = document.getElementById('btn-compile-pine');
+    const pineCode = document.getElementById('pine-editor-code');
+    const pineConsole = document.getElementById('pine-console-log');
+    if (btnCompile && pineCode && pineConsole) {
+      btnCompile.addEventListener('click', () => {
+        const result = this.pineInterpreter.execute(pineCode.value, this.feed.candles);
+        pineConsole.innerHTML = result.logs.map(log =>
+          `<div class="console-entry ${log.type}">${log.msg}</div>`
+        ).join('');
+        if (result.success) {
+          this.chart.setPlots(result.plots);
+        }
+      });
+    }
+
+    const tabBtns = document.querySelectorAll('.sidebar-tab-btn');
+    tabBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        tabBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const tab = btn.getAttribute('data-tab');
+        ['orderbook', 'mtf', 'trade'].forEach(t => {
+          const el = document.getElementById(`pane-${t}`);
+          if (el) el.style.display = t === tab ? 'flex' : 'none';
+        });
+      });
+    });
+
+    const tfBtns = document.querySelectorAll('.tf-btn[data-tf]');
+    tfBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        tfBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        this.activeTimeframe = btn.getAttribute('data-tf');
       });
     });
 
@@ -2096,78 +2232,16 @@ plot(slowEma, "Baseline Filter", "#f43f5e", 1.5)
         btnRibbon.classList.toggle('active', this.chart.showRibbon);
       });
     }
-
-    const pineDock = document.getElementById('pine-dock');
-    const btnTogglePine = document.getElementById('btn-toggle-pine-dock');
-    const btnCollapseDock = document.getElementById('btn-collapse-dock');
-
-    const toggleDock = () => {
-      this.isDockCollapsed = !this.isDockCollapsed;
-      if (pineDock) pineDock.classList.toggle('collapsed', this.isDockCollapsed);
-      if (btnCollapseDock) btnCollapseDock.textContent = this.isDockCollapsed ? '▲' : '▼';
-    };
-
-    if (btnTogglePine) btnTogglePine.addEventListener('click', toggleDock);
-    if (btnCollapseDock) btnCollapseDock.addEventListener('click', toggleDock);
-
-    const btnCompile = document.getElementById('btn-compile-pine');
-    const pineEditor = document.getElementById('pine-editor-code');
-    const pineConsole = document.getElementById('pine-console-log');
-
-    if (btnCompile && pineEditor) {
-      btnCompile.addEventListener('click', () => {
-        const code = pineEditor.value;
-        const result = this.pineInterpreter.execute(code, this.feed.candles);
-        if (pineConsole) {
-          pineConsole.innerHTML = result.logs.map(log =>
-            `<div class="console-entry ${log.type}">${log.msg}</div>`
-          ).join('');
-        }
-        if (result.success) {
-          this.chart.setPlots(result.plots);
-        }
-      });
-    }
-
-    document.querySelectorAll('.sidebar-tab-btn[data-tab]').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        document.querySelectorAll('.sidebar-tab-btn').forEach(b => b.classList.remove('active'));
-        e.currentTarget.classList.add('active');
-        const tab = e.currentTarget.dataset.tab;
-        const paneOrderbook = document.getElementById('pane-orderbook');
-        const paneMtf = document.getElementById('pane-mtf');
-        const paneTrade = document.getElementById('pane-trade');
-        if (paneOrderbook) paneOrderbook.style.display = tab === 'orderbook' ? 'flex' : 'none';
-        if (paneMtf) paneMtf.style.display = tab === 'mtf' ? 'grid' : 'none';
-        if (paneTrade) paneTrade.style.display = tab === 'trade' ? 'flex' : 'none';
-      });
-    });
   }
 
-  startMultiTimeframeSync() {
-    this.feed.subscribeCandles(() => {
-      const mtfCards = document.querySelectorAll('.mtf-card-bias');
-      if (mtfCards.length > 0 && Math.random() < 0.05) {
-        // Dynamic Screener refresh
-      }
-    });
-  }
+  startMultiTimeframeSync() {}
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   window.addEventListener('DOMContentLoaded', () => {
-    const appEl = document.getElementById('app');
-    if (appEl) {
-      new TradingTerminalApp(appEl);
+    const root = document.getElementById('app');
+    if (root) {
+      new TradingTerminalApp(root);
     }
   });
 }
-
-export {
-  MarketStructureEngine,
-  PineScriptInterpreter,
-  MarketDataFeed,
-  WebGLBackgroundRenderer,
-  InteractiveChartEngine,
-  TradingTerminalApp
-};
