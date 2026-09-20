@@ -20,26 +20,27 @@ import {
  * @returns {Chart|null} Initialized chart instance
  */
 export function mountApp(container) {
-  const mountTarget = container || (typeof document !== 'undefined' ? (document.getElementById('app') || document.body) : null);
+  const mountTarget =
+    container ||
+    (typeof document !== 'undefined' ? document.getElementById('app') || document.body : null);
   if (!mountTarget) return null;
 
   if (mountTarget.__chart) {
     return mountTarget.__chart;
   }
 
-  const canvas = document.createElement('canvas');
-  canvas.width = 800;
-  canvas.height = 500;
-  mountTarget.appendChild(canvas);
-
-  const chart = new Chart(canvas, {
-    layout: { rightMargin: 60, bottomMargin: 30 },
+  const chart = new Chart(mountTarget, {
+    width: 800,
+    height: 500,
+    priceScaleWidth: 60,
+    timeScaleHeight: 30,
   });
 
-  chart.draw();
+  chart.render();
   chart.start();
 
   mountTarget.__chart = chart;
+  mountTarget.__nexus_mounted = true;
   return chart;
 }
 
@@ -69,7 +70,8 @@ export function init(container) {
  * @param {HTMLElement} [container] - Target DOM container
  */
 export function destroy(container) {
-  const mountTarget = container || (typeof document !== 'undefined' ? document.getElementById('app') : null);
+  const mountTarget =
+    container || (typeof document !== 'undefined' ? document.getElementById('app') : null);
   if (mountTarget && mountTarget.__chart) {
     mountTarget.__chart.destroy();
     mountTarget.__chart = null;

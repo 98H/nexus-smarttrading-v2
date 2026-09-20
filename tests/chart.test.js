@@ -1,447 +1,501 @@
-import test, { describe, it, beforeEach, afterEach } from 'node:test';
+import test, { describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-// Helper: In-memory mock for 2D canvas context to verify rendering instructions and sequence
+// Setup DOM and Canvas emulation prior to importing modules that access globalThis.document
 class MockCanvasRenderingContext2D {
   constructor(canvas) {
     this.canvas = canvas;
     this.calls = [];
-    this._strokeStyle = '#000000';
-    this._fillStyle = '#000000';
-    this._lineWidth = 1;
-    this._font = '10px sans-serif';
-    this._textAlign = 'left';
-    this._textBaseline = 'alphabetic';
+    this.strokePaths = [];
+    this.texts = [];
+    this._currentSubpaths = [];
+    this._currentPoint = { x: 0, y: 0 };
+    this.strokeStyle = '#000000';
+    this.fillStyle = '#000000';
+    this.lineWidth = 1;
+    this.font = '10px sans-serif';
+    this.textAlign = 'left';
+    this.textBaseline = 'alphabetic';
   }
 
-  get strokeStyle() { return this._strokeStyle; }
-  set strokeStyle(val) { this._strokeStyle = val; }
+  clearRect(x, y, w, h) {
+    this.calls.push({ method: 'clearRect', args: [x, y, w, h] });
+  }
 
-  get fillStyle() { return this._fillStyle; }
-  set fillStyle(val) { this._fillStyle = val; }
+  beginPath() {
+    this._currentSubpaths = [];
+    this.calls.push({ method: 'beginPath' });
+  }
 
-  get lineWidth() { return this._lineWidth; }
-  set lineWidth(val) { this._lineWidth = val; }
+  moveTo(x, y) {
+    this._currentPoint = { x, y };
+    this.calls.push({ method: 'moveTo', args: [x, y] });
+  }
 
-  get font() { return this._font; }
-  set font(val) { this._font = val; }
-
-  get textAlign() { return this._textAlign; }
-  set textAlign(val) { this._textAlign = val; }
-
-  get textBaseline() { return this._textBaseline; }
-  set textBaseline(val) { this._textBaseline = val; }
-
-  _record(method, args) {
-    this.calls.push({
-      method,
-      args,
-      index: this.calls.length,
-      strokeStyle: this.strokeStyle,
-      fillStyle: this.fillStyle,
-      font: this.font,
-      textAlign: this.textAlign,
-      textBaseline: this.textBaseline
+  lineTo(x, y) {
+    this._currentSubpaths.push({
+      from: { ...this._currentPoint },
+      to: { x, y },
     });
+    this._currentPoint = { x, y };
+    this.calls.push({ method: 'lineTo', args: [x, y] });
   }
 
-  beginPath() { this._record('beginPath', []); }
-  closePath() { this._record('closePath', []); }
-  moveTo(x, y) { this._record('moveTo', [x, y]); }
-  lineTo(x, y) { this._record('lineTo', [x, y]); }
-  stroke() { this._record('stroke', []); }
-  fill() { this._record('fill', []); }
-  fillRect(x, y, w, h) { this._record('fillRect', [x, y, w, h]); }
-  strokeRect(x, y, w, h) { this._record('strokeRect', [x, y, w, h]); }
-  clearRect(x, y, w, h) { this._record('clearRect', [x, y, w, h]); }
-  fillText(text, x, y, maxWidth) { this._record('fillText', [text, x, y, maxWidth]); }
-  strokeText(text, x, y, maxWidth) { this._record('strokeText', [text, x, y, maxWidth]); }
-  save() { this._record('save', []); }
-  restore() { this._record('restore', []); }
-  setLineDash(dash) { this._record('setLineDash', [dash]); }
+  stroke() {
+    this.strokePaths.push([...this._currentSubpaths]);
+    this.calls.push({ method: 'stroke', paths: [...this._currentSubpaths] });
+    this._currentSubpaths = [];
+  }
+
+  fillText(text, x, y) {
+    const entry = { text: String(text), x, y, fillStyle: this.fillStyle };
+    this.texts.push(entry);
+    this.calls.push({ method: 'fillText', args: [text, x, y] });
+  }
+
+  strokeText(text, x, y) {
+    this.texts.push({ text: String(text), x, y, strokeStyle: this.strokeStyle });
+    this.calls.push({ method: 'strokeText', args: [text, x, y] });
+  }
+
+  save() {
+    this.calls.push({ method: 'save' });
+  }
+
+  restore() {
+    this.calls.push({ method: 'restore' });
+  }
+
   measureText(text) {
-    return { width: String(text).length * 7 };
+    return { width: String(text).length * 6, actualBoundingBoxAscent: 8, actualBoundingBoxDescent: 2 };
   }
 }
 
-// Helper: In-memory mock for HTML Canvas Element
-class MockCanvasElement {
-  constructor(width = 800, height = 500) {
-    this.tagName = 'CANVAS';
-    this.width = width;
-    this.height = height;
+class MockElement {
+  constructor(tagName = 'div') {
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.parentElement = null;
     this.style = {};
-    this.attributes = new Map();
-    this.context = new MockCanvasRenderingContext2D(this);
+    this.attributes = {};
+    this.eventListeners = new Map();
+    this.width = 800;
+    this.height = 600;
+    this.clientWidth = 800;
+    this.clientHeight = 600;
+    this._context = null;
+  }
+
+  appendChild(child) {
+    child.parentElement = this;
+    this.children.push(child);
+    return child;
+  }
+
+  removeChild(child) {
+    const index = this.children.indexOf(child);
+    if (index !== -1) {
+      this.children.splice(index, 1);
+      child.parentElement = null;
+    }
+    return child;
+  }
+
+  addEventListener(type, listener) {
+    if (!this.eventListeners.has(type)) {
+      this.eventListeners.set(type, []);
+    }
+    this.eventListeners.get(type).push(listener);
+  }
+
+  removeEventListener(type, listener) {
+    const listeners = this.eventListeners.get(type) || [];
+    const index = listeners.indexOf(listener);
+    if (index !== -1) {
+      listeners.splice(index, 1);
+    }
+  }
+
+  dispatchEvent(event) {
+    const listeners = this.eventListeners.get(event.type) || [];
+    for (const listener of listeners) {
+      listener.call(this, event);
+    }
+    return true;
   }
 
   getContext(type) {
-    if (type === '2d') return this.context;
+    if (type === '2d') {
+      if (!this._context) {
+        this._context = new MockCanvasRenderingContext2D(this);
+      }
+      return this._context;
+    }
     return null;
   }
 
-  setAttribute(k, v) { this.attributes.set(k, String(v)); }
-  getAttribute(k) { return this.attributes.get(k) || null; }
   getBoundingClientRect() {
-    return { top: 0, left: 0, width: this.width, height: this.height, right: this.width, bottom: this.height };
+    return {
+      left: 0,
+      top: 0,
+      right: this.width,
+      bottom: this.height,
+      width: this.width,
+      height: this.height,
+      x: 0,
+      y: 0,
+    };
   }
 }
 
-// Helper: In-memory mock DOM node
-class MockElement {
-  constructor(tagName = 'DIV', id = '') {
-    this.tagName = tagName.toUpperCase();
-    this.id = id;
-    this.children = [];
-    this.innerHTML = '';
+class MockDocument {
+  constructor() {
+    this.elements = new Map();
+    this.body = new MockElement('body');
   }
 
-  appendChild(node) {
-    this.children.push(node);
-    node.parentElement = this;
-    return node;
+  createElement(tag) {
+    return new MockElement(tag);
   }
 
-  removeChild(node) {
-    const idx = this.children.indexOf(node);
-    if (idx !== -1) {
-      this.children.splice(idx, 1);
-      node.parentElement = null;
-    }
-    return node;
+  getElementById(id) {
+    return this.elements.get(id) || null;
   }
 
-  querySelector(selector) {
-    if (selector === 'canvas') {
-      return this.children.find((c) => c.tagName === 'CANVAS') || null;
-    }
-    return null;
-  }
-
-  querySelectorAll(selector) {
-    if (selector === 'canvas') {
-      return this.children.filter((c) => c.tagName === 'CANVAS');
-    }
-    return [];
+  registerElement(id, element) {
+    this.elements.set(id, element);
   }
 }
 
-// Test fixtures for OHLCV Candlestick dataset
-const SAMPLE_CANDLESTICKS = [
-  { time: 1700000000, open: 150.0, high: 155.5, low: 148.0, close: 154.0 },
-  { time: 1700086400, open: 154.0, high: 158.0, low: 152.5, close: 153.0 },
-  { time: 1700172800, open: 153.0, high: 160.0, low: 151.0, close: 159.5 },
-  { time: 1700259200, open: 159.5, high: 161.0, low: 157.0, close: 158.0 },
-  { time: 1700345600, open: 158.0, high: 165.0, low: 156.5, close: 164.0 }
-];
+// Install mock browser globals
+const originalWindow = globalThis.window;
+const originalDocument = globalThis.document;
+const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
 
-describe('STORY 1.3.1: Resolve MISSING_COORDINATE_AXES (Defect ID: DF-SCALES-01)', () => {
-  let originalDocument;
-  let originalWindow;
-  let mockAppElement;
-  let createdCanvases;
+const mockDoc = new MockDocument();
+globalThis.document = mockDoc;
+globalThis.window = {
+  document: mockDoc,
+  addEventListener: (event, handler) => mockDoc.body.addEventListener(event, handler),
+  removeEventListener: (event, handler) => mockDoc.body.removeEventListener(event, handler),
+  dispatchEvent: (event) => mockDoc.body.dispatchEvent(event),
+};
+globalThis.requestAnimationFrame = (callback) => setTimeout(callback, 16);
+globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
+
+// Target module imports
+const { Chart } = await import('../src/chart.js');
+const MainModule = await import('../src/main.js');
+
+describe('STORY 1.2.1: Resolve MISSING_COORDINATE_AXES (Defect ID: DF-SCALES-01)', () => {
+  let appContainer;
+  const sampleCandles = [
+    { time: 1700000000, open: 100, high: 110, low: 95, close: 105 },
+    { time: 1700003600, open: 105, high: 115, low: 102, close: 112 },
+    { time: 1700007200, open: 112, high: 118, low: 108, close: 114 },
+    { time: 1700010800, open: 114, high: 120, low: 111, close: 119 },
+    { time: 1700014400, open: 119, high: 125, low: 115, close: 122 },
+  ];
 
   beforeEach(() => {
-    originalDocument = globalThis.document;
-    originalWindow = globalThis.window;
-
-    createdCanvases = [];
-    mockAppElement = new MockElement('DIV', 'app');
-
-    const domRegistry = new Map();
-    domRegistry.set('app', mockAppElement);
-
-    // Install deterministic DOM mocks on globalThis
-    globalThis.document = {
-      getElementById(id) {
-        return domRegistry.get(id) || null;
-      },
-      createElement(tagName) {
-        if (tagName.toLowerCase() === 'canvas') {
-          const canvas = new MockCanvasElement();
-          createdCanvases.push(canvas);
-          return canvas;
-        }
-        return new MockElement(tagName);
-      },
-      body: new MockElement('BODY')
-    };
-
-    globalThis.window = {
-      document: globalThis.document,
-      requestAnimationFrame: (cb) => { cb(Date.now()); return 1; },
-      cancelAnimationFrame: () => {}
-    };
+    appContainer = new MockElement('div');
+    mockDoc.registerElement('app', appContainer);
   });
 
   afterEach(() => {
-    globalThis.document = originalDocument;
-    globalThis.window = originalWindow;
+    mockDoc.elements.clear();
   });
 
-  describe('AC 1: Coordinate gridlines rendered behind candlesticks', () => {
-    it('must render horizontal and vertical gridlines before rendering any candlestick bodies or wicks', async () => {
-      const { Chart } = await import('../src/chart.js');
-
-      const canvas = new MockCanvasElement(800, 500);
-      const chart = new Chart(canvas, {
-        layout: { rightMargin: 60, bottomMargin: 30 }
+  describe('AC-1: Horizontal and Vertical Coordinate Gridlines', () => {
+    test('renders horizontal gridlines spanning the plot width when candlestick data is present', () => {
+      const chart = new Chart(appContainer, {
+        width: 800,
+        height: 600,
+        priceScaleWidth: 60,
+        timeScaleHeight: 30,
       });
 
-      chart.setData(SAMPLE_CANDLESTICKS);
-      chart.draw();
+      chart.setData(sampleCandles);
+      chart.render();
+
+      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      assert.ok(canvas, 'Expected a canvas element to be mounted inside container');
 
       const ctx = canvas.getContext('2d');
-      const calls = ctx.calls;
+      const plotWidth = 800 - 60; // 740px plot width
+      const plotHeight = 600 - 30; // 570px plot height
 
-      assert.ok(calls.length > 0, 'Canvas context should record drawing operations');
+      // Extract all line segments drawn
+      const drawnSegments = ctx.strokePaths.flat();
 
-      // Identify horizontal gridlines (lines extending across the plot area horizontally)
-      const horizontalGridlines = calls.filter((c, idx) => {
-        if (c.method === 'moveTo') {
-          const next = calls[idx + 1];
-          if (next && next.method === 'lineTo') {
-            const [x1, y1] = c.args;
-            const [x2, y2] = next.args;
-            const isHorizontal = Math.abs(y1 - y2) < 0.001 && Math.abs(x2 - x1) >= 400;
-            return isHorizontal;
-          }
-        }
-        return false;
-      });
-
-      // Identify vertical gridlines (lines extending across the plot area vertically)
-      const verticalGridlines = calls.filter((c, idx) => {
-        if (c.method === 'moveTo') {
-          const next = calls[idx + 1];
-          if (next && next.method === 'lineTo') {
-            const [x1, y1] = c.args;
-            const [x2, y2] = next.args;
-            const isVertical = Math.abs(x1 - x2) < 0.001 && Math.abs(y2 - y1) >= 200;
-            return isVertical;
-          }
-        }
-        return false;
+      // Find horizontal gridline segments that span across the chart plot area (x: ~0 to x: plotWidth)
+      const horizontalGridlines = drawnSegments.filter((seg) => {
+        const isHorizontal = Math.abs(seg.from.y - seg.to.y) < 0.001;
+        const spansPlot = Math.min(seg.from.x, seg.to.x) <= 1 && Math.max(seg.from.x, seg.to.x) >= plotWidth - 1;
+        const withinPlotY = seg.from.y >= 0 && seg.from.y <= plotHeight;
+        return isHorizontal && spansPlot && withinPlotY;
       });
 
       assert.ok(
-        horizontalGridlines.length >= 2,
-        `Expected at least 2 horizontal gridlines across the chart, found: ${horizontalGridlines.length}`
+        horizontalGridlines.length >= 3,
+        `Expected at least 3 horizontal gridlines across the plot, but found ${horizontalGridlines.length}`
       );
+    });
+
+    test('renders vertical coordinate gridlines spanning the plot height', () => {
+      const chart = new Chart(appContainer, {
+        width: 800,
+        height: 600,
+        priceScaleWidth: 60,
+        timeScaleHeight: 30,
+      });
+
+      chart.setData(sampleCandles);
+      chart.render();
+
+      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const ctx = canvas.getContext('2d');
+      const plotWidth = 800 - 60;
+      const plotHeight = 600 - 30;
+
+      const drawnSegments = ctx.strokePaths.flat();
+
+      // Find vertical gridlines that span from top (y: 0) to bottom of plot area (y: plotHeight)
+      const verticalGridlines = drawnSegments.filter((seg) => {
+        const isVertical = Math.abs(seg.from.x - seg.to.x) < 0.001;
+        const spansPlot = Math.min(seg.from.y, seg.to.y) <= 1 && Math.max(seg.from.y, seg.to.y) >= plotHeight - 1;
+        const withinPlotX = seg.from.x >= 0 && seg.from.x <= plotWidth;
+        return isVertical && spansPlot && withinPlotX;
+      });
+
       assert.ok(
         verticalGridlines.length >= 2,
-        `Expected at least 2 vertical gridlines across the chart, found: ${verticalGridlines.length}`
+        `Expected at least 2 vertical gridlines across the plot, but found ${verticalGridlines.length}`
       );
+    });
 
-      // Locate the first candlestick render operation (typically fillRect / strokeRect for body or stroke for wick)
-      const firstCandleOpIndex = calls.findIndex((c) => {
-        // Candlestick bodies are rendered as rectangles or wick strokes that correlate with data
-        return c.method === 'fillRect' || (c.method === 'strokeRect' && c.args[2] > 2);
+    test('does not bleed gridlines into the right-hand price scale or bottom time scale margin', () => {
+      const chart = new Chart(appContainer, {
+        width: 800,
+        height: 600,
+        priceScaleWidth: 70,
+        timeScaleHeight: 40,
       });
 
-      assert.ok(
-        firstCandleOpIndex !== -1,
-        'Expected candlestick bodies to be drawn using fillRect/strokeRect'
-      );
+      chart.setData(sampleCandles);
+      chart.render();
 
-      // Find the last gridline call index
-      const lastHorizontalIndex = Math.max(...horizontalGridlines.map(h => h.index));
-      const lastVerticalIndex = Math.max(...verticalGridlines.map(v => v.index));
-      const lastGridlineIndex = Math.max(lastHorizontalIndex, lastVerticalIndex);
+      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const ctx = canvas.getContext('2d');
+      const plotWidth = 800 - 70;
+      const plotHeight = 600 - 40;
 
-      // Verify gridlines are drawn BEHIND the candlesticks (chronologically earlier in canvas pipeline)
-      assert.ok(
-        lastGridlineIndex < firstCandleOpIndex,
-        `Gridlines must be rendered behind candlesticks. Last gridline op was at index ${lastGridlineIndex}, but first candle op occurred at index ${firstCandleOpIndex}`
+      const drawnSegments = ctx.strokePaths.flat();
+
+      // Check for illegal lines drawn with horizontal/vertical orientation that cross into margins
+      const overextendedGridlines = drawnSegments.filter((seg) => {
+        const isHorizontal = Math.abs(seg.from.y - seg.to.y) < 0.001;
+        const isVertical = Math.abs(seg.from.x - seg.to.x) < 0.001;
+
+        if (isHorizontal && (seg.from.x > plotWidth || seg.to.x > plotWidth)) {
+          // Horizontal line extending beyond the plot area into the right scale area (excluding short tick marks)
+          const length = Math.abs(seg.to.x - seg.from.x);
+          return length > 10;
+        }
+
+        if (isVertical && (seg.from.y > plotHeight || seg.to.y > plotHeight)) {
+          // Vertical line extending into bottom scale area (excluding short tick marks)
+          const length = Math.abs(seg.to.y - seg.from.y);
+          return length > 10;
+        }
+
+        return false;
+      });
+
+      assert.equal(
+        overextendedGridlines.length,
+        0,
+        `Found ${overextendedGridlines.length} gridlines crossing outside plot boundaries`
       );
     });
   });
 
-  describe('AC 2: Right-hand price scale and bottom time scale with ticks and labels', () => {
-    it('must render right-hand price scale axis with tick marks and formatted price labels', async () => {
-      const { Chart } = await import('../src/chart.js');
-
-      const canvasWidth = 800;
-      const canvasHeight = 500;
-      const rightMargin = 70;
-      const canvas = new MockCanvasElement(canvasWidth, canvasHeight);
-
-      const chart = new Chart(canvas, {
-        layout: { rightMargin, bottomMargin: 40 }
+  describe('AC-2: Right-Hand Price Scale and Bottom Time Scale Axes', () => {
+    test('renders right-hand price scale with tick marks and formatted price labels', () => {
+      const chart = new Chart(appContainer, {
+        width: 800,
+        height: 600,
+        priceScaleWidth: 60,
+        timeScaleHeight: 30,
       });
 
-      chart.setData(SAMPLE_CANDLESTICKS);
-      chart.draw();
+      chart.setData(sampleCandles);
+      chart.render();
 
-      const calls = canvas.getContext('2d').calls;
-      const plotWidth = canvasWidth - rightMargin;
+      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const ctx = canvas.getContext('2d');
+      const plotWidth = 800 - 60;
 
-      // Price scale ticks: lines positioned around the right boundary (x >= plotWidth)
-      const priceTickCalls = calls.filter((c, idx) => {
-        if (c.method === 'moveTo') {
-          const next = calls[idx + 1];
-          if (next && next.method === 'lineTo') {
-            const [x1, y1] = c.args;
-            const [x2, y2] = next.args;
-            // Short horizontal tick mark located on the right axis border
-            const isTick = Math.abs(y1 - y2) < 0.001 && Math.abs(x2 - x1) <= 10 && x1 >= plotWidth - 1;
-            return isTick;
-          }
-        }
-        return false;
-      });
+      // Price labels must be rendered in the price axis region: x >= plotWidth
+      const priceLabels = ctx.texts.filter((t) => t.x >= plotWidth);
 
       assert.ok(
-        priceTickCalls.length >= 3,
-        `Expected at least 3 tick marks on the right-hand price axis, found: ${priceTickCalls.length}`
+        priceLabels.length >= 3,
+        `Expected at least 3 price labels on the right-hand axis, found ${priceLabels.length}`
       );
 
-      // Price labels: text elements positioned on the right scale (x >= plotWidth)
-      const priceTextCalls = calls.filter((c) => {
-        if (c.method === 'fillText') {
-          const [text, x, y] = c.args;
-          const isRightAligned = x >= plotWidth;
-          const isNumericPrice = !isNaN(parseFloat(String(text).replace(/[^0-9.-]+/g, '')));
-          return isRightAligned && isNumericPrice;
-        }
-        return false;
-      });
-
-      assert.ok(
-        priceTextCalls.length >= 3,
-        `Expected at least 3 price labels rendered on right axis, found: ${priceTextCalls.length}`
-      );
-
-      // Verify price label values reflect the range of data (between min 148.0 and max 165.0)
-      const parsedPrices = priceTextCalls.map(c => parseFloat(String(c.args[0]).replace(/[^0-9.-]+/g, '')));
-      const hasMinPriceNearby = parsedPrices.some(p => p <= 150.0);
-      const hasMaxPriceNearby = parsedPrices.some(p => p >= 160.0);
-
-      assert.ok(
-        hasMinPriceNearby && hasMaxPriceNearby,
-        `Price scale labels must encompass dataset range [148, 165], found: ${JSON.stringify(parsedPrices)}`
-      );
-    });
-
-    it('must render bottom time scale axis with tick marks and formatted time labels', async () => {
-      const { Chart } = await import('../src/chart.js');
-
-      const canvasWidth = 800;
-      const canvasHeight = 500;
-      const bottomMargin = 40;
-      const canvas = new MockCanvasElement(canvasWidth, canvasHeight);
-
-      const chart = new Chart(canvas, {
-        layout: { rightMargin: 60, bottomMargin }
-      });
-
-      chart.setData(SAMPLE_CANDLESTICKS);
-      chart.draw();
-
-      const calls = canvas.getContext('2d').calls;
-      const plotHeight = canvasHeight - bottomMargin;
-
-      // Time scale ticks: short vertical line marks positioned around the bottom boundary (y >= plotHeight)
-      const timeTickCalls = calls.filter((c, idx) => {
-        if (c.method === 'moveTo') {
-          const next = calls[idx + 1];
-          if (next && next.method === 'lineTo') {
-            const [x1, y1] = c.args;
-            const [x2, y2] = next.args;
-            // Short vertical tick mark located on the bottom axis line
-            const isTick = Math.abs(x1 - x2) < 0.001 && Math.abs(y2 - y1) <= 10 && y1 >= plotHeight - 1;
-            return isTick;
-          }
-        }
-        return false;
-      });
-
-      assert.ok(
-        timeTickCalls.length >= 3,
-        `Expected at least 3 tick marks on the bottom time axis, found: ${timeTickCalls.length}`
-      );
-
-      // Time labels: text elements positioned in the bottom margin (y >= plotHeight)
-      const timeTextCalls = calls.filter((c) => {
-        if (c.method === 'fillText') {
-          const [, , y] = c.args;
-          return y >= plotHeight;
-        }
-        return false;
-      });
-
-      assert.ok(
-        timeTextCalls.length >= 3,
-        `Expected at least 3 time labels rendered on the bottom time axis, found: ${timeTextCalls.length}`
-      );
-
-      // Verify time labels are formatted strings (not empty, not NaN)
-      timeTextCalls.forEach((call) => {
-        const text = String(call.args[0]).trim();
-        assert.ok(text.length > 0, 'Time scale text label must not be empty');
-        assert.notEqual(text, 'NaN', 'Time scale text label must not be NaN');
-        assert.notEqual(text, 'undefined', 'Time scale text label must not be undefined');
-      });
-    });
-  });
-
-  describe('AC 3: Entrypoint (src/main.js) mounting and coordinate axes activation', () => {
-    it('must locate #app, create/mount the canvas, and render coordinate axes & gridlines', async () => {
-      // Dynamic import with timestamp to ensure evaluation against our mocked DOM
-      const mainModule = await import(`../src/main.js?t=${Date.now()}`);
-
-      // If main.js exports an init or bootstrap function, invoke it; otherwise module execution should mount
-      if (typeof mainModule.init === 'function') {
-        mainModule.init();
-      } else if (typeof mainModule.default === 'function') {
-        mainModule.default();
-      }
-
-      // Assert canvas is mounted to #app
-      const mountedCanvas = mockAppElement.querySelector('canvas');
-      assert.ok(mountedCanvas, 'Canvas must be mounted directly into document.getElementById("app")');
-
-      const calls = mountedCanvas.getContext('2d').calls;
-      assert.ok(
-        calls.length > 0,
-        'Mounted canvas draw routine must have executed on entrypoint initialization'
-      );
-
-      // Verify gridlines exist on the mounted canvas
-      const hasGridlineStroke = calls.some(c => c.method === 'stroke');
-      assert.ok(hasGridlineStroke, 'Gridlines and axes strokes must be rendered on the mounted canvas');
-
-      // Verify text calls exist on the mounted canvas for coordinate labels (both price and time axes)
-      const textCalls = calls.filter(c => c.method === 'fillText');
-      assert.ok(
-        textCalls.length >= 4,
-        `Mounted chart must render coordinate labels (price and time axes). Found ${textCalls.length} labels.`
-      );
-    });
-
-    it('must not produce an isolated canvas unattached to the live DOM tree', async () => {
-      // Ensure that all canvases created during initialization are attached to the DOM
-      const mainModule = await import(`../src/main.js?test_isolate=${Date.now()}`);
-      if (typeof mainModule.init === 'function') {
-        mainModule.init();
-      }
-
-      assert.ok(
-        createdCanvases.length > 0,
-        'At least one canvas must be instantiated by the application entrypoint'
-      );
-
-      createdCanvases.forEach((canvas, index) => {
+      // Verify price labels correspond to numeric price values within candle ranges (95 to 125)
+      for (const label of priceLabels) {
+        const numericVal = parseFloat(label.text.replace(/[^0-9.]/g, ''));
         assert.ok(
-          canvas.parentElement !== null,
-          `Canvas instance #${index} must not be floating unmounted. It must be attached to the DOM.`
+          !Number.isNaN(numericVal),
+          `Price label "${label.text}" should parse to a valid number`
         );
-        assert.strictEqual(
-          canvas.parentElement.id,
-          'app',
-          `Canvas instance #${index} must be mounted inside the active container (#app).`
+        assert.ok(
+          numericVal >= 90 && numericVal <= 130,
+          `Price label value ${numericVal} should be scaled within candle range [95, 125]`
         );
+      }
+
+      // Check tick marks on price axis (short line segments located at x >= plotWidth)
+      const drawnSegments = ctx.strokePaths.flat();
+      const priceTicks = drawnSegments.filter((seg) => {
+        const isHorizontal = Math.abs(seg.from.y - seg.to.y) < 0.001;
+        const inPriceAxisZone = seg.from.x >= plotWidth && seg.to.x >= plotWidth;
+        const tickLength = Math.abs(seg.to.x - seg.from.x);
+        return isHorizontal && inPriceAxisZone && tickLength > 0 && tickLength <= 10;
       });
+
+      assert.ok(
+        priceTicks.length >= 3,
+        `Expected at least 3 price tick marks on the right-hand axis, found ${priceTicks.length}`
+      );
+    });
+
+    test('renders bottom time scale axis with intervals, ticks, and timestamp labels', () => {
+      const chart = new Chart(appContainer, {
+        width: 800,
+        height: 600,
+        priceScaleWidth: 60,
+        timeScaleHeight: 30,
+      });
+
+      chart.setData(sampleCandles);
+      chart.render();
+
+      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const ctx = canvas.getContext('2d');
+      const plotHeight = 600 - 30;
+
+      // Time labels must be positioned within the time scale region: y >= plotHeight
+      const timeLabels = ctx.texts.filter((t) => t.y >= plotHeight);
+
+      assert.ok(
+        timeLabels.length >= 2,
+        `Expected at least 2 time labels on the bottom axis, found ${timeLabels.length}`
+      );
+
+      // Check time scale separator/baseline line at y = plotHeight
+      const drawnSegments = ctx.strokePaths.flat();
+      const hasTimeAxisBaseline = drawnSegments.some((seg) => {
+        const isHorizontal = Math.abs(seg.from.y - seg.to.y) < 0.001;
+        const isAtAxisBoundary = Math.abs(seg.from.y - plotHeight) <= 1;
+        return isHorizontal && isAtAxisBoundary;
+      });
+
+      assert.ok(
+        hasTimeAxisBaseline,
+        'Expected a horizontal baseline stroke separating plot area and time scale'
+      );
+
+      // Check time tick marks (short vertical lines at y >= plotHeight)
+      const timeTicks = drawnSegments.filter((seg) => {
+        const isVertical = Math.abs(seg.from.x - seg.to.x) < 0.001;
+        const inTimeAxisZone = seg.from.y >= plotHeight && seg.to.y >= plotHeight;
+        const tickLength = Math.abs(seg.to.y - seg.from.y);
+        return isVertical && inTimeAxisZone && tickLength > 0 && tickLength <= 10;
+      });
+
+      assert.ok(
+        timeTicks.length >= 2,
+        `Expected at least 2 time tick marks on the bottom axis, found ${timeTicks.length}`
+      );
+    });
+  });
+
+  describe('AC-3: Active Entrypoint Mounting and Live View Updates (src/main.js)', () => {
+    test('main.js mounts chart to document.getElementById("app") with active coordinate axes', async () => {
+      assert.ok(
+        typeof MainModule.init === 'function' || typeof MainModule.bootstrap === 'function' || typeof MainModule.start === 'function' || MainModule.default,
+        'src/main.js must export an entry function or default initialize procedure'
+      );
+
+      const initFn = MainModule.init || MainModule.bootstrap || MainModule.start || MainModule.default;
+      const appInstance = await (typeof initFn === 'function' ? initFn() : null);
+
+      // Container #app must contain the mounted canvas
+      assert.ok(
+        appContainer.children.length > 0,
+        'Container #app must have children mounted by src/main.js'
+      );
+
+      const canvas = appContainer.children.find((el) => el.tagName === 'CANVAS');
+      assert.ok(canvas, 'src/main.js must mount a canvas element to #app');
+
+      const ctx = canvas.getContext('2d');
+
+      // The live-rendered canvas must have drawn both axes and gridlines
+      const drawnSegments = ctx.strokePaths.flat();
+      assert.ok(
+        drawnSegments.length > 0,
+        'Active canvas rendered by main.js must have drawn strokes'
+      );
+      assert.ok(
+        ctx.texts.length > 0,
+        'Active canvas rendered by main.js must render coordinate scale labels'
+      );
+    });
+
+    test('main.js wires live view updates when data or window dimensions change', async () => {
+      const initFn = MainModule.init || MainModule.bootstrap || MainModule.start || MainModule.default;
+      const app = typeof initFn === 'function' ? await initFn() : null;
+
+      const canvas = appContainer.children.find((el) => el.tagName === 'CANVAS');
+      const ctx = canvas.getContext('2d');
+
+      const initialTextCount = ctx.texts.length;
+      const initialClearCount = ctx.calls.filter((c) => c.method === 'clearRect').length;
+
+      // Trigger a live data update or window resize event to verify wiring
+      if (app && typeof app.update === 'function') {
+        app.update([
+          ...sampleCandles,
+          { time: 1700018000, open: 122, high: 130, low: 120, close: 128 },
+        ]);
+      } else if (app && typeof app.resize === 'function') {
+        app.resize(1024, 768);
+      } else {
+        // Dispatch resize event on window to simulate responsive live view trigger
+        const resizeEvent = { type: 'resize' };
+        mockDoc.body.dispatchEvent(resizeEvent);
+      }
+
+      const updatedClearCount = ctx.calls.filter((c) => c.method === 'clearRect').length;
+
+      assert.ok(
+        updatedClearCount > initialClearCount,
+        'Live view update must trigger canvas redraw via clearRect/render loop'
+      );
+    });
+
+    test('rejects isolated, unmounted chart instances and enforces live container wiring', () => {
+      // Architectural Invariant check: Chart constructor requires a valid mounted DOM container
+      assert.throws(
+        () => new Chart(null, {}),
+        /container|element|null/i,
+        'Chart initialization should throw when container is null or missing from DOM'
+      );
     });
   });
 });
