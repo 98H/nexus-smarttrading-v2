@@ -860,7 +860,7 @@ export function initApp(options = {}) {
   const existingCanvas =
     (typeof root.querySelector === 'function' ? root.querySelector('canvas') : null) ||
     (Array.isArray(root.children)
-      ? root.children.find((c) => c && (c.tagName || '').toUpperCase() === 'CANVAS')
+      ? Array.from(root.children).find((c) => c && (c.tagName || '').toUpperCase() === 'CANVAS')
       : null);
 
   // Idempotently purge pre-existing DOM elements before mounting, preserving active canvas

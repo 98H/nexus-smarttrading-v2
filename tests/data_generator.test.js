@@ -60,7 +60,6 @@ class MockCanvasRenderingContext2D {
 
 class MockHTMLCanvasElement {
   constructor() {
-    this.tagName = 'CANVAS';
     this.width = 800;
     this.height = 600;
     this._context = new MockCanvasRenderingContext2D(this);
@@ -89,7 +88,7 @@ class MockElement {
 
   querySelector(selector) {
     if (selector === 'canvas') {
-      return this.children.find((c) => c.tagName === 'CANVAS') || null;
+      return Array.from(this.children).find((c) => c.tagName === 'CANVAS') || null;
     }
     return null;
   }
