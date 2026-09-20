@@ -36,10 +36,21 @@ body {
   overflow: hidden;
 }
 
-/* Top Navigation Header */
-header,
-.top-nav,
-.nav-header {
+/* Top Navigation Header Rules */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  height: 52px;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+  z-index: 10;
+  gap: 16px;
+}
+
+.top-nav {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -116,9 +127,24 @@ select.ticker {
   color: #ffffff;
 }
 
-/* Workspace Container — Flex layout hosting chart and side panels */
-.workspace-container,
-main.workspace {
+/* Structured Workspace Container — Flex display */
+.workspace-container {
+  display: flex;
+  flex: 1;
+  height: calc(100vh - 52px);
+  overflow: hidden;
+  position: relative;
+}
+
+.workspace {
+  display: flex;
+  flex: 1;
+  height: calc(100vh - 52px);
+  overflow: hidden;
+  position: relative;
+}
+
+main {
   display: flex;
   flex: 1;
   height: calc(100vh - 52px);
@@ -145,11 +171,28 @@ main.workspace {
   display: block;
 }
 
-/* Side Panels */
-.side-panel,
-aside,
-.orders-panel,
-.tools-panel {
+/* Side Panels — Orders & Tools */
+aside {
+  width: 280px;
+  background-color: var(--bg-secondary);
+  border-left: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+
+.side-panel {
+  width: 280px;
+  background-color: var(--bg-secondary);
+  border-left: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+
+.orders-panel {
   width: 280px;
   background-color: var(--bg-secondary);
   border-left: 1px solid var(--border-color);
@@ -161,9 +204,13 @@ aside,
 
 .tools-panel {
   width: 64px;
-  border-left: none;
+  background-color: var(--bg-secondary);
   border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
   align-items: center;
+  overflow-y: auto;
 }
 
 .panel-header {
