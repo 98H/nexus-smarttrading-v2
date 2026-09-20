@@ -234,9 +234,18 @@ function buildStructuredLayout(mountTarget) {
       class: 'workspace-container workspace',
       'data-testid': 'workspace',
     });
+    mountTarget.appendChild(workspace);
+  }
 
-    // Auxiliary tools side panel
-    const toolsPanel = createEl('aside', {
+  // Ensure auxiliary tools side panel exists inside workspace
+  let toolsPanel =
+    workspace.querySelector('[data-testid="tools-panel"]') ||
+    workspace.querySelector('.tools-panel') ||
+    workspace.querySelector('aside.tools') ||
+    workspace.querySelector('.side-panel-tools');
+
+  if (!toolsPanel) {
+    toolsPanel = createEl('aside', {
       class: 'tools-panel side-panel side-panel-tools',
       'data-testid': 'tools-panel',
     });
@@ -258,30 +267,50 @@ function buildStructuredLayout(mountTarget) {
       toolsPanel.appendChild(toolBtn);
     }
     workspace.appendChild(toolsPanel);
+  }
 
-    // Dedicated chart workspace hosting canvas
-    const chartContainer = createEl('div', {
+  // Ensure dedicated chart workspace container exists inside workspace
+  let chartContainer =
+    workspace.querySelector('[data-testid="chart-container"]') ||
+    workspace.querySelector('.chart-container') ||
+    workspace.querySelector('.chart-workspace');
+
+  if (!chartContainer) {
+    chartContainer = createEl('div', {
       class: 'chart-workspace chart-container',
       'data-testid': 'chart-container',
     });
-
-    let canvas = mountTarget.querySelector ? mountTarget.querySelector('canvas') : null;
-    if (canvas && canvas.parentElement === mountTarget) {
-      mountTarget.removeChild(canvas);
-    }
-    if (!canvas) {
-      canvas = createEl('canvas', {
-        id: 'chart-canvas',
-        class: 'chart-canvas',
-        'data-testid': 'chart-canvas',
-      });
-    }
-    ensureCanvasCompat(canvas);
-    chartContainer.appendChild(canvas);
     workspace.appendChild(chartContainer);
+  }
 
-    // Auxiliary orders side panel
-    const ordersPanel = createEl('aside', {
+  // Ensure canvas is nested inside chartContainer rather than an unstructured root sibling
+  let canvas =
+    chartContainer.querySelector('canvas') ||
+    chartContainer.querySelector('[data-testid="chart-canvas"]') ||
+    workspace.querySelector('canvas') ||
+    mountTarget.querySelector('canvas');
+
+  if (canvas && canvas.parentElement !== chartContainer) {
+    chartContainer.appendChild(canvas);
+  } else if (!canvas) {
+    canvas = createEl('canvas', {
+      id: 'chart-canvas',
+      class: 'chart-canvas',
+      'data-testid': 'chart-canvas',
+    });
+    chartContainer.appendChild(canvas);
+  }
+  ensureCanvasCompat(canvas);
+
+  // Ensure auxiliary orders side panel exists inside workspace
+  let ordersPanel =
+    workspace.querySelector('[data-testid="orders-panel"]') ||
+    workspace.querySelector('.orders-panel') ||
+    workspace.querySelector('aside.orders') ||
+    workspace.querySelector('.side-panel-orders');
+
+  if (!ordersPanel) {
+    ordersPanel = createEl('aside', {
       class: 'orders-panel side-panel side-panel-orders',
       'data-testid': 'orders-panel',
     });
@@ -327,26 +356,6 @@ function buildStructuredLayout(mountTarget) {
 
     ordersPanel.appendChild(tradeActions);
     workspace.appendChild(ordersPanel);
-
-    mountTarget.appendChild(workspace);
-  }
-
-  const chartContainer =
-    workspace.querySelector('[data-testid="chart-container"]') ||
-    workspace.querySelector('.chart-container') ||
-    workspace;
-
-  let canvas = workspace.querySelector ? workspace.querySelector('canvas') : null;
-  if (!canvas) {
-    canvas = createEl('canvas', {
-      id: 'chart-canvas',
-      class: 'chart-canvas',
-      'data-testid': 'chart-canvas',
-    });
-    ensureCanvasCompat(canvas);
-    chartContainer.appendChild(canvas);
-  } else {
-    ensureCanvasCompat(canvas);
   }
 
   // Eject any stray elements placed directly on mountTarget into workspace hierarchy
@@ -354,9 +363,6 @@ function buildStructuredLayout(mountTarget) {
     const strayChildren = mountTarget.children.filter((c) => c !== header && c !== workspace);
     for (const stray of strayChildren) {
       if (stray.tagName === 'CANVAS') {
-        if (stray.parentElement === mountTarget) {
-          mountTarget.removeChild(stray);
-        }
         chartContainer.appendChild(stray);
       } else if (
         stray.classList &&
@@ -364,9 +370,6 @@ function buildStructuredLayout(mountTarget) {
           stray.classList.contains('tools-panel') ||
           stray.classList.contains('side-panel'))
       ) {
-        if (stray.parentElement === mountTarget) {
-          mountTarget.removeChild(stray);
-        }
         workspace.appendChild(stray);
       }
     }
@@ -494,9 +497,6 @@ export function mountApp(container) {
       const strays = mountTarget.children.filter((c) => c !== header && c !== workspace);
       for (const stray of strays) {
         if (stray.tagName === 'CANVAS') {
-          if (stray.parentElement === mountTarget) {
-            mountTarget.removeChild(stray);
-          }
           const host = workspace.querySelector('.chart-container') || workspace;
           host.appendChild(stray);
         } else if (
@@ -505,9 +505,6 @@ export function mountApp(container) {
             stray.classList.contains('tools-panel') ||
             stray.classList.contains('side-panel'))
         ) {
-          if (stray.parentElement === mountTarget) {
-            mountTarget.removeChild(stray);
-          }
           workspace.appendChild(stray);
         }
       }
@@ -617,4 +614,13 @@ if (typeof window !== 'undefined') {
 }
 
 // Browser auto-mount guard
+if (typeof document !== 'undefined') {
+  const mountTarget = document.getElementById('app') || document.body;
+  if (mountTarget && !mountTarget.__nexus_mounted) {
+    mountTarget.__nexus_mounted = true;
+    if (typeof mountApp === 'function') mountApp(mountTarget);
+    else if (typeof mount === 'function') mount(mountTarget);
+  }
+}
+
 export default mountApp;
