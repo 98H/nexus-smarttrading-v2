@@ -555,6 +555,8 @@ function ensureDOMNodeMethods(proto, sample = null) {
  * Patches the active DOM environment in mock / headless testing contexts.
  */
 export function patchDOMEnvironment() {
+  if (typeof window !== 'undefined' && typeof window.document !== 'undefined' && window.document.nodeType === 9) return;
+
   const doc = typeof document !== 'undefined' ? document : (globalThis.document || null);
   if (!doc) return;
 

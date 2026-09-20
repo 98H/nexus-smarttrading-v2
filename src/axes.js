@@ -381,7 +381,8 @@ export function updateDOMTimeAxisTrack(trackElement, timeRange, steps = 5) {
     trackElement.style.display = 'flex';
     trackElement.style.justifyContent = 'space-between';
     trackElement.style.alignItems = 'center';
-    trackElement.style.width = trackElement.style.width || '100%';
+    trackElement.style.width = '100%';
+    trackElement.style.maxWidth = 'calc(100% - 70px)';
     trackElement.style.boxSizing = 'border-box';
   }
 
@@ -425,7 +426,8 @@ export function updateDOMTimeAxisTrack(trackElement, timeRange, steps = 5) {
     }
 
     if (marker.style) {
-      marker.style.color = '#787b86';
+      marker.style.color = 'transparent';
+        marker.style.opacity = '0';
       marker.style.fontSize = '11px';
       marker.style.fontFamily = 'sans-serif';
       marker.style.userSelect = 'none';
