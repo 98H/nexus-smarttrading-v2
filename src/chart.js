@@ -789,10 +789,8 @@ export class Chart {
 
 export class ChartCanvas extends Chart {}
 
-export function createChart(canvas, options) {
+export function initChart(canvas, options = {}) {
   return new Chart(canvas, options);
 }
 
-export const initChart = createChart;
-export const renderChart = createChart;
 export default Chart;
