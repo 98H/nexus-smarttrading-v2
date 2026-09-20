@@ -87,9 +87,9 @@ class MockElement {
   querySelector(selector) {
     if (selector.startsWith('#')) {
       const targetId = selector.slice(1);
-      return this.children.find((c) => c.id === targetId) || null;
+      return Array.from(this.children).find((c) => c.id === targetId) || null;
     }
-    return this.children.find((c) => c.tagName.toLowerCase() === selector.toLowerCase()) || null;
+    return Array.from(this.children).find((c) => c.tagName.toLowerCase() === selector.toLowerCase()) || null;
   }
 
   getContext(type) {
@@ -341,7 +341,7 @@ test('STORY 29.4.1 / Architectural Invariant: Entrypoint Wiring in src/main.js',
     const appNode = mockDocument.getElementById('app');
     assert.ok(appNode, 'Target element document.getElementById("app") must exist');
 
-    const canvasChild = appNode.children.find((child) => child.tagName === 'CANVAS');
+    const canvasChild = Array.from(appNode.children).find((child) => child.tagName === 'CANVAS');
     assert.ok(
       canvasChild,
       'Active entrypoint (src/main.js) must mount a <canvas> element inside document.getElementById("app")'
