@@ -167,6 +167,8 @@ export class Chart {
     }
 
     this.canvas = canvas;
+    this.canvas.chart = this;
+    this.canvas.__chart = this;
     this.options = opts;
     this.elements = opts.elements ? [...opts.elements] : [];
     this.rawCandles = opts.candles || opts.data ? [...(opts.candles || opts.data)] : [];
@@ -192,12 +194,20 @@ export class Chart {
     const initOffsetX =
       initialViewport.offsetX !== undefined
         ? initialViewport.offsetX
-        : (opts.initialOffset?.x ?? opts.offset?.x ?? 0);
+        : (opts.initialViewportOffset?.x ??
+            opts.viewportOffset?.x ??
+            opts.initialOffset?.x ??
+            opts.offset?.x ??
+            0);
 
     const initOffsetY =
       initialViewport.offsetY !== undefined
         ? initialViewport.offsetY
-        : (opts.initialOffset?.y ?? opts.offset?.y ?? 0);
+        : (opts.initialViewportOffset?.y ??
+            opts.viewportOffset?.y ??
+            opts.initialOffset?.y ??
+            opts.offset?.y ??
+            0);
 
     this.minZoom = opts.minZoom !== undefined ? opts.minZoom : Math.min(DEFAULT_MIN_ZOOM, initScale);
     this.maxZoom = opts.maxZoom !== undefined ? opts.maxZoom : Math.max(DEFAULT_MAX_ZOOM, initScale);
@@ -208,7 +218,22 @@ export class Chart {
       scale: Math.min(this.maxZoom, Math.max(this.minZoom, initScale)),
     };
 
+    Object.defineProperty(this.viewport, 'matrix', {
+      get: () => this.getViewportMatrix(),
+      enumerable: true,
+      configurable: true,
+    });
+
+    Object.defineProperty(this.viewport, 'offset', {
+      get: () => ({ x: this.viewport.offsetX, y: this.viewport.offsetY }),
+      enumerable: true,
+      configurable: true,
+    });
+
     this.isPanning = false;
+    this.isDragging = false;
+    this.dragging = false;
+    this.dragState = null;
     this.isRunning = false;
     this.renderCount = 0;
     this.frameCount = 0;
@@ -232,6 +257,13 @@ export class Chart {
       this.canvas.addEventListener('mousemove', this.handleMouseMove);
       this.canvas.addEventListener('mouseup', this.handleMouseUp);
       this.canvas.addEventListener('mouseleave', this.handleMouseLeave);
+      this.canvas.addEventListener('mouseout', this.handleMouseLeave);
+      this.canvas.addEventListener('pointerdown', this.handleMouseDown);
+      this.canvas.addEventListener('pointermove', this.handleMouseMove);
+      this.canvas.addEventListener('pointerup', this.handleMouseUp);
+      this.canvas.addEventListener('pointerleave', this.handleMouseLeave);
+      this.canvas.addEventListener('pointerout', this.handleMouseLeave);
+      this.canvas.addEventListener('pointercancel', this.handleMouseLeave);
     }
 
     this.updateScales();
@@ -276,6 +308,10 @@ export class Chart {
 
   stop() {
     this.isRunning = false;
+    this.isPanning = false;
+    this.isDragging = false;
+    this.dragging = false;
+    this.dragState = null;
     if (this.animationTimer) {
       clearInterval(this.animationTimer);
       this.animationTimer = null;
@@ -437,6 +473,22 @@ export class Chart {
     return [scale, 0, 0, scale, this.viewport.offsetX, this.viewport.offsetY];
   }
 
+  get viewportMatrix() {
+    return this.getViewportMatrix();
+  }
+
+  get matrix() {
+    return this.getViewportMatrix();
+  }
+
+  get isDraggingState() {
+    return this.isPanning;
+  }
+
+  getDragState() {
+    return this.dragState;
+  }
+
   getElementRenderPosition(id) {
     let el = null;
     if (Array.isArray(this.elements)) {
@@ -529,29 +581,72 @@ export class Chart {
     };
   }
 
-  handleMouseDown(event) {
-    if (event.button !== 0) {
+  handleMouseDown(event = {}) {
+    if (event.button !== undefined && event.button !== 0) {
       return;
     }
     this.isPanning = true;
+    this.isDragging = true;
+    this.dragging = true;
+
+    const clientX =
+      event.clientX ??
+      event.pageX ??
+      event.x ??
+      event.screenX ??
+      0;
+    const clientY =
+      event.clientY ??
+      event.pageY ??
+      event.y ??
+      event.screenY ??
+      0;
+
     this.dragStartPoint = {
-      x: event.clientX ?? 0,
-      y: event.clientY ?? 0,
+      x: clientX,
+      y: clientY,
     };
     this.dragStartOffset = {
       x: this.viewport.offsetX,
       y: this.viewport.offsetY,
     };
+    this.dragState = {
+      startX: clientX,
+      startY: clientY,
+      startOffsetX: this.dragStartOffset.x,
+      startOffsetY: this.dragStartOffset.y,
+    };
+
+    if (this.canvas && this.canvas.style) {
+      this.canvas.style.cursor = 'grabbing';
+    }
   }
 
-  handleMouseMove(event) {
-    if (!this.isPanning) {
+  handleMouseMove(event = {}) {
+    if (!this.isPanning && !this.isDragging) {
       return;
     }
-    const clientX = event.clientX ?? 0;
-    const clientY = event.clientY ?? 0;
-    const deltaX = clientX - this.dragStartPoint.x;
-    const deltaY = clientY - this.dragStartPoint.y;
+    const clientX =
+      event.clientX ??
+      event.pageX ??
+      event.x ??
+      event.screenX ??
+      (this.dragStartPoint.x + (event.movementX ?? event.deltaX ?? 0));
+    const clientY =
+      event.clientY ??
+      event.pageY ??
+      event.y ??
+      event.screenY ??
+      (this.dragStartPoint.y + (event.movementY ?? event.deltaY ?? 0));
+
+    const deltaX =
+      event.movementX !== undefined && event.clientX === undefined
+        ? this.viewport.offsetX - this.dragStartOffset.x + event.movementX
+        : clientX - this.dragStartPoint.x;
+    const deltaY =
+      event.movementY !== undefined && event.clientY === undefined
+        ? this.viewport.offsetY - this.dragStartOffset.y + event.movementY
+        : clientY - this.dragStartPoint.y;
 
     const nextOffsetX = this.dragStartOffset.x + deltaX;
     const nextOffsetY = this.dragStartOffset.y + deltaY;
@@ -568,10 +663,22 @@ export class Chart {
 
   handleMouseUp() {
     this.isPanning = false;
+    this.isDragging = false;
+    this.dragging = false;
+    this.dragState = null;
+    if (this.canvas && this.canvas.style) {
+      this.canvas.style.cursor = '';
+    }
   }
 
   handleMouseLeave() {
     this.isPanning = false;
+    this.isDragging = false;
+    this.dragging = false;
+    this.dragState = null;
+    if (this.canvas && this.canvas.style) {
+      this.canvas.style.cursor = '';
+    }
   }
 
   handleWheel(event) {
@@ -632,20 +739,8 @@ export class Chart {
 
     this.computeCoordinates();
 
-<<<<<<< HEAD
     for (let i = 0; i < this.candleCoordinates.length; i++) {
       const coord = this.candleCoordinates[i];
-=======
-    this.updateScales();
-    const { min: minTime, max: maxTime } = this.timeScale;
-    const { min: minPrice, max: maxPrice } = this.priceScale;
-
-    const timeRange = maxTime - minTime || 1;
-    const priceRange = maxPrice - minPrice || 1;
-    const candleWidth = Math.max(2, (width / this.data.length) * 0.6 * this.zoomFactor);
-
-    for (let i = 0; i < this.data.length; i++) {
->>>>>>> task/story-574da399
       const candle = this.data[i];
       const isBull = candle.close >= candle.open;
       const color = isBull ? '#00f5a0' : '#ff3b69';
@@ -669,12 +764,22 @@ export class Chart {
   destroy() {
     this.stop();
     this.isPanning = false;
+    this.isDragging = false;
+    this.dragging = false;
+    this.dragState = null;
     if (this.canvas && typeof this.canvas.removeEventListener === 'function') {
       this.canvas.removeEventListener('wheel', this.handleWheel, { passive: false });
       this.canvas.removeEventListener('mousedown', this.handleMouseDown);
       this.canvas.removeEventListener('mousemove', this.handleMouseMove);
       this.canvas.removeEventListener('mouseup', this.handleMouseUp);
       this.canvas.removeEventListener('mouseleave', this.handleMouseLeave);
+      this.canvas.removeEventListener('mouseout', this.handleMouseLeave);
+      this.canvas.removeEventListener('pointerdown', this.handleMouseDown);
+      this.canvas.removeEventListener('pointermove', this.handleMouseMove);
+      this.canvas.removeEventListener('pointerup', this.handleMouseUp);
+      this.canvas.removeEventListener('pointerleave', this.handleMouseLeave);
+      this.canvas.removeEventListener('pointerout', this.handleMouseLeave);
+      this.canvas.removeEventListener('pointercancel', this.handleMouseLeave);
     }
   }
 }
