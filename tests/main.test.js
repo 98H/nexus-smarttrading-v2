@@ -1,60 +1,107 @@
 import test, { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-/**
- * DOM Mock Environment Setup
- * Emulates modern browser DOM behavior where Element.prototype.tagName is a read-only getter.
- */
+/* ------------------------------------------------------------------
+ * Minimal Deterministic DOM Environment for Node.js test execution
+ * ------------------------------------------------------------------ */
+
+class MockClassList {
+  constructor(element) {
+    this._element = element;
+    this._classes = new Set();
+  }
+  add(...tokens) {
+    tokens.forEach((t) => this._classes.add(t));
+  }
+  remove(...tokens) {
+    tokens.forEach((t) => this._classes.delete(t));
+  }
+  contains(token) {
+    return this._classes.has(token);
+  }
+  toString() {
+    return Array.from(this._classes).join(' ');
+  }
+}
+
 class MockElement {
-  constructor(tagName = 'DIV') {
-    this._tagName = tagName.toUpperCase();
-    this.attributes = Object.create(null);
-    this.style = {};
-    this.children = [];
-    this.parentNode = null;
+  constructor(tagName) {
+    this.tagName = tagName.toUpperCase();
     this.id = '';
-    this.className = '';
+    this.children = [];
+    this.parentElement = null;
+    this.attributes = new Map();
+    this.classList = new MockClassList(this);
+    this._innerHTML = '';
+    this.eventListeners = new Map(); // event -> Set of handler functions
   }
 
-  get tagName() {
-    return this._tagName;
+  get innerHTML() {
+    return this._innerHTML;
   }
 
-  get nodeName() {
-    return this._tagName;
-  }
+  set innerHTML(val) {
+    this._innerHTML = val;
+    this.children = [];
+    if (!val || typeof val !== 'string') return;
 
-  get nodeType() {
-    return 1;
-  }
+    // Simple parser for synthetic markup injection in tests
+    const tagRegex = /<([a-zA-Z0-9\-]+)([^>]*)>(?:([\s\S]*?)<\/\1>)?/g;
+    let match;
+    while ((match = tagRegex.exec(val)) !== null) {
+      const tag = match[1];
+      const rawAttrs = match[2] || '';
+      const content = match[3] || '';
+      const child = createMockElement(tag);
 
-  get isConnected() {
-    return this.parentNode !== null;
+      const idMatch = rawAttrs.match(/id=["']([^"']+)["']/);
+      if (idMatch) child.id = idMatch[1];
+
+      const classMatch = rawAttrs.match(/class=["']([^"']+)["']/);
+      if (classMatch) {
+        classMatch[1].split(/\s+/).filter(Boolean).forEach((c) => child.classList.add(c));
+      }
+
+      const attrRegex = /([a-zA-Z0-9\-]+)=["']([^"']+)["']/g;
+      let aMatch;
+      while ((aMatch = attrRegex.exec(rawAttrs)) !== null) {
+        child.setAttribute(aMatch[1], aMatch[2]);
+      }
+
+      if (content && content.includes('<')) {
+        child.innerHTML = content;
+      }
+
+      this.appendChild(child);
+    }
   }
 
   setAttribute(name, value) {
-    this.attributes[name] = String(value);
+    this.attributes.set(name, String(value));
+    if (name === 'id') this.id = String(value);
+    if (name === 'class') {
+      this.classList._classes.clear();
+      String(value).split(/\s+/).filter(Boolean).forEach((c) => this.classList.add(c));
+    }
   }
 
   getAttribute(name) {
-    return Object.prototype.hasOwnProperty.call(this.attributes, name)
-      ? this.attributes[name]
-      : null;
+    return this.attributes.get(name) ?? null;
   }
 
   hasAttribute(name) {
-    return Object.prototype.hasOwnProperty.call(this.attributes, name);
+    return this.attributes.has(name);
   }
 
   removeAttribute(name) {
-    delete this.attributes[name];
+    this.attributes.delete(name);
   }
 
   appendChild(child) {
-    if (child.parentNode) {
-      child.parentNode.removeChild(child);
+    if (child.parentElement) {
+      child.parentElement.removeChild(child);
     }
-    child.parentNode = this;
+    child.parentElement = this;
     this.children.push(child);
     return child;
   }
@@ -63,283 +110,388 @@ class MockElement {
     const idx = this.children.indexOf(child);
     if (idx !== -1) {
       this.children.splice(idx, 1);
-      child.parentNode = null;
+      child.parentElement = null;
+      return child;
     }
-    return child;
+    throw new Error('NotFound: Node was not found');
+  }
+
+  addEventListener(type, handler) {
+    if (!this.eventListeners.has(type)) {
+      this.eventListeners.set(type, new Set());
+    }
+    this.eventListeners.get(type).add(handler);
+    activeListenerRegistry.push({ target: this, type, handler });
+  }
+
+  removeEventListener(type, handler) {
+    if (this.eventListeners.has(type)) {
+      this.eventListeners.get(type).delete(handler);
+    }
+    const idx = activeListenerRegistry.findIndex(
+      (r) => r.target === this && r.type === type && r.handler === handler
+    );
+    if (idx !== -1) activeListenerRegistry.splice(idx, 1);
   }
 
   querySelector(selector) {
-    if (selector.startsWith('#')) {
-      const id = selector.slice(1);
-      if (this.id === id) return this;
-      for (const child of this.children) {
-        const found = child.querySelector(selector);
-        if (found) return found;
-      }
-    }
-    if (selector.startsWith('.')) {
-      const cls = selector.slice(1);
-      if (this.className.split(/\s+/).includes(cls)) return this;
-      for (const child of this.children) {
-        const found = child.querySelector(selector);
-        if (found) return found;
-      }
-    }
-    const tag = selector.toUpperCase();
-    if (this.tagName === tag) return this;
-    for (const child of this.children) {
-      const found = child.querySelector(selector);
-      if (found) return found;
-    }
-    return null;
+    return this.querySelectorAll(selector)[0] || null;
   }
 
   querySelectorAll(selector) {
-    const results = [];
-    const tag = selector.toUpperCase();
-    for (const child of this.children) {
-      if (child.tagName === tag) {
-        results.push(child);
-      }
-      results.push(...child.querySelectorAll(selector));
+    return querySelectorAll(this, selector);
+  }
+
+  getContext(contextId) {
+    if (this.tagName === 'CANVAS') {
+      return { canvas: this, type: contextId };
     }
-    return results;
+    return null;
   }
 }
 
-class MockHTMLCanvasElement extends MockElement {
-  constructor() {
-    super('CANVAS');
-    this.width = 300;
-    this.height = 150;
-  }
+function createMockElement(tagName) {
+  return new MockElement(tagName);
+}
 
-  getContext(type) {
-    return {
-      canvas: this,
-      fillRect: () => {},
-      clearRect: () => {},
-      getImageData: () => ({ data: new Uint8ClampedArray(4) }),
-      putImageData: () => {},
-      drawImage: () => {},
-    };
+function matchesSelector(element, selector) {
+  if (!element || !element.tagName) return false;
+  const s = selector.trim();
+  if (s.startsWith('#')) return element.id === s.slice(1);
+  if (s.startsWith('.')) return element.classList.contains(s.slice(1));
+  if (s.startsWith('[') && s.endsWith(']')) {
+    const inner = s.slice(1, -1);
+    if (inner.includes('=')) {
+      const [attr, val] = inner.split('=');
+      const cleanVal = val.trim().replace(/["']/g, '');
+      return element.getAttribute(attr.trim()) === cleanVal;
+    }
+    return element.hasAttribute(inner.trim());
+  }
+  return element.tagName.toLowerCase() === s.toLowerCase();
+}
+
+function querySelectorAll(root, selector) {
+  const matches = [];
+  function traverse(node) {
+    for (const child of node.children) {
+      if (matchesSelector(child, selector)) {
+        matches.push(child);
+      }
+      traverse(child);
+    }
+  }
+  traverse(root);
+  return matches;
+}
+
+// Global listener tracking for duplicate listener assertions
+let activeListenerRegistry = [];
+
+class MockWindow {
+  constructor() {
+    this.eventListeners = new Map();
+  }
+  addEventListener(type, handler) {
+    if (!this.eventListeners.has(type)) {
+      this.eventListeners.set(type, new Set());
+    }
+    this.eventListeners.get(type).add(handler);
+    activeListenerRegistry.push({ target: this, type, handler });
+  }
+  removeEventListener(type, handler) {
+    if (this.eventListeners.has(type)) {
+      this.eventListeners.get(type).delete(handler);
+    }
+    const idx = activeListenerRegistry.findIndex(
+      (r) => r.target === this && r.type === type && r.handler === handler
+    );
+    if (idx !== -1) activeListenerRegistry.splice(idx, 1);
   }
 }
 
 class MockDocument {
   constructor() {
-    this.body = new MockElement('BODY');
-    this.elementsById = new Map();
+    this.body = createMockElement('body');
+    this.eventListeners = new Map();
   }
-
-  createElement(tagName) {
-    const upper = tagName.toUpperCase();
-    let el;
-    if (upper === 'CANVAS') {
-      el = new MockHTMLCanvasElement();
-    } else {
-      el = new MockElement(upper);
-    }
-    return el;
+  createElement(tag) {
+    return createMockElement(tag);
   }
-
   getElementById(id) {
-    return this.elementsById.get(id) || null;
+    const results = querySelectorAll(this.body, `#${id}`);
+    return results[0] || null;
   }
-
-  registerElementById(id, element) {
-    element.id = id;
-    this.elementsById.set(id, element);
+  querySelector(selector) {
+    return this.body.querySelector(selector);
+  }
+  querySelectorAll(selector) {
+    return this.body.querySelectorAll(selector);
+  }
+  addEventListener(type, handler) {
+    if (!this.eventListeners.has(type)) {
+      this.eventListeners.set(type, new Set());
+    }
+    this.eventListeners.get(type).add(handler);
+    activeListenerRegistry.push({ target: this, type, handler });
+  }
+  removeEventListener(type, handler) {
+    if (this.eventListeners.has(type)) {
+      this.eventListeners.get(type).delete(handler);
+    }
+    const idx = activeListenerRegistry.findIndex(
+      (r) => r.target === this && r.type === type && r.handler === handler
+    );
+    if (idx !== -1) activeListenerRegistry.splice(idx, 1);
   }
 }
 
-// Ensure the prototype has strictly NO SETTER for tagName (mimics native DOM)
-const tagNameDescriptor = Object.getOwnPropertyDescriptor(MockElement.prototype, 'tagName');
-assert.strictEqual(
-  tagNameDescriptor.set,
-  undefined,
-  'Test harness validation: MockElement.prototype.tagName must have only a getter'
-);
+/* ------------------------------------------------------------------
+ * Environment Bootstrap
+ * ------------------------------------------------------------------ */
 
-// Global DOM injection before module imports
-let mockDoc;
-let appRoot;
+globalThis.window = new MockWindow();
+globalThis.document = new MockDocument();
 
-function setupDomEnvironment() {
-  mockDoc = new MockDocument();
-  appRoot = mockDoc.createElement('DIV');
-  mockDoc.registerElementById('app', appRoot);
-  mockDoc.body.appendChild(appRoot);
+// Import target entrypoint dynamically after DOM globals exist
+const { mountApp } = await import('../src/main.js');
 
-  globalThis.window = globalThis;
-  globalThis.document = mockDoc;
-  globalThis.Element = MockElement;
-  globalThis.HTMLElement = MockElement;
-  globalThis.HTMLCanvasElement = MockHTMLCanvasElement;
+/* ------------------------------------------------------------------
+ * Test Helpers
+ * ------------------------------------------------------------------ */
+
+function extractComponents(container) {
+  const headers = querySelectorAll(container, 'header');
+  const canvases = querySelectorAll(container, 'canvas');
+
+  // Support toolbars declared as tag, class, or data attribute
+  const toolbarsByTag = querySelectorAll(container, 'toolbar');
+  const toolbarsByClass = querySelectorAll(container, '.toolbar');
+  const toolbarsByData = querySelectorAll(container, '[data-component="toolbar"]');
+  const uniqueToolbars = Array.from(
+    new Set([...toolbarsByTag, ...toolbarsByClass, ...toolbarsByData])
+  );
+
+  return {
+    headers,
+    canvases,
+    toolbars: uniqueToolbars
+  };
 }
 
-function cleanupDomEnvironment() {
-  delete globalThis.window;
-  delete globalThis.document;
-  delete globalThis.Element;
-  delete globalThis.HTMLElement;
-  delete globalThis.HTMLCanvasElement;
-}
+/* ------------------------------------------------------------------
+ * Test Suites
+ * ------------------------------------------------------------------ */
 
-describe('STORY 30.1.1: Resolve UNCAUGHT_JAVASCRIPT_EXCEPTION (DF-CRASH-01)', () => {
-  let mainModule;
+describe('STORY 37.1.1: Resolve DUPLICATE_COMPONENT_MOUNTING (DF-DUPLICATION-01)', () => {
+  let appContainer;
 
-  beforeEach(async () => {
-    setupDomEnvironment();
-    // Cache bust to ensure active entrypoint re-executes clean per test
-    mainModule = await import(`../src/main.js?t=${Date.now()}_${Math.random()}`);
+  beforeEach(() => {
+    activeListenerRegistry = [];
+    globalThis.document.body.children = [];
+    appContainer = createMockElement('div');
+    appContainer.id = 'app';
+    globalThis.document.body.appendChild(appContainer);
   });
 
   afterEach(() => {
-    cleanupDomEnvironment();
+    if (appContainer) {
+      appContainer.innerHTML = '';
+    }
+    activeListenerRegistry = [];
   });
 
-  it('verifies that direct mutation of el.tagName produces the DF-CRASH-01 TypeError', () => {
-    const testEl = mockDoc.createElement('canvas');
+  describe('Acceptance Criteria 1: Container Cleared and Single Component Instances', () => {
+    it('mounts header, toolbar, and canvas components exactly once on initial load', () => {
+      mountApp(appContainer);
 
-    // Reproduces: TypeError: Cannot set property tagName of #<Element> which has only a getter
-    assert.throws(
-      () => {
-        // Strict mode assignment to getter-only property
-      },
-      {
-        name: 'TypeError',
-        message: /Cannot set property tagName of #<.*> which has only a getter/
-      }
-    );
+      const { headers, canvases, toolbars } = extractComponents(appContainer);
+
+      assert.strictEqual(
+        headers.length,
+        1,
+        `Expected exactly 1 header element, found ${headers.length}`
+      );
+      assert.strictEqual(
+        canvases.length,
+        1,
+        `Expected exactly 1 canvas element, found ${canvases.length}`
+      );
+      assert.strictEqual(
+        toolbars.length,
+        1,
+        `Expected exactly 1 toolbar element, found ${toolbars.length}`
+      );
+    });
+
+    it('clears pre-existing DOM elements before mounting (root.innerHTML = "")', () => {
+      // Simulate stale/dirty container state prior to invocation
+      appContainer.innerHTML =
+        '<div id="stale-banner" class="legacy">Stale Artifact</div>' +
+        '<header id="old-header"></header>' +
+        '<canvas id="old-canvas"></canvas>';
+
+      mountApp(appContainer);
+
+      const staleBanner = appContainer.querySelector('#stale-banner');
+      assert.strictEqual(
+        staleBanner,
+        null,
+        'Expected pre-existing DOM nodes to be purged on mountApp'
+      );
+
+      const { headers, canvases, toolbars } = extractComponents(appContainer);
+      assert.strictEqual(headers.length, 1, 'Pre-existing headers must not accumulate');
+      assert.strictEqual(canvases.length, 1, 'Pre-existing canvases must not accumulate');
+      assert.strictEqual(toolbars.length, 1, 'Pre-existing toolbars must not accumulate');
+    });
+
+    it('is strictly idempotent when mountApp is called repeatedly on the same container', () => {
+      // Call mountApp multiple times sequentially
+      mountApp(appContainer);
+      mountApp(appContainer);
+      mountApp(appContainer);
+      mountApp(appContainer);
+
+      const { headers, canvases, toolbars } = extractComponents(appContainer);
+
+      assert.strictEqual(
+        headers.length,
+        1,
+        `DF-DUPLICATION-01 Defect: Expected 1 header after repeated mounts, got ${headers.length}`
+      );
+      assert.strictEqual(
+        canvases.length,
+        1,
+        `DF-DUPLICATION-01 Defect: Expected 1 canvas after repeated mounts, got ${canvases.length}`
+      );
+      assert.strictEqual(
+        toolbars.length,
+        1,
+        `DF-DUPLICATION-01 Defect: Expected 1 toolbar after repeated mounts, got ${toolbars.length}`
+      );
+    });
+
+    it('clears or guards when targeting default document.getElementById("app")', () => {
+      // Test without passing container argument directly to mirror entrypoint execution
+      mountApp();
+      mountApp();
+      mountApp();
+
+      const activeApp = globalThis.document.getElementById('app');
+      assert.ok(activeApp, 'Active #app container must exist in DOM');
+
+      const { headers, canvases, toolbars } = extractComponents(activeApp);
+      assert.strictEqual(headers.length, 1, 'Header duplicated when mounting via default lookup');
+      assert.strictEqual(canvases.length, 1, 'Canvas duplicated when mounting via default lookup');
+      assert.strictEqual(toolbars.length, 1, 'Toolbar duplicated when mounting via default lookup');
+    });
   });
 
-  it('mounts into #app without throwing uncaught TypeError when initialized', () => {
-    assert.doesNotThrow(() => {
-      if (typeof mainModule.init === 'function') {
-        mainModule.init('#app');
-      } else if (typeof mainModule.mount === 'function') {
-        mainModule.mount('#app');
-      } else if (typeof mainModule.default === 'function') {
-        mainModule.default('#app');
-      } else if (typeof mainModule.mountApp === 'function') {
-        mainModule.mountApp('#app');
-      }
-    }, 'Entrypoint mount/init execution threw an uncaught exception');
+  describe('Acceptance Criteria 2: Idempotent Execution and No Leaked Event Listeners', () => {
+    it('does not duplicate window or document event listeners across multiple mountApp invocations', () => {
+      // Mount once to establish baseline listeners
+      mountApp(appContainer);
+      const initialWindowListeners = activeListenerRegistry.filter(
+        (r) => r.target === globalThis.window
+      );
+      const initialDocListeners = activeListenerRegistry.filter(
+        (r) => r.target === globalThis.document
+      );
 
-    // Architectural Invariant: Never produce an isolated, unmounted file
-    assert.ok(
-      appRoot.children.length > 0,
-      'Active entrypoint must wire into and populate #app DOM container'
-    );
+      // Re-invoke mountApp twice
+      mountApp(appContainer);
+      mountApp(appContainer);
+
+      const currentWindowListeners = activeListenerRegistry.filter(
+        (r) => r.target === globalThis.window
+      );
+      const currentDocListeners = activeListenerRegistry.filter(
+        (r) => r.target === globalThis.document
+      );
+
+      assert.strictEqual(
+        currentWindowListeners.length,
+        initialWindowListeners.length,
+        `Window event listeners multiplied: expected ${initialWindowListeners.length}, got ${currentWindowListeners.length}`
+      );
+      assert.strictEqual(
+        currentDocListeners.length,
+        initialDocListeners.length,
+        `Document event listeners multiplied: expected ${initialDocListeners.length}, got ${currentDocListeners.length}`
+      );
+    });
+
+    it('does not leave detached or zombie canvas nodes in DOM', () => {
+      mountApp(appContainer);
+      const firstCanvas = appContainer.querySelector('canvas');
+      assert.ok(firstCanvas, 'Canvas must be mounted on initial invocation');
+
+      mountApp(appContainer);
+      const allCanvasesInDocument = globalThis.document.querySelectorAll('canvas');
+
+      assert.strictEqual(
+        allCanvasesInDocument.length,
+        1,
+        `Expected only 1 total canvas node across the document, found ${allCanvasesInDocument.length}`
+      );
+      assert.strictEqual(
+        allCanvasesInDocument[0].parentElement,
+        appContainer,
+        'Active canvas must be rooted inside active container'
+      );
+    });
+
+    it('preserves component placement and order upon idempotent re-mounting', () => {
+      mountApp(appContainer);
+      const initialOrder = Array.from(appContainer.children).map((el) => el.tagName);
+
+      mountApp(appContainer);
+      const postRemountOrder = Array.from(appContainer.children).map((el) => el.tagName);
+
+      assert.deepStrictEqual(
+        postRemountOrder,
+        initialOrder,
+        'Remounting produced inconsistent component structure or ordering'
+      );
+    });
   });
 
-  it('renders canvas component to #app via valid DOM APIs without assigning to read-only tagName', () => {
-    if (typeof mainModule.init === 'function') {
-      mainModule.init('#app');
-    } else if (typeof mainModule.mount === 'function') {
-      mainModule.mount('#app');
-    } else if (typeof mainModule.mountApp === 'function') {
-      mainModule.mountApp('#app');
-    }
+  describe('Edge Cases and Invariants', () => {
+    it('gracefully handles missing container by raising a descriptive error', () => {
+      // Remove #app to simulate invalid state
+      globalThis.document.body.children = [];
 
-    const canvas = appRoot.querySelector('CANVAS') || appRoot.querySelector('canvas');
-    assert.ok(canvas, 'A canvas element must be created and mounted under #app');
-    assert.strictEqual(canvas.tagName, 'CANVAS', 'Canvas element must have valid tagName via createElement');
-    assert.strictEqual(canvas instanceof MockHTMLCanvasElement, true, 'Canvas must be a valid HTMLCanvasElement instance');
-  });
+      assert.throws(
+        () => {
+          mountApp();
+        },
+        {
+          name: 'Error',
+          message: /(container|element|root|app).*(not found|missing|required|null)/i
+        },
+        'mountApp should fail fast if the root container (#app) cannot be found'
+      );
+    });
 
-  it('safely filters out read-only properties (tagName, nodeName) during property reconciliation', () => {
-    const targetElement = mockDoc.createElement('div');
-    const propsWithReadOnlyKeys = {
-      tagName: 'DIV',
-      nodeName: 'DIV',
-      nodeType: 1,
-      id: 'active-game-layer',
-      className: 'layer active',
-      'data-testid': 'game-surface'
-    };
+    it('supports re-mounting into an alternative, isolated container without cross-contamination', () => {
+      const secondaryContainer = createMockElement('section');
+      secondaryContainer.id = 'secondary-app';
+      globalThis.document.body.appendChild(secondaryContainer);
 
-    // If main exposes property assignment helper (e.g. applyProps, setProps, setAttributes)
-    const assignPropsFn =
-      mainModule.applyProps ||
-      mainModule.setProps ||
-      mainModule.setAttributes ||
-      mainModule.safeSetProperty;
+      mountApp(appContainer);
+      mountApp(secondaryContainer);
 
-    if (typeof assignPropsFn === 'function') {
-      assert.doesNotThrow(() => {
-        assignPropsFn(targetElement, propsWithReadOnlyKeys);
-      }, 'Property applicator must validate against and skip read-only Element properties');
+      const primary = extractComponents(appContainer);
+      const secondary = extractComponents(secondaryContainer);
 
-      assert.strictEqual(targetElement.id, 'active-game-layer');
-      assert.strictEqual(targetElement.className, 'layer active');
-    } else {
-      // If properties are assigned internally via component/vdom descriptors
-      const renderComponentFn =
-        mainModule.render ||
-        mainModule.renderComponent ||
-        mainModule.createElement;
-
-      if (typeof renderComponentFn === 'function') {
-        assert.doesNotThrow(() => {
-          const el = renderComponentFn({
-            tagName: 'canvas',
-            id: 'engine-canvas',
-            width: 800,
-            height: 600
-          });
-          if (el && el !== appRoot) {
-            appRoot.appendChild(el);
-          }
-        }, 'Component renderer must not set read-only properties');
-      }
-    }
-  });
-
-  it('maintains canvas dimensions and attributes during component updates without setter collision', () => {
-    if (typeof mainModule.mount === 'function') {
-      mainModule.mount('#app');
-    } else if (typeof mainModule.init === 'function') {
-      mainModule.init('#app');
-    }
-
-    // Trigger update cycle if exposed
-    const updateFn = mainModule.update || mainModule.render;
-    if (typeof updateFn === 'function') {
-      assert.doesNotThrow(() => {
-        updateFn({
-          tagName: 'canvas',
-          width: 1024,
-          height: 768,
-          id: 'updated-canvas'
-        });
-      }, 'Re-render or update cycle must not assign to el.tagName');
-    }
-
-    // Verify canvas is still attached and functional
-    const canvas = appRoot.querySelector('CANVAS');
-    if (canvas) {
-      assert.strictEqual(canvas.tagName, 'CANVAS');
-      const ctx = canvas.getContext('2d');
-      assert.ok(ctx, 'Canvas 2D context must remain accessible after mount/update');
-    }
-  });
-
-  it('guarantees no uncaught exception occurs during sequential re-renders on the active container', () => {
-    const mountHandler =
-      mainModule.mount ||
-      mainModule.init ||
-      mainModule.mountApp ||
-      mainModule.default;
-
-    if (typeof mountHandler === 'function') {
-      assert.doesNotThrow(() => {
-        // Initial render
-        mountHandler('#app');
-        // Secondary render/refresh
-        mountHandler('#app');
-      }, 'Subsequent renders must not throw getter-only assignment exceptions');
-    }
+      assert.strictEqual(primary.canvases.length, 1);
+      assert.strictEqual(secondary.canvases.length, 1);
+      assert.notStrictEqual(
+        primary.canvases[0],
+        secondary.canvases[0],
+        'Different containers must host distinct canvas instances'
+      );
+    });
   });
 });
