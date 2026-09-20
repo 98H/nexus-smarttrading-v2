@@ -191,7 +191,7 @@ export class Chart {
       throw new Error('Chart container element must be a valid DOM node');
     }
 
-    // Locate workspace or chart container within container if present
+    // Locate workspace within container or determine if container itself is workspace
     let workspaceHost = null;
     if (container && typeof container.querySelector === 'function') {
       workspaceHost =
@@ -201,7 +201,18 @@ export class Chart {
         container.querySelector('main');
     }
 
-    // If container is #app and no workspace exists yet, ensure structured workspace container
+    if (!workspaceHost && container) {
+      const isWorkspace =
+        (container.classList &&
+          (container.classList.contains('workspace') || container.classList.contains('workspace-container'))) ||
+        container.tagName === 'MAIN' ||
+        (typeof container.getAttribute === 'function' && container.getAttribute('data-testid') === 'workspace');
+      if (isWorkspace) {
+        workspaceHost = container;
+      }
+    }
+
+    // If container is root #app and no workspace exists yet, construct structured workspace container
     if (
       !workspaceHost &&
       container &&
@@ -220,22 +231,47 @@ export class Chart {
       }
     }
 
-    const chartHost = workspaceHost
-      ? (workspaceHost.querySelector('[data-testid="chart-container"]') ||
-         workspaceHost.querySelector('.chart-workspace') ||
-         workspaceHost.querySelector('.chart-container') ||
-         workspaceHost)
-      : (container && typeof container.querySelector === 'function' &&
-          (container.querySelector('[data-testid="chart-container"]') ||
-           container.querySelector('.chart-workspace') ||
-           container.querySelector('.chart-container') ||
-           container.querySelector('[data-testid="workspace"]') ||
-           container.querySelector('.workspace-container') ||
-           container.querySelector('.workspace'))) ||
-        container;
+    // Ensure dedicated chart container exists within workspace host
+    let chartContainer = null;
+    if (workspaceHost && typeof workspaceHost.querySelector === 'function') {
+      chartContainer =
+        workspaceHost.querySelector('[data-testid="chart-container"]') ||
+        workspaceHost.querySelector('.chart-container') ||
+        workspaceHost.querySelector('.chart-workspace');
+    }
 
+    if (!chartContainer && workspaceHost && typeof document !== 'undefined' && typeof document.createElement === 'function') {
+      chartContainer = document.createElement('div');
+      chartContainer.className = 'chart-workspace chart-container';
+      if (typeof chartContainer.setAttribute === 'function') {
+        chartContainer.setAttribute('class', 'chart-workspace chart-container');
+        chartContainer.setAttribute('data-testid', 'chart-container');
+      }
+      if (typeof workspaceHost.appendChild === 'function') {
+        workspaceHost.appendChild(chartContainer);
+      }
+    }
+
+    if (!chartContainer && container) {
+      const isChartContainer =
+        (container.classList &&
+          (container.classList.contains('chart-container') || container.classList.contains('chart-workspace'))) ||
+        (typeof container.getAttribute === 'function' && container.getAttribute('data-testid') === 'chart-container');
+      if (isChartContainer) {
+        chartContainer = container;
+      } else if (typeof container.querySelector === 'function') {
+        chartContainer =
+          container.querySelector('[data-testid="chart-container"]') ||
+          container.querySelector('.chart-container') ||
+          container.querySelector('.chart-workspace');
+      }
+    }
+
+    const chartHost = chartContainer || workspaceHost || container;
+
+    // Locate or create canvas element within chartHost
     if (container && !canvas) {
-      const searchRoot = workspaceHost || container;
+      const searchRoot = chartHost || workspaceHost || container;
       if (typeof searchRoot.querySelector === 'function') {
         canvas =
           searchRoot.querySelector('canvas') ||
@@ -256,23 +292,16 @@ export class Chart {
             canvas.setAttribute('class', 'chart-canvas');
             canvas.setAttribute('data-testid', 'chart-canvas');
           }
-          const host = chartHost || container;
-          if (typeof host.appendChild === 'function') {
-            host.appendChild(canvas);
+          if (chartHost && typeof chartHost.appendChild === 'function') {
+            chartHost.appendChild(canvas);
           }
         }
       }
     }
 
-    // Ensure canvas resides in dedicated chart workspace container instead of direct root sibling
-    if (canvas && container) {
-      const host = chartHost !== container ? chartHost : (workspaceHost || null);
-      if (host && canvas.parentElement !== host && typeof host.appendChild === 'function') {
-        if (canvas.parentElement && typeof canvas.parentElement.removeChild === 'function') {
-          canvas.parentElement.removeChild(canvas);
-        }
-        host.appendChild(canvas);
-      }
+    // Ensure canvas resides in dedicated chart container rather than existing as an unstructured root sibling
+    if (canvas && chartHost && canvas.parentElement !== chartHost && typeof chartHost.appendChild === 'function') {
+      chartHost.appendChild(canvas);
     }
 
     const width =
@@ -302,7 +331,7 @@ export class Chart {
       canvas.height = height;
     }
 
-    this.container = container;
+    this.container = chartHost || container;
     this.canvas = canvas;
     this.options = options;
     this.chart = this;
