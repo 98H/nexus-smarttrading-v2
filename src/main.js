@@ -1,7 +1,8 @@
 /**
  * SmartTrading-V2 — Application Entrypoint
- * Mounts interactive candlestick chart with integrated coordinate axes,
- * responsive canvas panning gestures, and dynamic DOM controls.
+ * Mounts interactive candlestick chart with coordinate axes,
+ * interactive tool palette (crosshair, trendline, horizontal-level, measurement),
+ * responsive canvas gestures, and dynamic DOM controls.
  */
 
 import {
@@ -16,11 +17,14 @@ import {
   computeRanges,
   generateDefaultCandles,
 } from './chart.js';
-import { ChartCanvas } from './canvas.js';
+import { ChartCanvas, CanvasWorkspace, CanvasController, normalizeToolName } from './canvas.js';
 
 export {
   Chart,
   ChartCanvas,
+  CanvasWorkspace,
+  CanvasController,
+  normalizeToolName,
   renderChart,
   renderGrid,
   renderPriceScale,
@@ -41,23 +45,23 @@ export {
  */
 function createHeader(doc, options = {}) {
   const header = doc.createElement('header');
-  header.className = 'app-header header top-nav';
+  header.setAttribute('class', 'app-header header top-nav');
   header.setAttribute('data-testid', 'app-header');
 
   const title = doc.createElement('h1');
-  title.className = 'app-title title';
+  title.setAttribute('class', 'app-title title');
   title.setAttribute('data-testid', 'app-title');
   title.textContent = options.title || 'SmartTrading';
   header.appendChild(title);
 
   const liveBadge = doc.createElement('span');
-  liveBadge.className = 'live-indicator live-status';
+  liveBadge.setAttribute('class', 'live-indicator live-status');
   liveBadge.setAttribute('data-testid', 'live-status');
   liveBadge.textContent = '● LIVE';
   header.appendChild(liveBadge);
 
   const tickerSelect = doc.createElement('select');
-  tickerSelect.className = 'ticker-control ticker';
+  tickerSelect.setAttribute('class', 'ticker-control ticker');
   tickerSelect.setAttribute('data-testid', 'ticker-select');
   tickerSelect.setAttribute('name', 'ticker');
 
@@ -72,13 +76,13 @@ function createHeader(doc, options = {}) {
   header.appendChild(tickerSelect);
 
   const timeframeControls = doc.createElement('div');
-  timeframeControls.className = 'timeframe-controls';
+  timeframeControls.setAttribute('class', 'timeframe-controls');
   timeframeControls.setAttribute('data-testid', 'timeframe-controls');
 
   const timeframes = ['1m', '5m', '15m', '1h', '4h', '1d'];
   timeframes.forEach((tf) => {
     const btn = doc.createElement('button');
-    btn.className = 'timeframe-btn';
+    btn.setAttribute('class', 'timeframe-btn');
     btn.setAttribute('data-timeframe', tf);
     btn.textContent = tf;
     timeframeControls.appendChild(btn);
@@ -89,31 +93,80 @@ function createHeader(doc, options = {}) {
 }
 
 /**
- * Builds workspace auxiliary panels when running in a full DOM environment.
+ * Builds the interactive tool palette toolbar and binds selection events.
  *
  * @param {Document} doc
- * @returns {{workspace: HTMLElement, toolsPanel: HTMLElement, ordersPanel: HTMLElement}}
+ * @param {Function} onSelectTool
+ * @param {string} [initialTool='crosshair']
+ * @returns {{palette: HTMLElement, buttons: HTMLElement[], updateActiveState: Function}}
  */
-function createAuxiliaryWorkspace(doc) {
-  const workspace = doc.createElement('main');
-  workspace.className = 'workspace workspace-container';
-  workspace.setAttribute('data-testid', 'workspace');
+function createToolPalette(doc, onSelectTool, initialTool = 'crosshair') {
+  const palette = doc.createElement('div');
+  palette.setAttribute('class', 'tool-palette toolbar interactive-palette');
+  palette.setAttribute('data-testid', 'tool-palette');
+  palette.setAttribute('role', 'toolbar');
+  palette.setAttribute('aria-label', 'Interactive Tool Palette');
 
-  const toolsPanel = doc.createElement('aside');
-  toolsPanel.className = 'tools-panel side-panel side-panel-tools tools';
-  toolsPanel.setAttribute('data-testid', 'tools-panel');
-  workspace.appendChild(toolsPanel);
+  const tools = [
+    { id: 'crosshair', name: 'Crosshair', label: 'Crosshair' },
+    { id: 'trendline', name: 'Trendline', label: 'Trendline' },
+    { id: 'horizontal-level', name: 'Horizontal Level', label: 'Horizontal Level' },
+    { id: 'measurement', name: 'Measurement', label: 'Measurement' },
+  ];
 
-  const ordersPanel = doc.createElement('aside');
-  ordersPanel.className = 'orders-panel side-panel side-panel-orders orders';
-  ordersPanel.setAttribute('data-testid', 'orders-panel');
-  workspace.appendChild(ordersPanel);
+  const buttons = [];
 
-  return { workspace, toolsPanel, ordersPanel };
+  const updateActiveState = (activeToolId) => {
+    const normalizedTarget = normalizeToolName(activeToolId);
+    for (const btn of buttons) {
+      const toolId = normalizeToolName(btn.getAttribute('data-tool'));
+      const isTarget = toolId === normalizedTarget;
+      if (isTarget) {
+        btn.classList.add('active');
+        btn.classList.add('selected');
+        btn.setAttribute('aria-pressed', 'true');
+        btn.dataset.active = 'true';
+      } else {
+        btn.classList.remove('active');
+        btn.classList.remove('selected');
+        btn.setAttribute('aria-pressed', 'false');
+        btn.dataset.active = 'false';
+      }
+    }
+  };
+
+  tools.forEach((tool) => {
+    const btn = doc.createElement('button');
+    btn.setAttribute('class', 'tool-btn tool-palette-btn');
+    btn.setAttribute('role', 'button');
+    btn.setAttribute('type', 'button');
+    btn.setAttribute('data-tool', tool.id);
+    btn.setAttribute('data-mode', tool.id);
+    btn.setAttribute('data-testid', `tool-${tool.id}`);
+    btn.setAttribute('aria-label', tool.label);
+    btn.textContent = tool.name;
+
+    btn.addEventListener('click', (e) => {
+      if (e && typeof e.preventDefault === 'function') {
+        e.preventDefault();
+      }
+      updateActiveState(tool.id);
+      if (typeof onSelectTool === 'function') {
+        onSelectTool(tool.id);
+      }
+    });
+
+    palette.appendChild(btn);
+    buttons.push(btn);
+  });
+
+  updateActiveState(initialTool);
+
+  return { palette, buttons, updateActiveState };
 }
 
 /**
- * Mounts the candlestick chart application and canvas pan controller to the DOM container.
+ * Mounts the candlestick chart application, tool palette, and canvas controller to the DOM container.
  *
  * @param {HTMLElement|string} [container] - Mount container or selector (defaults to #app or body)
  * @param {Object} [options={}] - Custom configuration options
@@ -169,12 +222,12 @@ export function mountApp(container, options = {}) {
     canvas = doc.createElement('canvas');
     if (typeof canvas.setAttribute === 'function') {
       canvas.setAttribute('data-testid', 'chart-canvas');
+      canvas.setAttribute('class', 'chart-canvas');
     }
-    canvas.className = 'chart-canvas';
     canvas.id = 'chart-canvas';
 
-    const width = (opts && opts.width) || (target.clientWidth) || 800;
-    const height = (opts && opts.height) || (target.clientHeight) || 600;
+    const width = (opts && opts.width) || target.clientWidth || 800;
+    const height = (opts && opts.height) || target.clientHeight || 600;
     canvas.width = width;
     canvas.height = height;
 
@@ -183,7 +236,9 @@ export function mountApp(container, options = {}) {
     }
   }
 
-  // Assemble full UI chrome only when running in full browser DOM environment
+  let activeTool = (opts && (opts.toolMode || opts.tool)) || 'crosshair';
+
+  // Assemble navigation header
   let header = null;
   let liveStatus = null;
   if (isFullDom && target.tagName !== 'CANVAS') {
@@ -197,9 +252,13 @@ export function mountApp(container, options = {}) {
       }
     }
 
-    liveStatus = header ? (header.querySelector('[data-testid="live-status"]') || header.querySelector('.live-status')) : null;
+    liveStatus = header
+      ? header.querySelector('[data-testid="live-status"]') || header.querySelector('.live-status')
+      : null;
 
-    const tickerControl = header ? (header.querySelector('[data-testid="ticker-select"]') || header.querySelector('select')) : null;
+    const tickerControl = header
+      ? header.querySelector('[data-testid="ticker-select"]') || header.querySelector('select')
+      : null;
     if (tickerControl && typeof tickerControl.addEventListener === 'function') {
       tickerControl.addEventListener('change', (e) => {
         const val = (e && e.target && e.target.value) || tickerControl.value;
@@ -209,11 +268,21 @@ export function mountApp(container, options = {}) {
       });
     }
 
-    const timeframeControls = header ? (header.querySelector('[data-testid="timeframe-controls"]') || header.querySelector('.timeframe-controls')) : null;
+    const timeframeControls = header
+      ? header.querySelector('[data-testid="timeframe-controls"]') || header.querySelector('.timeframe-controls')
+      : null;
     if (timeframeControls && typeof timeframeControls.addEventListener === 'function') {
       timeframeControls.addEventListener('click', (e) => {
-        const btn = (e && e.target && (e.target.dataset?.timeframe ? e.target : (e.target.closest && e.target.closest('[data-timeframe]')))) || null;
-        const tf = (btn && btn.dataset && btn.dataset.timeframe) || (btn && typeof btn.getAttribute === 'function' && btn.getAttribute('data-timeframe'));
+        const btn =
+          (e &&
+            e.target &&
+            (e.target.dataset?.timeframe
+              ? e.target
+              : e.target.closest && e.target.closest('[data-timeframe]'))) ||
+          null;
+        const tf =
+          (btn && btn.dataset && btn.dataset.timeframe) ||
+          (btn && typeof btn.getAttribute === 'function' && btn.getAttribute('data-timeframe'));
         if (tf && innerChart && typeof innerChart.setTimeframe === 'function') {
           innerChart.setTimeframe(tf);
         }
@@ -221,11 +290,42 @@ export function mountApp(container, options = {}) {
     }
   }
 
-  // Initialize interactive pan gesture and animation controller on canvas
+  // Mount interactive tool palette
+  let toolPaletteObj = null;
+  let palette = target.querySelector
+    ? target.querySelector('[data-testid="tool-palette"]') || target.querySelector('.tool-palette')
+    : null;
+
+  if (!palette && isFullDom && target.tagName !== 'CANVAS') {
+    toolPaletteObj = createToolPalette(
+      doc,
+      (selectedTool) => {
+        activeTool = selectedTool;
+        if (chart) {
+          if (typeof chart.setToolMode === 'function') {
+            chart.setToolMode(selectedTool);
+          } else if (typeof chart.setMode === 'function') {
+            chart.setMode(selectedTool);
+          }
+        }
+      },
+      activeTool
+    );
+    palette = toolPaletteObj.palette;
+
+    if (typeof target.insertBefore === 'function' && canvas && canvas.parentElement === target) {
+      target.insertBefore(palette, canvas);
+    } else if (typeof target.appendChild === 'function') {
+      target.appendChild(palette);
+    }
+  }
+
+  // Initialize interactive canvas controller
   let chart = canvas && canvas.__chartCanvas;
   if (!chart && canvas) {
     chart = new ChartCanvas(canvas, {
       ...opts,
+      toolMode: activeTool,
       onRender: (cc, time) => {
         if (liveStatus) {
           const secs = typeof time === 'number' ? (time / 1000).toFixed(1) : '0.0';
@@ -239,7 +339,15 @@ export function mountApp(container, options = {}) {
     canvas.__chartCanvas = chart;
   }
 
-  // Initialize data series chart renderer if available
+  if (chart) {
+    if (typeof chart.setToolMode === 'function') {
+      chart.setToolMode(activeTool);
+    } else if (typeof chart.setMode === 'function') {
+      chart.setMode(activeTool);
+    }
+  }
+
+  // Initialize candlestick series chart
   let innerChart = null;
   try {
     if (typeof Chart === 'function' && canvas) {
@@ -248,7 +356,9 @@ export function mountApp(container, options = {}) {
         height: (canvas && canvas.height) || 600,
         priceScaleWidth: opts.priceScaleWidth !== undefined ? opts.priceScaleWidth : 60,
         timeScaleHeight: opts.timeScaleHeight !== undefined ? opts.timeScaleHeight : 30,
-        candles: (opts && (opts.candles || opts.data)) || (typeof generateDefaultCandles === 'function' ? generateDefaultCandles(60) : []),
+        candles:
+          (opts && (opts.candles || opts.data)) ||
+          (typeof generateDefaultCandles === 'function' ? generateDefaultCandles(60) : []),
         ticker: (opts && opts.ticker) || 'BTC-USD',
         timeframe: (opts && opts.timeframe) || '1h',
         ...opts,
@@ -260,17 +370,33 @@ export function mountApp(container, options = {}) {
     }
   } catch (_) {}
 
-  // Ensure continuous animation loop is active
   if (chart && typeof chart.startAnimationLoop === 'function') {
     chart.startAnimationLoop();
   }
 
-  // Application runtime instance
+  // Application instance
   const appInstance = {
     chart,
     canvas,
     container: target,
+    palette,
     innerChart,
+    getActiveTool() {
+      return activeTool;
+    },
+    getToolMode() {
+      return activeTool;
+    },
+    setToolMode(tool) {
+      activeTool = tool;
+      if (toolPaletteObj) {
+        toolPaletteObj.updateActiveState(tool);
+      }
+      if (chart) {
+        if (typeof chart.setToolMode === 'function') chart.setToolMode(tool);
+        else if (typeof chart.setMode === 'function') chart.setMode(tool);
+      }
+    },
     getChart() {
       return this.chart;
     },
@@ -288,6 +414,23 @@ export function mountApp(container, options = {}) {
         this.chart.destroy();
       }
     },
+    unmount() {
+      this.destroy();
+      if (palette && palette.parentElement) {
+        palette.parentElement.removeChild(palette);
+      }
+      if (header && header.parentElement) {
+        header.parentElement.removeChild(header);
+      }
+      if (canvas && canvas.parentElement) {
+        canvas.parentElement.removeChild(canvas);
+      }
+      if (target) {
+        target.__nexus_mounted = false;
+        delete target.__appInstance;
+        delete target.__chart;
+      }
+    },
   };
 
   if (chart) {
@@ -303,9 +446,6 @@ export function mountApp(container, options = {}) {
   return appInstance;
 }
 
-/**
- * Canonical initialization and mounting aliases.
- */
 export function initApp(container, options = {}) {
   return mountApp(container, options);
 }
@@ -318,7 +458,25 @@ export function init(container, options = {}) {
   return mountApp(container, options);
 }
 
-export default initApp;
+export function initializeApp(container, options = {}) {
+  return mountApp(container, options);
+}
+
+export function bootstrap(container, options = {}) {
+  return mountApp(container, options);
+}
+
+export function unmount(container) {
+  const target =
+    typeof container === 'string' && typeof document !== 'undefined'
+      ? document.querySelector(container)
+      : container || (typeof document !== 'undefined' ? document.getElementById('app') : null);
+  if (target && target.__appInstance && typeof target.__appInstance.unmount === 'function') {
+    target.__appInstance.unmount();
+  }
+}
+
+export default mountApp;
 
 // CRITICAL ENTRYPOINT AUTO-MOUNT INVARIANT
 if (typeof document !== 'undefined') {
