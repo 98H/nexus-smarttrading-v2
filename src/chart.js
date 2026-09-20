@@ -124,6 +124,26 @@ export class Chart {
     return this.candles || [];
   }
 
+  updateTick(price) {
+    if (this.candles && this.candles.length > 0) {
+      const last = this.candles[this.candles.length - 1];
+      last.close = price;
+      if (price > last.high) last.high = price;
+      if (price < last.low) last.low = price;
+    }
+    this.render();
+  }
+
+  addCandle(candle) {
+    if (!this.candles) {
+      this.candles = [];
+    }
+    this.candles.push(candle);
+    this.data = this.candles;
+    this.updateScales();
+    this.render();
+  }
+
   get zoom() {
     return this.viewport.scale;
   }
