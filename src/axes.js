@@ -3,7 +3,7 @@
  * Handles rendering of background coordinate gridlines, right-hand vertical price scale,
  * and bottom horizontal time scale across active candlestick chart areas.
  * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02),
- * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), and STORY 45.1.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
+ * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), and STORY 46.1.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
  */
 
 /**
@@ -118,7 +118,7 @@ export function computeRanges(candles) {
 /**
  * Calculates time axis tick positions and timestamps scaled dynamically across [plotLeft, plotRight].
  * Distributes timestamp markers proportionally across at least 50% of the horizontal chart width
- * without clumping (resolves TIME_AXIS_TEXT_CLUMPING, STORY 45.1.1).
+ * without clumping (resolves TIME_AXIS_TEXT_CLUMPING, STORY 46.1.1).
  *
  * @param {Object|number|Array} [optionsOrRange={}]
  * @param {Object|number} [maybePlotArea=null]
@@ -233,7 +233,7 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
     ? opts.plotWidth
     : (plotArea.width !== undefined ? plotArea.width : defaultPlotWidth);
 
-  // Guarantee proportional label distribution across at least 50% of horizontal chart width (STORY 45.1.1)
+  // Guarantee proportional label distribution across at least 50% of horizontal chart width (STORY 46.1.1)
   const effectiveChartWidth = Math.max(chartW, plotLeft + plotWidth + priceAxisWidth);
   const effectivePlotWidth = Math.max(0, plotWidth > 0 ? plotWidth : (effectiveChartWidth - priceAxisWidth));
   const minRequiredSpan = Math.max(effectiveChartWidth * 0.5, effectivePlotWidth * 0.5, 100);
@@ -359,7 +359,9 @@ export function updateDOMTimeAxisTrack(trackElement, timeRange, steps = 5) {
     trackElement.style.boxSizing = 'border-box';
   }
 
-  if (typeof trackElement.removeChild === 'function') {
+  if (typeof trackElement.replaceChildren === 'function') {
+    trackElement.replaceChildren();
+  } else if (typeof trackElement.removeChild === 'function') {
     while (trackElement.firstChild) {
       trackElement.removeChild(trackElement.firstChild);
     }
@@ -369,40 +371,41 @@ export function updateDOMTimeAxisTrack(trackElement, timeRange, steps = 5) {
   }
 
   const labels = [];
+  const doc = typeof document !== 'undefined' ? document : (globalThis.document || null);
+
   for (let i = 0; i <= steps; i++) {
     const timeVal = min + ((max - min) * i) / steps;
     const label = formatTimestamp(timeVal, isDaily);
     labels.push(label);
 
     let marker;
-    if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
-      marker = document.createElement('span');
-      marker.className = 'time-axis-marker';
-      marker.textContent = label;
-      if (marker.style) {
-        marker.style.color = '#787b86';
-        marker.style.fontSize = '11px';
-        marker.style.fontFamily = 'sans-serif';
-        marker.style.userSelect = 'none';
-        marker.style.pointerEvents = 'none';
-        marker.style.whiteSpace = 'nowrap';
-        marker.style.flex = '0 0 auto';
-      }
+    if (doc && typeof doc.createElement === 'function') {
+      marker = doc.createElement('span');
     } else {
       marker = {
         tagName: 'SPAN',
         className: 'time-axis-marker',
         textContent: label,
-        style: {
-          color: '#787b86',
-          fontSize: '11px',
-          fontFamily: 'sans-serif',
-          userSelect: 'none',
-          pointerEvents: 'none',
-          whiteSpace: 'nowrap',
-          flex: '0 0 auto',
-        },
+        style: {},
       };
+    }
+
+    marker.className = 'time-axis-marker';
+    marker.textContent = label;
+
+    if (typeof marker.setAttribute === 'function') {
+      marker.setAttribute('class', 'time-axis-marker');
+      marker.setAttribute('data-time', String(timeVal));
+    }
+
+    if (marker.style) {
+      marker.style.color = '#787b86';
+      marker.style.fontSize = '11px';
+      marker.style.fontFamily = 'sans-serif';
+      marker.style.userSelect = 'none';
+      marker.style.pointerEvents = 'none';
+      marker.style.whiteSpace = 'nowrap';
+      marker.style.flex = '0 0 auto';
     }
 
     if (typeof trackElement.appendChild === 'function') {
@@ -1007,5 +1010,11 @@ export class AxesRenderer {
     this.renderTimeScale(timeRange);
   }
 }
+
+AxesRenderer.formatTimestamp = formatTimestamp;
+AxesRenderer.computeRanges = computeRanges;
+AxesRenderer.calculateTimeTicks = calculateTimeTicks;
+AxesRenderer.updateDOMTimeAxisTrack = updateDOMTimeAxisTrack;
+AxesRenderer.AxesRenderer = AxesRenderer;
 
 export default AxesRenderer;
