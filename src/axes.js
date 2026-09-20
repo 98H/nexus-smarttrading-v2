@@ -3,7 +3,7 @@
  * Handles rendering of background coordinate gridlines, right-hand vertical price scale,
  * and bottom horizontal time scale across active candlestick chart areas.
  * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02),
- * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), and STORY 43.1.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
+ * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), STORY 43.1.1, and STORY 44.1.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
  */
 
 /**
@@ -37,34 +37,84 @@ export function formatTimestamp(timestamp, isDaily = false) {
 /**
  * Calculates time axis tick positions and timestamps scaled dynamically across [plotLeft, plotRight].
  * Distributes timestamp markers proportionally across at least 50% of the chart width to resolve
- * TIME_AXIS_TEXT_CLUMPING (STORY 43.1.1).
+ * TIME_AXIS_TEXT_CLUMPING (STORY 44.1.1).
  *
  * @param {Object|number|Array} [optionsOrRange={}]
  * @param {Object|number} [maybePlotArea=null]
- * @param {number} [maybeCandleCount=null]
- * @returns {Array<{ x: number, time: number, label: string, index: number }>}
+ * @param {number|Object} [maybeCandleCount=null]
+ * @returns {Array<{ x: number, time: number, timestamp: number, label: string, index: number }>}
  */
 export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, maybeCandleCount = null) {
   let opts = {};
+
   if (typeof optionsOrRange === 'number') {
-    opts = { width: optionsOrRange, chartWidth: optionsOrRange, W: optionsOrRange };
-    if (typeof maybePlotArea === 'object' && maybePlotArea !== null) {
-      opts.plotArea = maybePlotArea;
-    } else if (typeof maybePlotArea === 'number') {
-      opts.min = maybePlotArea;
+    if (optionsOrRange > 1e6 && typeof maybePlotArea === 'number' && maybePlotArea > 1e6) {
+      // Called as: calculateTimeTicks(minTime, maxTime, widthOrPlotArea)
+      opts.min = optionsOrRange;
+      opts.max = maybePlotArea;
+      if (typeof maybeCandleCount === 'number') {
+        opts.width = maybeCandleCount;
+        opts.chartWidth = maybeCandleCount;
+        opts.plotWidth = maybeCandleCount;
+      } else if (typeof maybeCandleCount === 'object' && maybeCandleCount !== null) {
+        opts.plotArea = maybeCandleCount;
+        if (maybeCandleCount.width !== undefined) {
+          opts.width = maybeCandleCount.width;
+          opts.chartWidth = maybeCandleCount.width;
+          opts.plotWidth = maybeCandleCount.width;
+        }
+      }
+    } else {
+      // Called as: calculateTimeTicks(width, maybePlotAreaOrTimeRange)
+      opts = { width: optionsOrRange, chartWidth: optionsOrRange, W: optionsOrRange };
+      if (typeof maybePlotArea === 'object' && maybePlotArea !== null) {
+        if (maybePlotArea.min !== undefined || maybePlotArea.max !== undefined) {
+          opts.min = maybePlotArea.min;
+          opts.max = maybePlotArea.max;
+        } else if (maybePlotArea.timeRange) {
+          opts.timeRange = maybePlotArea.timeRange;
+        } else {
+          opts.plotArea = maybePlotArea;
+        }
+      } else if (typeof maybePlotArea === 'number') {
+        opts.min = maybePlotArea;
+      }
     }
   } else if (Array.isArray(optionsOrRange)) {
-    opts = { candles: optionsOrRange, candleCount: optionsOrRange.length };
-    if (typeof maybePlotArea === 'object' && maybePlotArea !== null) opts.plotArea = maybePlotArea;
-    else if (typeof maybePlotArea === 'number') opts.width = maybePlotArea;
+    // Array of timestamps [min, max] or array of candles
+    if (optionsOrRange.length >= 2 && typeof optionsOrRange[0] === 'number') {
+      opts.min = Math.min(...optionsOrRange);
+      opts.max = Math.max(...optionsOrRange);
+    } else {
+      opts = { candles: optionsOrRange, candleCount: optionsOrRange.length };
+    }
+    if (typeof maybePlotArea === 'object' && maybePlotArea !== null) {
+      opts.plotArea = maybePlotArea;
+      if (maybePlotArea.width !== undefined) {
+        opts.width = maybePlotArea.width;
+        opts.chartWidth = maybePlotArea.width;
+      }
+    } else if (typeof maybePlotArea === 'number') {
+      opts.width = maybePlotArea;
+      opts.chartWidth = maybePlotArea;
+    }
     if (typeof maybeCandleCount === 'number') opts.candleCount = maybeCandleCount;
   } else if (typeof optionsOrRange === 'object' && optionsOrRange !== null) {
     opts = { ...optionsOrRange };
     if (typeof maybePlotArea === 'object' && maybePlotArea !== null) {
       opts.plotArea = maybePlotArea;
+      if (maybePlotArea.width !== undefined) {
+        if (opts.width === undefined) opts.width = maybePlotArea.width;
+        if (opts.chartWidth === undefined) opts.chartWidth = maybePlotArea.width;
+        if (opts.plotWidth === undefined) opts.plotWidth = maybePlotArea.width;
+      }
+      if (maybePlotArea.height !== undefined && opts.height === undefined) {
+        opts.height = maybePlotArea.height;
+      }
     } else if (typeof maybePlotArea === 'number') {
-      opts.width = maybePlotArea;
-      opts.chartWidth = maybePlotArea;
+      if (opts.width === undefined) opts.width = maybePlotArea;
+      if (opts.chartWidth === undefined) opts.chartWidth = maybePlotArea;
+      if (opts.plotWidth === undefined) opts.plotWidth = maybePlotArea;
     }
     if (typeof maybeCandleCount === 'number') {
       opts.candleCount = maybeCandleCount;
@@ -74,7 +124,17 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
   const canvas = opts.canvas || (opts.plotArea && opts.plotArea.canvas) || null;
   const priceAxisWidth = opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 70;
 
-  const chartW = opts.W || opts.width || opts.chartWidth || opts.canvasWidth || (canvas && canvas.width) || 0;
+  const chartW = opts.W ||
+    opts.width ||
+    opts.chartWidth ||
+    opts.canvasWidth ||
+    opts.containerWidth ||
+    opts.viewportWidth ||
+    opts.viewWidth ||
+    (opts.viewport && opts.viewport.width) ||
+    (opts.dimensions && opts.dimensions.width) ||
+    (canvas && canvas.width) ||
+    0;
 
   let defaultPlotWidth = 730;
   if (chartW > 0) {
@@ -87,7 +147,7 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
     ? opts.plotWidth
     : (plotArea.width !== undefined ? plotArea.width : defaultPlotWidth);
 
-  // Guarantee proportional label distribution across at least 50% of chart width (STORY 43.1.1)
+  // Guarantee proportional label distribution across at least 50% of chart width (STORY 44.1.1)
   const effectiveChartWidth = chartW || (canvas && canvas.width) || (plotLeft + plotWidth + priceAxisWidth) || 800;
   const minRequiredSpan = effectiveChartWidth * 0.5;
 
@@ -161,13 +221,19 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
     ticks.push({
       x,
       time: timeVal,
+      timestamp: timeVal,
+      t: timeVal,
       label,
+      text: label,
       index: i,
     });
   }
 
   return ticks;
 }
+
+export const timeAxisGenerator = calculateTimeTicks;
+export const generateTimeTicks = calculateTimeTicks;
 
 /**
  * Synchronizes and updates the DOM-based time axis track container with formatted marker spans.
@@ -356,10 +422,10 @@ export class AxesRenderer {
 
     const canvasWidth = (this.canvas && typeof this.canvas.width === 'number' && this.canvas.width > 0)
       ? this.canvas.width
-      : (opts.width || 800);
+      : (opts.width || opts.viewportWidth || 800);
     const canvasHeight = (this.canvas && typeof this.canvas.height === 'number' && this.canvas.height > 0)
       ? this.canvas.height
-      : (opts.height || 600);
+      : (opts.height || opts.viewportHeight || 600);
 
     if (opts.plotArea) {
       this.plotArea = {
@@ -388,6 +454,8 @@ export class AxesRenderer {
     this.font = opts.font || '11px sans-serif';
     this.priceRange = opts.priceRange || (opts.ranges?.priceRange) || { min: 100, max: 200 };
     this.timeRange = opts.timeRange || (opts.ranges?.timeRange) || { min: 1700000000, max: 1700086400 };
+
+    this.timeAxisGenerator = (ticksOpts = {}) => this.calculateTimeTicks(ticksOpts);
   }
 
   /**
@@ -481,18 +549,32 @@ export class AxesRenderer {
 
   /**
    * Calculates time axis tick positions and timestamps scaled dynamically across [plotLeft, plotRight].
-   * Resolves TIME_AXIS_TEXT_CLUMPING (STORY 43.1.1).
+   * Resolves TIME_AXIS_TEXT_CLUMPING (STORY 44.1.1).
    *
    * @param {Object} [options={}]
-   * @returns {Array<{ x: number, time: number, label: string, index: number }>}
+   * @returns {Array<{ x: number, time: number, timestamp: number, label: string, index: number }>}
    */
   calculateTimeTicks(options = {}) {
     const canvasW = (this.canvas && this.canvas.width) || 0;
+    const canvasH = (this.canvas && this.canvas.height) || 0;
     return calculateTimeTicks({
       plotArea: this.plotArea,
       canvas: this.canvas,
       chartWidth: canvasW,
+      canvasWidth: canvasW,
+      canvasHeight: canvasH,
+      viewportWidth: canvasW,
+      viewportHeight: canvasH,
+      viewport: {
+        width: canvasW,
+        height: canvasH,
+        plotWidth: this.plotArea ? this.plotArea.width : this.plotWidth,
+        plotHeight: this.plotArea ? this.plotArea.height : this.plotHeight,
+      },
       priceAxisWidth: this.priceAxisWidth,
+      timeAxisHeight: this.timeAxisHeight,
+      plotWidth: this.plotArea ? this.plotArea.width : this.plotWidth,
+      plotHeight: this.plotArea ? this.plotArea.height : this.plotHeight,
       min: this.timeRange ? this.timeRange.min : 1700000000,
       max: this.timeRange ? this.timeRange.max : 1700086400,
       candles: this.candles,
@@ -646,7 +728,7 @@ export class AxesRenderer {
 
   /**
    * Draws a bottom horizontal time scale axis with timestamp tick marks and formatted labels.
-   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 36.1.1) and TIME_AXIS_TEXT_CLUMPING (STORY 43.1.1).
+   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 36.1.1) and TIME_AXIS_TEXT_CLUMPING (STORY 44.1.1).
    *
    * @param {Object|Array} [range={}]
    * @param {number} [range.min=1700000000]
