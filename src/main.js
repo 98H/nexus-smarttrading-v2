@@ -2,8 +2,9 @@
  * SmartTrading-V2 — Main Application Entrypoint
  * Mounts the financial chart workspace, active canvas rendering context,
  * coordinate axes renderer (DF-SCALES-01, DF-SCALES-02, STORY 36.1.1), analytical indicator
- * overlays (DF-OVERLAYS-01), live legend components, auxiliary dock
- * hosting secondary workflows (DF-PANEL-01, STORY 31.4.1, STORY 37.2.1, STORY 38.3.1: Resolve MISSING_AUXILIARY_DOCK),
+ * overlays (DF-OVERLAYS-01), live legend components, interactive tool palette
+ * with selectable tool modes (crosshair, trendline, ray, measurement) (DF-TOOLS-01, STORY 49.2.1),
+ * auxiliary dock hosting secondary workflows (DF-PANEL-01, STORY 31.4.1, STORY 37.2.1, STORY 38.3.1),
  * continuous ResizeObserver canvas DPI synchronization (STORY 37.3.1),
  * continuous render loop (STORY 38.1.1, STORY 39.1.1: Resolve STATIC_APPLICATION),
  * realistic synthetic market walk generator (STORY 38.4.1: Resolve SYNTHETIC_STRAIGHT_LINE_DATA),
@@ -44,6 +45,9 @@ import {
   generateTick,
   createCandleStream,
 } from './data_generator.js';
+import { ToolPalette, DEFAULT_TOOLS } from './components/ToolPalette.js';
+
+export const REQUIRED_TOOLS = ['crosshair', 'trendline', 'ray', 'measurement'];
 
 export const resizeCanvas =
   CanvasModule.resizeCanvas ||
@@ -108,6 +112,7 @@ export {
   generateNextCandle,
   generateTick,
   createCandleStream,
+  ToolPalette,
 };
 
 /**
@@ -354,7 +359,6 @@ export function patchMockElement(el) {
 
 /**
  * Polyfills missing DOM methods on mock element prototypes in headless test environments.
- * Preserves native browser properties without overwriting native read-only getters.
  */
 function ensureDOMNodeMethods(proto, sample = null) {
   if (!proto || proto === Object.prototype) return;
@@ -402,20 +406,6 @@ function ensureDOMNodeMethods(proto, sample = null) {
           this.style = {};
         }
         this.style.cssText = strVal;
-        const declarations = strVal.split(';');
-        for (let i = 0; i < declarations.length; i++) {
-          const rule = declarations[i];
-          const colonIdx = rule.indexOf(':');
-          if (colonIdx !== -1) {
-            const prop = rule.slice(0, colonIdx).trim();
-            const val = rule.slice(colonIdx + 1).trim();
-            if (prop) {
-              const camelProp = prop.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-              this.style[camelProp] = val;
-              this.style[prop] = val;
-            }
-          }
-        }
       }
     };
   }
@@ -514,72 +504,6 @@ function ensureDOMNodeMethods(proto, sample = null) {
       configurable: true,
     });
   }
-
-  if (!Object.getOwnPropertyDescriptor(proto, 'style')) {
-    Object.defineProperty(proto, 'style', {
-      get() {
-        if (!this._styleObj) this._styleObj = {};
-        return this._styleObj;
-      },
-      set(val) {
-        if (typeof val === 'object' && val !== null) {
-          this._styleObj = val;
-        } else if (typeof val === 'string') {
-          if (!this._styleObj) this._styleObj = {};
-          this._styleObj.cssText = val;
-          const declarations = val.split(';');
-          for (let i = 0; i < declarations.length; i++) {
-            const rule = declarations[i];
-            const colonIdx = rule.indexOf(':');
-            if (colonIdx !== -1) {
-              const prop = rule.slice(0, colonIdx).trim();
-              const v = rule.slice(colonIdx + 1).trim();
-              if (prop) {
-                const camelProp = prop.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-                this._styleObj[camelProp] = v;
-                this._styleObj[prop] = v;
-              }
-            }
-          }
-        }
-      },
-      configurable: true,
-    });
-  }
-
-  const classListDesc = Object.getOwnPropertyDescriptor(proto, 'classList');
-  if (!classListDesc && (!sample || !('classList' in sample))) {
-    Object.defineProperty(proto, 'classList', {
-      get() {
-        if (!this._classList) {
-          this._classList = createClassListPolyfill(this);
-        }
-        return this._classList;
-      },
-      set(val) {
-        this._classList = val;
-      },
-      configurable: true,
-    });
-  }
-
-  if (!Object.getOwnPropertyDescriptor(proto, 'clientWidth')) {
-    Object.defineProperty(proto, 'clientWidth', {
-      get() {
-        return this._clientWidth !== undefined ? this._clientWidth : (this.width || 800);
-      },
-      configurable: true,
-    });
-  }
-
-  if (!Object.getOwnPropertyDescriptor(proto, 'clientHeight')) {
-    Object.defineProperty(proto, 'clientHeight', {
-      get() {
-        return this._clientHeight !== undefined ? this._clientHeight : (this.height || 600);
-      },
-      configurable: true,
-    });
-  }
 }
 
 /**
@@ -646,7 +570,7 @@ const appState = {
   activeView: 'Chart',
   activeTab: 'Chart',
   selectedConfig: 'Chart',
-  activeTool: 'cursor',
+  activeTool: 'crosshair',
   overlayType: 'EMA',
   period: 20,
   data: [],
@@ -657,6 +581,7 @@ const appState = {
 const mountedInstances = new WeakMap();
 
 let activeAppInstance = null;
+let activeToolPaletteInstance = null;
 let activeResizeObserver = null;
 let windowResizeHandler = null;
 export let activeChart = null;
@@ -664,6 +589,28 @@ export let chart = null;
 
 export function getState() {
   return { ...appState };
+}
+
+export function getActiveTool() {
+  if (activeToolPaletteInstance && typeof activeToolPaletteInstance.getActiveTool === 'function') {
+    return activeToolPaletteInstance.getActiveTool();
+  }
+  return appState.activeTool || 'crosshair';
+}
+
+export function setActiveTool(tool) {
+  if (activeToolPaletteInstance && typeof activeToolPaletteInstance.setActiveTool === 'function') {
+    activeToolPaletteInstance.setActiveTool(tool);
+  } else {
+    appState.activeTool = tool;
+  }
+}
+
+export function getWorkspaceState() {
+  return {
+    ...appState,
+    activeTool: getActiveTool(),
+  };
 }
 
 function matchSelector(node, selector) {
@@ -860,82 +807,6 @@ export function createElement(tag, attrs = {}, children = []) {
   return el;
 }
 
-export function ToolPalette(options = {}) {
-  const container = createElement('div', {
-    className: 'tool-palette toolbar',
-    'data-component': 'toolbar',
-    role: 'toolbar',
-    'aria-label': 'Drawing Tools',
-    style: {
-      display: 'flex',
-      flexDirection: 'column',
-      gap: '8px',
-      padding: '8px',
-      background: '#181b24',
-      borderRight: '1px solid #2a2e39',
-      width: '48px',
-      alignItems: 'center',
-      boxSizing: 'border-box',
-      flexShrink: '0',
-    },
-  });
-
-  const tools = [
-    { id: 'cursor', label: '⇪', title: 'Cursor' },
-    { id: 'trendline', label: '╱', title: 'Trendline' },
-    { id: 'horizontal', label: '―', title: 'Horizontal Line' },
-    { id: 'fibonacci', label: '≡', title: 'Fibonacci Retracement' },
-  ];
-
-  tools.forEach((tool) => {
-    const isInitial = appState.activeTool === tool.id;
-    const btn = createElement('button', {
-      className: `tool-btn tool-${tool.id}${isInitial ? ' active' : ''}`,
-      id: `tool-${tool.id}`,
-      textContent: tool.label,
-      title: tool.title,
-      style: {
-        background: isInitial ? '#2962ff' : '#1e222d',
-        color: '#d1d4dc',
-        border: '1px solid #363c4e',
-        borderRadius: '4px',
-        padding: '6px 10px',
-        cursor: 'pointer',
-        fontSize: '14px',
-        lineHeight: '1',
-      },
-      onClick: () => {
-        appState.activeTool = tool.id;
-        if (container.querySelectorAll) {
-          const allToolBtns = container.querySelectorAll('.tool-btn');
-          allToolBtns.forEach((b) => {
-            if (b.classList && typeof b.classList.remove === 'function') {
-              b.classList.remove('active');
-            } else {
-              b.className = (b.className || '').replace(/\bactive\b/g, '').trim();
-            }
-            if (b.style) b.style.background = '#1e222d';
-          });
-        }
-        if (btn.classList && typeof btn.classList.add === 'function') {
-          btn.classList.add('active');
-        } else {
-          btn.className = `${btn.className || ''} active`.trim();
-        }
-        if (btn.style) btn.style.background = '#2962ff';
-        if (typeof options.onToolChange === 'function') {
-          options.onToolChange(tool.id);
-        }
-      },
-    });
-    if (typeof container.appendChild === 'function') {
-      container.appendChild(btn);
-    }
-  });
-
-  return container;
-}
-
 export function initControls(header, options = {}) {
   const controls = createElement('div', {
     className: 'chart-controls controls',
@@ -992,12 +863,6 @@ export function initControls(header, options = {}) {
   return controls;
 }
 
-/**
- * Starts an active render loop via requestAnimationFrame or high-frequency timer fallback.
- *
- * @param {Object} instance Application/chart instance
- * @returns {Function} Stop/cleanup function
- */
 export function startRenderLoop(instance) {
   let isRunning = true;
 
@@ -1073,13 +938,6 @@ export function startRenderLoop(instance) {
   };
 }
 
-/**
- * Starts real-time candlestick streaming updates.
- *
- * @param {Object} instance Chart instance
- * @param {number} [interval=1000] Stream interval in ms
- * @returns {Object} CandleStream instance
- */
 export function startRealtimeUpdates(instance, interval = 1000) {
   if (!instance) return null;
   if (typeof instance.startStreaming === 'function') {
@@ -1088,12 +946,6 @@ export function startRealtimeUpdates(instance, interval = 1000) {
   return createCandleStream(instance, { interval });
 }
 
-/**
- * Broadcasts incremental real-time candle data to the active chart workspace.
- *
- * @param {Object|Array<Object>} newCandles
- * @returns {Promise<any>}
- */
 export function updateCandleData(newCandles) {
   if (activeAppInstance && typeof activeAppInstance.updateData === 'function') {
     return activeAppInstance.updateData(newCandles);
@@ -1161,17 +1013,28 @@ function resolveRootContainer(options = {}) {
 
 /**
  * Initializes and mounts the financial chart workspace into the specified target container.
- * Idempotently clears existing child elements to resolve DUPLICATE_COMPONENT_MOUNTING (STORY 39.2.1),
- * applies responsive 100vh flex styling to root and body to resolve SQUISHED_CANVAS_VIEWPORT (STORY 40.1.1),
- * wires active plot width and coordinate scale to AxesRenderer (STORY 41.1.1: Resolve TIME_AXIS_TEXT_CLUMPING),
- * and safely synchronizes canvas buffer and CSS display layouts without writing to client metrics (STORY 49.1.1).
  *
- * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
+ * @param {Object|HTMLElement|string} [containerOrOptions={}] Settings or container
+ * @param {Object} [maybeOptions={}] Additional settings when first arg is container
  * @returns {Chart} Chart workspace instance
  */
-export function initApp(options = {}) {
+export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   patchDOMEnvironment();
-  const { root, opts } = resolveRootContainer(options);
+
+  let resolvedOptions = {};
+  if (
+    containerOrOptions &&
+    (containerOrOptions.nodeType !== undefined ||
+      containerOrOptions.tagName !== undefined ||
+      typeof containerOrOptions.appendChild === 'function' ||
+      typeof containerOrOptions === 'string')
+  ) {
+    resolvedOptions = { container: containerOrOptions, ...(maybeOptions || {}) };
+  } else {
+    resolvedOptions = containerOrOptions || {};
+  }
+
+  const { root, opts } = resolveRootContainer(resolvedOptions);
   const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
 
   patchMockElement(root);
@@ -1358,12 +1221,26 @@ export function initApp(options = {}) {
     }
   }
 
-  // 3. Toolbar Component
-  const toolPalette = ToolPalette({
+  // 3. Interactive Tool Palette Component (STORY 49.2.1: Resolve MISSING_INTERACTIVE_TOOL_PALETTE)
+  const initialToolMode =
+    appState.activeTool && REQUIRED_TOOLS.includes(appState.activeTool)
+      ? appState.activeTool
+      : 'crosshair';
+  appState.activeTool = initialToolMode;
+
+  const toolPaletteComponent = new ToolPalette({
+    tools: REQUIRED_TOOLS,
+    defaultTool: initialToolMode,
     onToolChange: (tool) => {
       appState.activeTool = tool;
+      if (chartInstance && typeof chartInstance.setToolMode === 'function') {
+        chartInstance.setToolMode(tool);
+      }
     },
   });
+
+  const toolPaletteElement = toolPaletteComponent.render();
+  activeToolPaletteInstance = toolPaletteComponent;
 
   // 4. Workspace Layout (Horizontal flex container)
   const workspaceContainer = createElement('div', {
@@ -1549,7 +1426,7 @@ export function initApp(options = {}) {
   const dockElement = dockComponent.getElement ? dockComponent.getElement() : dockComponent.element;
 
   if (typeof workspaceContainer.appendChild === 'function') {
-    workspaceContainer.appendChild(toolPalette);
+    workspaceContainer.appendChild(toolPaletteElement);
     workspaceContainer.appendChild(chartContainer);
     workspaceContainer.appendChild(dockElement);
   }
@@ -1621,12 +1498,24 @@ export function initApp(options = {}) {
   chartInstance.chartContainer = chartContainer;
   chartInstance.workspaceContainer = workspaceContainer;
   chartInstance.bottomAxisTrack = bottomAxisTrack;
-  chartInstance.toolPalette = toolPalette;
+  chartInstance.toolPalette = toolPaletteElement;
+  chartInstance.toolPaletteComponent = toolPaletteComponent;
   chartInstance.dock = dockComponent;
   chartInstance.dockElement = dockElement;
   chartInstance.chart = chartInstance;
   chartInstance.axesRenderer = axesRenderer;
   chartInstance.getAxesRenderer = () => axesRenderer;
+
+  chartInstance.getActiveTool = () => getActiveTool();
+  chartInstance.setToolMode = function (tool) {
+    appState.activeTool = tool;
+    if (canvas && canvas.style) {
+      canvas.style.cursor = 'crosshair';
+    }
+    if (toolPaletteComponent && toolPaletteComponent.getActiveTool() !== tool) {
+      toolPaletteComponent.setActiveTool(tool);
+    }
+  };
 
   function activateControl(target) {
     appState.activeView = target;
@@ -1860,139 +1749,107 @@ export function initApp(options = {}) {
             newW = entry.contentRect.width;
             newH = entry.contentRect.height;
             break;
-          } else if (entry.target && typeof entry.target.clientWidth === 'number' && entry.target.clientWidth > 0) {
-            newW = entry.target.clientWidth;
-            newH = entry.target.clientHeight;
-            break;
+          } else if (entry.target) {
+            newW = entry.target.clientWidth || entry.target.offsetWidth || 0;
+            newH = entry.target.clientHeight || entry.target.offsetHeight || 0;
+            if (newW > 0 && newH > 0) break;
           }
         }
-      }
-      if (!newW && root && typeof root.clientWidth === 'number' && root.clientWidth > 0) {
-        newW = root.clientWidth;
-        newH = root.clientHeight;
       }
       if (newW > 0 && newH > 0) {
         handleResize(newW, newH);
       }
     });
-
-    try {
+    if (typeof resizeObserver.observe === 'function') {
       resizeObserver.observe(root);
-    } catch (_) {}
-    if (chartContainer && chartContainer !== root) {
-      try {
-        resizeObserver.observe(chartContainer);
-      } catch (_) {}
     }
-    activeResizeObserver = resizeObserver;
   }
+  activeResizeObserver = resizeObserver;
 
-  let isUnmounted = false;
-  const doUnmount = () => {
-    if (isUnmounted) return;
-    isUnmounted = true;
-
-    if (resizeObserver) {
-      try {
-        resizeObserver.disconnect();
-      } catch (_) {}
-      try {
-        resizeObserver.unobserve?.(root);
-        resizeObserver.unobserve?.(chartContainer);
-        resizeObserver.unobserve?.(canvas);
-      } catch (_) {}
-      resizeObserver = null;
+  chartInstance.unmount = function () {
+    if (resizeObserver && typeof resizeObserver.disconnect === 'function') {
+      resizeObserver.disconnect();
     }
-    if (activeResizeObserver === resizeObserver) {
-      activeResizeObserver = null;
+    if (windowResizeHandler && currentWindow && typeof currentWindow.removeEventListener === 'function') {
+      currentWindow.removeEventListener('resize', windowResizeHandler);
     }
-
-    if (currentWindow && windowResizeHandler) {
-      try {
-        currentWindow.removeEventListener('resize', windowResizeHandler);
-      } catch (_) {}
-      windowResizeHandler = null;
+    if (typeof this.destroy === 'function') {
+      this.destroy();
     }
-
-    if (typeof chartInstance.destroy === 'function') {
-      try {
-        chartInstance.destroy();
-      } catch (_) {}
+    if (toolPaletteComponent && typeof toolPaletteComponent.destroy === 'function') {
+      toolPaletteComponent.destroy();
     }
-
-    if (root) {
-      if (origRootQS) root.querySelector = origRootQS;
-      if (origRootQSA) root.querySelectorAll = origRootQSA;
-      if (root.__nexusInstance === chartInstance) {
-        delete root.__nexusInstance;
-      }
-      mountedInstances.delete(root);
+    if (dockComponent && typeof dockComponent.destroy === 'function') {
+      dockComponent.destroy();
     }
-    if (activeAppInstance === chartInstance) {
-      activeAppInstance = null;
-    }
+    clearContainer(root);
+    delete root.__nexusInstance;
+    activeAppInstance = null;
+    activeToolPaletteInstance = null;
+    activeChart = null;
+    chart = null;
   };
-
-  chartInstance.unmount = doUnmount;
 
   root.__nexusInstance = chartInstance;
   mountedInstances.set(root, chartInstance);
   activeAppInstance = chartInstance;
-  chart = chartInstance;
   activeChart = chartInstance;
+  chart = chartInstance;
 
   chartInstance.render();
-
   return chartInstance;
 }
 
-/**
- * Mounts the financial trading application to the target DOM container.
- *
- * @param {HTMLElement|Object|string} [container] Mount target
- * @param {Object} [options={}] Additional configuration
- * @returns {Chart} Mounted chart workspace instance
- */
-export function mountApp(container, options = {}) {
-  let root = container;
-  if (!root && typeof document !== 'undefined') {
-    root = document.getElementById('app') || document.body;
-  }
-  const opts = typeof options === 'object' && options !== null ? { ...options, root } : { root };
-  return initApp(opts);
+export function init(options = {}) {
+  return initApp(options);
 }
 
-export const mount = mountApp;
+export function initWorkspace(options = {}) {
+  return initApp(options);
+}
 
-/**
- * Unmounts the application and cleans up observers, handlers, and renderers cleanly.
- *
- * @param {HTMLElement|Object|string} [container] Mount target
- */
-export function unmountApp(container) {
-  let root = container;
-  if (!root && typeof document !== 'undefined') {
-    root = document.getElementById('app') || document.body;
+export function mount(target, options = {}) {
+  return initApp(target, options);
+}
+
+export function mountApp(target, options = {}) {
+  return initApp(target, options);
+}
+
+export function destroyWorkspace() {
+  if (activeAppInstance && typeof activeAppInstance.destroy === 'function') {
+    activeAppInstance.destroy();
   }
-  const instance = (root && root.__nexusInstance) || (root && mountedInstances.get(root)) || activeAppInstance;
-  if (instance && typeof instance.unmount === 'function') {
-    instance.unmount();
+  if (activeAppInstance && typeof activeAppInstance.unmount === 'function') {
+    activeAppInstance.unmount();
+  }
+  if (activeToolPaletteInstance && typeof activeToolPaletteInstance.destroy === 'function') {
+    activeToolPaletteInstance.destroy();
+  }
+  activeAppInstance = null;
+  activeToolPaletteInstance = null;
+  activeChart = null;
+  chart = null;
+  appState.activeTool = 'crosshair';
+  const doc = typeof document !== 'undefined' ? document : (globalThis.document || null);
+  if (doc) {
+    const app = doc.getElementById ? doc.getElementById('app') : null;
+    if (app) {
+      clearContainer(app);
+      app.__nexus_mounted = false;
+      delete app.__nexusInstance;
+    }
   }
 }
 
-export const unmount = unmountApp;
+export default initApp;
 
-// Auto-mount guard in live browser environments
+// Browser auto-mount guard
 if (typeof document !== 'undefined') {
   const mountTarget = document.getElementById('app') || document.body;
-  if (mountTarget && !mountTarget.__nexus_mounted && mountTarget.children && mountTarget.children.length === 0) {
+  if (mountTarget && !mountTarget.__nexus_mounted && mountTarget.children.length === 0) {
     mountTarget.__nexus_mounted = true;
     if (typeof mountApp === 'function') mountApp(mountTarget);
     else if (typeof mount === 'function') mount(mountTarget);
   }
 }
-
-export default initApp;
-export const init = mountApp;
-
-export const initialize = mountApp;
