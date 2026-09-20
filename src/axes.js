@@ -2,8 +2,88 @@
  * SmartTrading-V2 — Coordinate Axes Renderer
  * Handles rendering of background coordinate gridlines, right-hand vertical price scale,
  * and bottom horizontal time scale across active candlestick chart areas.
- * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02), and STORY 34.1.1 (MISSING_HORIZONTAL_TIME_AXIS).
+ * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02), and STORY 35.1.1 (MISSING_HORIZONTAL_TIME_AXIS).
  */
+
+/**
+ * Formats a numeric timestamp into a readable date/time marker string.
+ *
+ * @param {number} timestamp - Unix epoch in seconds or milliseconds
+ * @param {boolean} [isDaily=false] - Whether the time span spans multiple days
+ * @returns {string} Formatted timestamp marker (HH:mm or YYYY-MM-DD)
+ */
+export function formatTimestamp(timestamp, isDaily = false) {
+  const t = timestamp < 1e11 ? timestamp * 1000 : timestamp;
+  const validTime = Number.isFinite(t) ? t : Date.now();
+  const date = new Date(validTime);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(Math.round(timestamp));
+  }
+
+  if (isDaily) {
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(date.getUTCDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  const hours = String(date.getUTCHours()).padStart(2, '0');
+  const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
+/**
+ * Synchronizes and updates the DOM-based time axis track container with formatted marker spans.
+ *
+ * @param {HTMLElement|Object} trackElement - Bottom axis DOM container
+ * @param {{ min: number, max: number }} timeRange - Domain time bounds
+ * @param {number} [steps=5] - Number of scale divisions
+ */
+export function updateDOMTimeAxisTrack(trackElement, timeRange, steps = 5) {
+  if (!trackElement) return;
+  const { min, max } = timeRange || { min: 1700000000, max: 1700086400 };
+  const span = Math.abs(max - min);
+  const spanMs = span < 1e11 ? span * 1000 : span;
+  const isDaily = spanMs >= 86400000 * 2;
+
+  if (typeof trackElement.removeChild === 'function') {
+    while (trackElement.children && trackElement.children.length > 0) {
+      trackElement.removeChild(trackElement.children[0]);
+    }
+  } else if (Array.isArray(trackElement.children)) {
+    trackElement.children.length = 0;
+  }
+
+  const labels = [];
+  for (let i = 0; i <= steps; i++) {
+    const timeVal = min + ((max - min) * i) / steps;
+    const label = formatTimestamp(timeVal, isDaily);
+    labels.push(label);
+
+    const marker = {
+      tagName: 'SPAN',
+      className: 'time-axis-marker',
+      textContent: label,
+      style: {
+        color: '#787b86',
+        fontSize: '11px',
+        fontFamily: 'sans-serif',
+        userSelect: 'none',
+        pointerEvents: 'none',
+        whiteSpace: 'nowrap',
+      },
+    };
+
+    if (typeof trackElement.appendChild === 'function') {
+      trackElement.appendChild(marker);
+    }
+  }
+
+  if (typeof trackElement.setAttribute === 'function') {
+    trackElement.setAttribute('data-time-labels', labels.join(', '));
+  }
+}
 
 /**
  * Computes price and time domain ranges from a candle dataset.
@@ -30,7 +110,13 @@ export function computeRanges(candles) {
     const c = candles[i];
     if (!c) continue;
 
-    const open = typeof c.open === 'number' ? c.open : (typeof c.close === 'number' ? c.close : 0);
+    const open = typeof c.open === 'number'
+      ? c.open
+      : (typeof c.close === 'number'
+        ? c.close
+        : (typeof c.price === 'number'
+          ? c.price
+          : (typeof c.value === 'number' ? c.value : 0)));
     const close = typeof c.close === 'number' ? c.close : open;
     const low = typeof c.low === 'number' ? c.low : Math.min(open, close);
     const high = typeof c.high === 'number' ? c.high : Math.max(open, close);
@@ -92,6 +178,7 @@ export class AxesRenderer {
    * @param {string} [options.axisColor='#363c4e']
    * @param {string} [options.textColor='#787b86']
    * @param {string} [options.font='11px sans-serif']
+   * @param {HTMLElement|Object} [options.trackElement]
    */
   constructor(options) {
     const opts = options || {};
@@ -101,6 +188,7 @@ export class AxesRenderer {
       (this.canvas && typeof this.canvas.getContext === 'function' ? this.canvas.getContext('2d') : null);
     this.priceAxisWidth = opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 70;
     this.timeAxisHeight = opts.timeAxisHeight !== undefined ? opts.timeAxisHeight : 50;
+    this.trackElement = opts.trackElement || null;
 
     const canvasWidth = this.canvas ? this.canvas.width : 800;
     const canvasHeight = this.canvas ? this.canvas.height : 600;
@@ -280,7 +368,7 @@ export class AxesRenderer {
 
   /**
    * Draws a bottom horizontal time scale axis with timestamp tick marks and formatted labels.
-   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 34.1.1).
+   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 35.1.1).
    *
    * @param {Object|Array} [range={}]
    * @param {number} [range.min=1700000000]
@@ -309,6 +397,8 @@ export class AxesRenderer {
         min = r.start;
       } else if (r.from !== undefined) {
         min = r.from;
+      } else if (this.timeRange && this.timeRange.min !== undefined) {
+        min = this.timeRange.min;
       }
 
       if (r.max !== undefined) {
@@ -321,6 +411,8 @@ export class AxesRenderer {
         max = r.end;
       } else if (r.to !== undefined) {
         max = r.to;
+      } else if (this.timeRange && this.timeRange.max !== undefined) {
+        max = this.timeRange.max;
       }
     }
 
@@ -375,8 +467,6 @@ export class AxesRenderer {
 
     const tickLength = 5;
     const fontSize = 11;
-    // Calculate label Y: strictly in the bottom scale area (labelY >= axisY)
-    // and strictly within canvas bounds (labelY + fontSize <= canvasHeight)
     const availableHeight = Math.max(0, canvasHeight - axisY);
     const idealOffset = Math.min(12, Math.max(tickLength + 2, Math.floor(availableHeight / 3)));
     const maxOffset = Math.max(0, availableHeight - fontSize - 2);
@@ -395,22 +485,7 @@ export class AxesRenderer {
       ctx.stroke?.();
 
       // Formatted timestamp label placed strictly in bottom scale region (y >= axisY)
-      const t = timeVal < 1e11 ? timeVal * 1000 : timeVal;
-      const validTime = Number.isFinite(t) ? t : Date.now();
-      const date = new Date(validTime);
-      let timeLabel;
-      if (Number.isNaN(date.getTime())) {
-        timeLabel = String(Math.round(timeVal));
-      } else if (isDaily) {
-        const year = date.getUTCFullYear();
-        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-        const day = String(date.getUTCDate()).padStart(2, '0');
-        timeLabel = `${year}-${month}-${day}`;
-      } else {
-        const hours = String(date.getUTCHours()).padStart(2, '0');
-        const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-        timeLabel = `${hours}:${minutes}`;
-      }
+      const timeLabel = formatTimestamp(timeVal, isDaily);
 
       let drawX = x;
       if (i === 0) {
@@ -427,6 +502,10 @@ export class AxesRenderer {
     }
 
     ctx.restore?.();
+
+    if (this.trackElement) {
+      updateDOMTimeAxisTrack(this.trackElement, { min, max }, steps);
+    }
   }
 
   /**
