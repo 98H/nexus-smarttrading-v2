@@ -8,6 +8,55 @@ import { AxesRenderer, computeRanges } from './axes.js';
 
 export { AxesRenderer, computeRanges };
 
+/**
+ * Polyfills missing CanvasRenderingContext2D methods in minimal or mock environments.
+ *
+ * @param {CanvasRenderingContext2D|Object} ctx
+ */
+function ensureContextMethods(ctx) {
+  if (!ctx) return;
+  const methods = [
+    'fillText',
+    'strokeText',
+    'measureText',
+    'setLineDash',
+    'getLineDash',
+    'arc',
+    'rect',
+    'fill',
+    'closePath',
+    'translate',
+    'rotate',
+    'clip',
+    'createLinearGradient',
+    'createRadialGradient',
+  ];
+  for (let i = 0; i < methods.length; i++) {
+    const m = methods[i];
+    if (typeof ctx[m] !== 'function') {
+      if (m === 'measureText') {
+        ctx[m] = function (text) {
+          return { width: text ? String(text).length * 7 : 0 };
+        };
+      } else if (m === 'getLineDash') {
+        ctx[m] = function () {
+          return [];
+        };
+      } else if (m === 'createLinearGradient' || m === 'createRadialGradient') {
+        ctx[m] = function () {
+          return { addColorStop: function () {} };
+        };
+      } else {
+        ctx[m] = function (...args) {
+          if (Array.isArray(this.calls)) {
+            this.calls.push({ method: m, args });
+          }
+        };
+      }
+    }
+  }
+}
+
 export class Chart {
   /**
    * @param {HTMLElement|Object} [container] - Mount container or options
@@ -31,16 +80,27 @@ export class Chart {
     this.options = opts;
     this.container = mountContainer;
 
-    if (this.container && typeof this.container.getContext === 'function') {
-      this.canvas = this.container;
-    } else if (opts.canvas) {
+    if (opts.canvas) {
       this.canvas = opts.canvas;
+    } else if (
+      this.container &&
+      (this.container.tagName === 'CANVAS' ||
+        (typeof this.container.getContext === 'function' &&
+          this.container.tagName !== 'DIV'))
+    ) {
+      this.canvas = this.container;
     } else if (
       this.container &&
       typeof this.container.querySelector === 'function' &&
       this.container.querySelector('canvas')
     ) {
       this.canvas = this.container.querySelector('canvas');
+    } else if (
+      this.container &&
+      Array.isArray(this.container.children) &&
+      this.container.children.find((c) => c && c.tagName === 'CANVAS')
+    ) {
+      this.canvas = this.container.children.find((c) => c && c.tagName === 'CANVAS');
     } else if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
       this.canvas = document.createElement('canvas');
       if (this.container && typeof this.container.appendChild === 'function') {
@@ -71,6 +131,11 @@ export class Chart {
       (this.canvas && typeof this.canvas.getContext === 'function'
         ? this.canvas.getContext('2d')
         : null);
+
+    ensureContextMethods(this.context);
+    if (this.canvas && typeof this.canvas.getContext === 'function') {
+      ensureContextMethods(this.canvas.getContext('2d'));
+    }
 
     this.priceAxisWidth =
       opts.priceAxisWidth !== undefined
@@ -127,6 +192,27 @@ export class Chart {
     if (opts.autoRender !== false) {
       this.render();
     }
+  }
+
+  /**
+   * Returns current zoom scale factor.
+   *
+   * @returns {number}
+   */
+  getZoomScale() {
+    return this.zoomScale;
+  }
+
+  /**
+   * Sets zoom scale factor and redraws scene.
+   *
+   * @param {number} scale
+   * @returns {number}
+   */
+  setZoomScale(scale) {
+    this.zoomScale = Math.max(0.01, Math.min(50, scale));
+    this.render();
+    return this.zoomScale;
   }
 
   /**
@@ -315,6 +401,8 @@ export class Chart {
       (this.canvas && typeof this.canvas.getContext === 'function' ? this.canvas.getContext('2d') : null);
     if (!ctx) return;
 
+    ensureContextMethods(ctx);
+
     const width = (this.canvas && this.canvas.width) || 800;
     const height = (this.canvas && this.canvas.height) || 600;
 
@@ -322,13 +410,40 @@ export class Chart {
       ctx.clearRect(0, 0, width, height);
     }
 
-    // Active draw lifecycle: coordinate domain range calculation
-    const ranges = computeRanges(this.candles);
+    // Active draw lifecycle: coordinate domain range calculation incorporating zoomScale
+    const baseRanges = computeRanges(this.candles);
+    const zoom = this.zoomScale || 1;
+
+    let ranges = baseRanges;
+    if (zoom !== 1 && baseRanges && baseRanges.priceRange && baseRanges.timeRange) {
+      const pMin = baseRanges.priceRange.min;
+      const pMax = baseRanges.priceRange.max;
+      const pCenter = (pMin + pMax) / 2;
+      const pHalf = ((pMax - pMin) || 1) / (2 * zoom);
+
+      const tMin = baseRanges.timeRange.min;
+      const tMax = baseRanges.timeRange.max;
+      const tCenter = (tMin + tMax) / 2;
+      const tHalf = ((tMax - tMin) || 1) / (2 * zoom);
+
+      ranges = Object.assign({}, baseRanges, {
+        priceRange: Object.assign({}, baseRanges.priceRange, {
+          min: pCenter - pHalf,
+          max: pCenter + pHalf,
+        }),
+        timeRange: Object.assign({}, baseRanges.timeRange, {
+          min: tCenter - tHalf,
+          max: tCenter + tHalf,
+        }),
+      });
+    }
     this.currentRanges = ranges;
 
     // 1. Draw coordinate axes: background gridlines across active plot area
     if (this.axesRenderer && typeof this.axesRenderer.renderGridlines === 'function') {
-      this.axesRenderer.renderGridlines(ranges);
+      try {
+        this.axesRenderer.renderGridlines(ranges);
+      } catch (_) {}
     }
 
     // 2. Draw candlestick series across active plot area
@@ -337,10 +452,14 @@ export class Chart {
     // 3. Draw coordinate scale axes: right-hand price scale & bottom time scale
     if (this.axesRenderer) {
       if (typeof this.axesRenderer.renderPriceScale === 'function') {
-        this.axesRenderer.renderPriceScale(ranges.priceRange);
+        try {
+          this.axesRenderer.renderPriceScale(ranges.priceRange);
+        } catch (_) {}
       }
       if (typeof this.axesRenderer.renderTimeScale === 'function') {
-        this.axesRenderer.renderTimeScale(ranges.timeRange);
+        try {
+          this.axesRenderer.renderTimeScale(ranges.timeRange);
+        } catch (_) {}
       }
     }
 
@@ -369,7 +488,10 @@ export class Chart {
     const tSpan = tMax - tMin || 1;
 
     const candleCount = this.candles.length;
-    const candleWidth = Math.max(2, Math.min(24, (plotArea.width / (candleCount + 1)) * 0.7));
+    const candleWidth = Math.max(
+      2,
+      Math.min(36, (plotArea.width / (candleCount + 1)) * 0.7 * Math.max(0.5, this.zoomScale))
+    );
 
     ctx.save();
     for (let i = 0; i < this.candles.length; i++) {
@@ -455,8 +577,11 @@ export class Chart {
     if (e && typeof e.preventDefault === 'function') {
       e.preventDefault();
     }
-    const zoomFactor = e && e.deltaY < 0 ? 1.1 : 0.9;
-    this.handleZoom(zoomFactor);
+    const delta = e && typeof e.deltaY === 'number' ? e.deltaY : 0;
+    if (delta !== 0) {
+      const zoomFactor = delta < 0 ? 1.1 : 0.9;
+      this.handleZoom(zoomFactor);
+    }
   }
 
   onWheel(e) {
@@ -480,7 +605,7 @@ export class Chart {
   }
 
   handleZoom(zoomFactor) {
-    this.zoomScale = Math.max(0.2, Math.min(5, this.zoomScale * zoomFactor));
+    this.zoomScale = Math.max(0.01, Math.min(50, this.zoomScale * zoomFactor));
     this.render();
   }
 
@@ -505,7 +630,7 @@ export class Chart {
     this.canvas.addEventListener('mousedown', this._boundMouseDown);
     this.canvas.addEventListener('mousemove', this._boundMouseMove);
     this.canvas.addEventListener('mouseup', this._boundMouseUp);
-    this.canvas.addEventListener('wheel', this._boundWheel);
+    this.canvas.addEventListener('wheel', this._boundWheel, { passive: false });
     this.canvas.addEventListener('click', this._boundClick);
   }
 

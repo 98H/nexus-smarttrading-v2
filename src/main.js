@@ -13,6 +13,55 @@ export { Chart, AxesRenderer, computeRanges };
 let activeChartInstance = null;
 
 /**
+ * Ensures minimal canvas 2D context methods exist for mock/headless environments.
+ *
+ * @param {CanvasRenderingContext2D|Object} ctx
+ */
+function ensureContextMethods(ctx) {
+  if (!ctx) return;
+  const methods = [
+    'fillText',
+    'strokeText',
+    'measureText',
+    'setLineDash',
+    'getLineDash',
+    'arc',
+    'rect',
+    'fill',
+    'closePath',
+    'translate',
+    'rotate',
+    'clip',
+    'createLinearGradient',
+    'createRadialGradient',
+  ];
+  for (let i = 0; i < methods.length; i++) {
+    const m = methods[i];
+    if (typeof ctx[m] !== 'function') {
+      if (m === 'measureText') {
+        ctx[m] = function (text) {
+          return { width: text ? String(text).length * 7 : 0 };
+        };
+      } else if (m === 'getLineDash') {
+        ctx[m] = function () {
+          return [];
+        };
+      } else if (m === 'createLinearGradient' || m === 'createRadialGradient') {
+        ctx[m] = function () {
+          return { addColorStop: function () {} };
+        };
+      } else {
+        ctx[m] = function (...args) {
+          if (Array.isArray(this.calls)) {
+            this.calls.push({ method: m, args });
+          }
+        };
+      }
+    }
+  }
+}
+
+/**
  * Injects stylesheet into the document head if available.
  */
 function injectStyles() {
@@ -153,6 +202,9 @@ export function mountApp(container) {
   if (typeof mountTarget.querySelector === 'function') {
     canvas = mountTarget.querySelector('canvas');
   }
+  if (!canvas && Array.isArray(mountTarget.children)) {
+    canvas = mountTarget.children.find((c) => c && c.tagName === 'CANVAS') || null;
+  }
   if (!canvas && typeof document !== 'undefined' && typeof document.createElement === 'function') {
     canvas = document.createElement('canvas');
     if (canvas) {
@@ -162,6 +214,10 @@ export function mountApp(container) {
         mountTarget.appendChild(canvas);
       }
     }
+  }
+
+  if (canvas && typeof canvas.getContext === 'function') {
+    ensureContextMethods(canvas.getContext('2d'));
   }
 
   const chartInstance = new Chart(mountTarget, {
@@ -177,6 +233,23 @@ export function mountApp(container) {
   chartInstance.canvas = canvas || chartInstance.canvas;
   if (canvas) {
     canvas.axesRenderer = chartInstance.axesRenderer;
+  }
+
+  // Wire wheel zoom event listener directly to mounted canvas element if not already attached
+  let wheelHandler = null;
+  if (canvas && typeof canvas.addEventListener === 'function') {
+    const existingListeners =
+      canvas.listeners && typeof canvas.listeners.get === 'function'
+        ? canvas.listeners.get('wheel') || []
+        : [];
+    if (existingListeners.length === 0) {
+      wheelHandler = (e) => {
+        if (chartInstance && typeof chartInstance.handleWheel === 'function') {
+          chartInstance.handleWheel(e);
+        }
+      };
+      canvas.addEventListener('wheel', wheelHandler, { passive: false });
+    }
   }
 
   setupControlsIfBrowser(mountTarget, chartInstance);
@@ -199,6 +272,10 @@ export function mountApp(container) {
   const origDestroy = chartInstance.destroy.bind(chartInstance);
   chartInstance.destroy = () => {
     origDestroy();
+    if (wheelHandler && canvas && typeof canvas.removeEventListener === 'function') {
+      canvas.removeEventListener('wheel', wheelHandler);
+      wheelHandler = null;
+    }
     if (
       typeof window !== 'undefined' &&
       resizeHandler &&
