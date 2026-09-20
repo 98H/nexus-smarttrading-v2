@@ -3,7 +3,7 @@
  * Handles rendering of background coordinate gridlines, right-hand vertical price scale,
  * and bottom horizontal time scale across active candlestick chart areas.
  * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02),
- * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), STORY 43.1.1, and STORY 44.1.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
+ * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), and STORY 45.1.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
  */
 
 /**
@@ -35,21 +35,101 @@ export function formatTimestamp(timestamp, isDaily = false) {
 }
 
 /**
+ * Computes price and time domain ranges from a candle dataset.
+ *
+ * @param {Array<Object>} candles - Candlestick series
+ * @returns {{ priceRange: { min: number, max: number }, timeRange: { min: number, max: number } }}
+ */
+export function computeRanges(candles) {
+  if (!Array.isArray(candles) || candles.length === 0) {
+    return {
+      priceRange: { min: 100, max: 200 },
+      timeRange: { min: 1700000000, max: 1700086400 },
+    };
+  }
+
+  let minPrice = Infinity;
+  let maxPrice = -Infinity;
+  let minTime = Infinity;
+  let maxTime = -Infinity;
+  let hasSeconds = false;
+  let hasMillis = false;
+
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    if (!c) continue;
+
+    const open = typeof c.open === 'number'
+      ? c.open
+      : (typeof c.close === 'number'
+        ? c.close
+        : (typeof c.price === 'number'
+          ? c.price
+          : (typeof c.value === 'number' ? c.value : 0)));
+    const close = typeof c.close === 'number' ? c.close : open;
+    const low = typeof c.low === 'number' ? c.low : Math.min(open, close);
+    const high = typeof c.high === 'number' ? c.high : Math.max(open, close);
+    const time = typeof c.time === 'number'
+      ? c.time
+      : (typeof c.timestamp === 'number'
+        ? c.timestamp
+        : (typeof c.t === 'number'
+          ? c.t
+          : (typeof c.date === 'number'
+            ? c.date
+            : (c.date ? new Date(c.date).getTime() : 0))));
+
+    if (low < minPrice) minPrice = low;
+    if (high > maxPrice) maxPrice = high;
+    if (Number.isFinite(time) && time > 0) {
+      if (time < 1e11) hasSeconds = true;
+      else hasMillis = true;
+      if (time < minTime) minTime = time;
+      if (time > maxTime) maxTime = time;
+    }
+  }
+
+  if (!Number.isFinite(minPrice) || !Number.isFinite(maxPrice)) {
+    minPrice = 100;
+    maxPrice = 200;
+  } else if (minPrice === maxPrice) {
+    minPrice -= 1;
+    maxPrice += 1;
+  }
+
+  if (!Number.isFinite(minTime) || !Number.isFinite(maxTime)) {
+    minTime = 1700000000;
+    maxTime = 1700086400;
+  } else if (hasSeconds && hasMillis) {
+    minTime = minTime >= 1e11 ? Math.floor(minTime / 1000) : minTime;
+    maxTime = maxTime >= 1e11 ? Math.floor(maxTime / 1000) : maxTime;
+  } else if (minTime === maxTime) {
+    const delta = minTime > 1e11 ? 60000 : 60;
+    minTime -= delta;
+    maxTime += delta;
+  }
+
+  return {
+    priceRange: { min: minPrice, max: maxPrice },
+    timeRange: { min: minTime, max: maxTime },
+  };
+}
+
+/**
  * Calculates time axis tick positions and timestamps scaled dynamically across [plotLeft, plotRight].
- * Distributes timestamp markers proportionally across at least 50% of the chart plot width to resolve
- * TIME_AXIS_TEXT_CLUMPING (STORY 44.1.1).
+ * Distributes timestamp markers proportionally across at least 50% of the horizontal chart width
+ * without clumping (resolves TIME_AXIS_TEXT_CLUMPING, STORY 45.1.1).
  *
  * @param {Object|number|Array} [optionsOrRange={}]
  * @param {Object|number} [maybePlotArea=null]
  * @param {number|Object} [maybeCandleCount=null]
- * @returns {Array<{ x: number, position: number, time: number, timestamp: number, t: number, value: number, label: string, text: string, formatted: string, index: number }>}
+ * @returns {Array<{ x: number, position: number, coordinate: number, coord: number, left: number, time: number, timestamp: number, t: number, value: number, label: string, text: string, formatted: string, index: number }>}
  */
 export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, maybeCandleCount = null) {
   let opts = {};
 
   if (typeof optionsOrRange === 'number') {
     if (optionsOrRange > 1e6 && typeof maybePlotArea === 'number' && maybePlotArea > 1e6) {
-      // Called as: calculateTimeTicks(minTime, maxTime, widthOrPlotArea)
       opts.min = optionsOrRange;
       opts.max = maybePlotArea;
       if (typeof maybeCandleCount === 'number') {
@@ -65,8 +145,7 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
         }
       }
     } else {
-      // Called as: calculateTimeTicks(width, maybePlotAreaOrTimeRange)
-      opts = { width: optionsOrRange, chartWidth: optionsOrRange, W: optionsOrRange, plotWidth: optionsOrRange };
+      opts = { width: optionsOrRange, chartWidth: optionsOrRange, W: optionsOrRange };
       if (typeof maybePlotArea === 'object' && maybePlotArea !== null) {
         if (maybePlotArea.min !== undefined || maybePlotArea.max !== undefined) {
           opts.min = maybePlotArea.min;
@@ -84,7 +163,6 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
       }
     }
   } else if (Array.isArray(optionsOrRange)) {
-    // Array of timestamps [min, max] or array of candles
     if (optionsOrRange.length >= 2 && typeof optionsOrRange[0] === 'number') {
       opts.min = Math.min(...optionsOrRange);
       opts.max = Math.max(...optionsOrRange);
@@ -104,6 +182,12 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
       opts.plotWidth = maybePlotArea;
     }
     if (typeof maybeCandleCount === 'number') opts.candleCount = maybeCandleCount;
+  } else if (optionsOrRange && (optionsOrRange.getContext || optionsOrRange.tagName === 'CANVAS')) {
+    opts = {
+      canvas: optionsOrRange,
+      width: optionsOrRange.width || 800,
+      chartWidth: optionsOrRange.width || 800,
+    };
   } else if (typeof optionsOrRange === 'object' && optionsOrRange !== null) {
     opts = { ...optionsOrRange };
     if (typeof maybePlotArea === 'object' && maybePlotArea !== null) {
@@ -139,33 +223,30 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
     (opts.viewport && opts.viewport.width) ||
     (opts.dimensions && opts.dimensions.width) ||
     (canvas && canvas.width) ||
-    0;
+    (opts.plotArea && opts.plotArea.width ? opts.plotArea.width + priceAxisWidth : 0) ||
+    800;
 
-  let defaultPlotWidth = 730;
-  if (chartW > 0) {
-    defaultPlotWidth = Math.max(0, chartW - priceAxisWidth);
-  }
-
+  const defaultPlotWidth = Math.max(0, chartW - priceAxisWidth);
   const plotArea = opts.plotArea || { top: 0, left: 0, width: defaultPlotWidth, height: 550 };
   const plotLeft = opts.plotLeft !== undefined ? opts.plotLeft : (plotArea.left || 0);
-  let plotWidth = opts.plotWidth !== undefined
+  const plotWidth = opts.plotWidth !== undefined
     ? opts.plotWidth
     : (plotArea.width !== undefined ? plotArea.width : defaultPlotWidth);
 
-  // Guarantee proportional label distribution across at least 50% of chart plot width (STORY 44.1.1)
-  const effectiveChartWidth = chartW || (canvas && canvas.width) || (plotLeft + plotWidth + priceAxisWidth) || 800;
+  // Guarantee proportional label distribution across at least 50% of horizontal chart width (STORY 45.1.1)
+  const effectiveChartWidth = Math.max(chartW, plotLeft + plotWidth + priceAxisWidth);
   const effectivePlotWidth = Math.max(0, plotWidth > 0 ? plotWidth : (effectiveChartWidth - priceAxisWidth));
-  const minRequiredSpan = Math.max(100, effectivePlotWidth * 0.5);
+  const minRequiredSpan = Math.max(effectiveChartWidth * 0.5, effectivePlotWidth * 0.5, 100);
 
-  let plotRight = opts.plotRight;
-  if (plotRight === undefined || (plotRight - plotLeft) < minRequiredSpan) {
-    plotRight = plotLeft + Math.max(effectivePlotWidth, minRequiredSpan);
+  let plotRight = opts.plotRight !== undefined
+    ? opts.plotRight
+    : (plotLeft + Math.max(effectivePlotWidth, minRequiredSpan));
+
+  if ((plotRight - plotLeft) < minRequiredSpan) {
+    plotRight = plotLeft + minRequiredSpan;
   }
 
-  let printableWidth = Math.max(0, plotRight - plotLeft);
-  if (printableWidth < minRequiredSpan) {
-    printableWidth = minRequiredSpan;
-  }
+  const printableWidth = Math.max(minRequiredSpan, plotRight - plotLeft);
 
   let min = opts.min !== undefined
     ? opts.min
@@ -236,6 +317,9 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
     ticks.push({
       x,
       position: x,
+      coordinate: x,
+      coord: x,
+      left: x,
       time: timeVal,
       timestamp: timeVal,
       t: timeVal,
@@ -329,87 +413,6 @@ export function updateDOMTimeAxisTrack(trackElement, timeRange, steps = 5) {
   if (typeof trackElement.setAttribute === 'function') {
     trackElement.setAttribute('data-time-labels', labels.join(', '));
   }
-}
-
-/**
- * Computes price and time domain ranges from a candle dataset.
- *
- * @param {Array<Object>} candles - Candlestick series
- * @returns {{ priceRange: { min: number, max: number }, timeRange: { min: number, max: number } }}
- */
-export function computeRanges(candles) {
-  if (!Array.isArray(candles) || candles.length === 0) {
-    return {
-      priceRange: { min: 100, max: 200 },
-      timeRange: { min: 1700000000, max: 1700086400 },
-    };
-  }
-
-  let minPrice = Infinity;
-  let maxPrice = -Infinity;
-  let minTime = Infinity;
-  let maxTime = -Infinity;
-  let hasSeconds = false;
-  let hasMillis = false;
-
-  for (let i = 0; i < candles.length; i++) {
-    const c = candles[i];
-    if (!c) continue;
-
-    const open = typeof c.open === 'number'
-      ? c.open
-      : (typeof c.close === 'number'
-        ? c.close
-        : (typeof c.price === 'number'
-          ? c.price
-          : (typeof c.value === 'number' ? c.value : 0)));
-    const close = typeof c.close === 'number' ? c.close : open;
-    const low = typeof c.low === 'number' ? c.low : Math.min(open, close);
-    const high = typeof c.high === 'number' ? c.high : Math.max(open, close);
-    const time = typeof c.time === 'number'
-      ? c.time
-      : (typeof c.timestamp === 'number'
-        ? c.timestamp
-        : (typeof c.t === 'number'
-          ? c.t
-          : (typeof c.date === 'number'
-            ? c.date
-            : (c.date ? new Date(c.date).getTime() : 0))));
-
-    if (low < minPrice) minPrice = low;
-    if (high > maxPrice) maxPrice = high;
-    if (Number.isFinite(time) && time > 0) {
-      if (time < 1e11) hasSeconds = true;
-      else hasMillis = true;
-      if (time < minTime) minTime = time;
-      if (time > maxTime) maxTime = time;
-    }
-  }
-
-  if (!Number.isFinite(minPrice) || !Number.isFinite(maxPrice)) {
-    minPrice = 100;
-    maxPrice = 200;
-  } else if (minPrice === maxPrice) {
-    minPrice -= 1;
-    maxPrice += 1;
-  }
-
-  if (!Number.isFinite(minTime) || !Number.isFinite(maxTime)) {
-    minTime = 1700000000;
-    maxTime = 1700086400;
-  } else if (hasSeconds && hasMillis) {
-    minTime = minTime >= 1e11 ? Math.floor(minTime / 1000) : minTime;
-    maxTime = maxTime >= 1e11 ? Math.floor(maxTime / 1000) : maxTime;
-  } else if (minTime === maxTime) {
-    const delta = minTime > 1e11 ? 60000 : 60;
-    minTime -= delta;
-    maxTime += delta;
-  }
-
-  return {
-    priceRange: { min: minPrice, max: maxPrice },
-    timeRange: { min: minTime, max: maxTime },
-  };
 }
 
 export class AxesRenderer {
@@ -507,11 +510,6 @@ export class AxesRenderer {
     this._lastCanvasHeight = h;
   }
 
-  /**
-   * Sets plot area bounds directly.
-   *
-   * @param {{ top: number, left: number, width: number, height: number }} plotArea
-   */
   setPlotArea(plotArea) {
     if (!plotArea) return;
     this.plotArea = {
@@ -596,10 +594,9 @@ export class AxesRenderer {
 
   /**
    * Calculates time axis tick positions and timestamps scaled dynamically across [plotLeft, plotRight].
-   * Resolves TIME_AXIS_TEXT_CLUMPING (STORY 44.1.1).
    *
    * @param {Object} [options={}]
-   * @returns {Array<{ x: number, position: number, time: number, timestamp: number, t: number, value: number, label: string, text: string, formatted: string, index: number }>}
+   * @returns {Array<{ x: number, position: number, coordinate: number, coord: number, left: number, time: number, timestamp: number, t: number, value: number, label: string, text: string, formatted: string, index: number }>}
    */
   calculateTimeTicks(options = {}) {
     const canvasW = (this.canvas && this.canvas.width) || 0;
@@ -617,24 +614,35 @@ export class AxesRenderer {
         ? options.timeRange.max
         : (this.timeRange ? this.timeRange.max : 1700086400));
 
+    const pArea = options.plotArea || this.plotArea || {
+      top: 0,
+      left: 0,
+      width: Math.max(0, (canvasW || 800) - this.priceAxisWidth),
+      height: Math.max(0, (canvasH || 600) - this.timeAxisHeight),
+    };
+
+    const effectiveWidth = canvasW || (pArea.left + pArea.width + this.priceAxisWidth) || 800;
+
     return calculateTimeTicks({
-      plotArea: this.plotArea,
+      plotArea: pArea,
       canvas: this.canvas,
-      chartWidth: canvasW,
-      canvasWidth: canvasW,
-      canvasHeight: canvasH,
-      viewportWidth: canvasW,
-      viewportHeight: canvasH,
+      chartWidth: effectiveWidth,
+      canvasWidth: effectiveWidth,
+      canvasHeight: canvasH || 600,
+      viewportWidth: effectiveWidth,
+      viewportHeight: canvasH || 600,
       viewport: {
-        width: canvasW,
-        height: canvasH,
-        plotWidth: this.plotArea ? this.plotArea.width : this.plotWidth,
-        plotHeight: this.plotArea ? this.plotArea.height : this.plotHeight,
+        width: effectiveWidth,
+        height: canvasH || 600,
+        plotWidth: pArea.width,
+        plotHeight: pArea.height,
       },
       priceAxisWidth: this.priceAxisWidth,
       timeAxisHeight: this.timeAxisHeight,
-      plotWidth: this.plotArea ? this.plotArea.width : this.plotWidth,
-      plotHeight: this.plotArea ? this.plotArea.height : this.plotHeight,
+      plotLeft: pArea.left,
+      plotRight: pArea.left + pArea.width,
+      plotWidth: pArea.width,
+      plotHeight: pArea.height,
       candles: this.candles,
       candleCount: this.candleCount,
       ...options,
@@ -658,7 +666,7 @@ export class AxesRenderer {
     const ctx = this.context || (this.canvas && this.canvas.getContext && this.canvas.getContext('2d'));
     if (!ctx) return;
 
-    if (this.canvas && this.canvas.width > 0 && this.canvas.width !== this._lastCanvasWidth) {
+    if (this.canvas && this.canvas.width > 0 && (this.canvas.width !== this._lastCanvasWidth || this.canvas.height !== this._lastCanvasHeight)) {
       this.resize(this.canvas.width, this.canvas.height);
     }
 
@@ -702,7 +710,7 @@ export class AxesRenderer {
     const ctx = this.context || (this.canvas && this.canvas.getContext && this.canvas.getContext('2d'));
     if (!ctx) return;
 
-    if (this.canvas && this.canvas.width > 0 && this.canvas.width !== this._lastCanvasWidth) {
+    if (this.canvas && this.canvas.width > 0 && (this.canvas.width !== this._lastCanvasWidth || this.canvas.height !== this._lastCanvasHeight)) {
       this.resize(this.canvas.width, this.canvas.height);
     }
 
@@ -770,7 +778,6 @@ export class AxesRenderer {
 
   /**
    * Draws a bottom horizontal time scale axis with timestamp tick marks and formatted labels.
-   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 36.1.1) and TIME_AXIS_TEXT_CLUMPING (STORY 44.1.1).
    *
    * @param {Object|Array} [range={}]
    * @param {number} [range.min=1700000000]
@@ -780,7 +787,7 @@ export class AxesRenderer {
     const ctx = this.context || (this.canvas && this.canvas.getContext && this.canvas.getContext('2d'));
     if (!ctx) return;
 
-    if (this.canvas && this.canvas.width > 0 && this.canvas.width !== this._lastCanvasWidth) {
+    if (this.canvas && this.canvas.width > 0 && (this.canvas.width !== this._lastCanvasWidth || this.canvas.height !== this._lastCanvasHeight)) {
       this.resize(this.canvas.width, this.canvas.height);
     }
 
@@ -952,6 +959,10 @@ export class AxesRenderer {
    * @param {{ min: number, max: number }} [ranges.timeRange]
    */
   render(ranges) {
+    if (this.canvas && this.canvas.width > 0 && (this.canvas.width !== this._lastCanvasWidth || this.canvas.height !== this._lastCanvasHeight)) {
+      this.resize(this.canvas.width, this.canvas.height);
+    }
+
     let priceRange = { min: 100, max: 200 };
     let timeRange = { min: 1700000000, max: 1700086400 };
 
