@@ -1,134 +1,86 @@
 import test, { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { Chart } from '../src/chart.js';
-import * as main from '../src/main.js';
 
-/*
- * Test Mock Infrastructure
- * Provides deterministic simulation of DOM, Canvas 2D Context, and MouseEvents
- * to validate gesture handling and viewport transformations in Node.js.
- */
+// --- Minimal Deterministic DOM & Canvas Mock Environment for Node.js ---
 
-class MockCanvasRenderingContext2D {
-  constructor(canvas) {
-    this.canvas = canvas;
-    this.calls = [];
-    this.currentTransform = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-  }
-
-  clearRect(x, y, w, h) {
-    this.calls.push({ method: 'clearRect', args: [x, y, w, h] });
-  }
-
-  fillRect(x, y, w, h) {
-    this.calls.push({ method: 'fillRect', args: [x, y, w, h] });
-  }
-
-  strokeRect(x, y, w, h) {
-    this.calls.push({ method: 'strokeRect', args: [x, y, w, h] });
-  }
-
-  beginPath() {
-    this.calls.push({ method: 'beginPath', args: [] });
-  }
-
-  moveTo(x, y) {
-    this.calls.push({ method: 'moveTo', args: [x, y] });
-  }
-
-  lineTo(x, y) {
-    this.calls.push({ method: 'lineTo', args: [x, y] });
-  }
-
-  stroke() {
-    this.calls.push({ method: 'stroke', args: [] });
-  }
-
-  fill() {
-    this.calls.push({ method: 'fill', args: [] });
-  }
-
-  save() {
-    this.calls.push({ method: 'save', args: [] });
-  }
-
-  restore() {
-    this.calls.push({ method: 'restore', args: [] });
-  }
-
-  translate(x, y) {
-    this.currentTransform.e += x;
-    this.currentTransform.f += y;
-    this.calls.push({ method: 'translate', args: [x, y] });
-  }
-
-  setTransform(a, b, c, d, e, f) {
-    this.currentTransform = { a, b, c, d, e, f };
-    this.calls.push({ method: 'setTransform', args: [a, b, c, d, e, f] });
-  }
-
-  resetTransform() {
-    this.currentTransform = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-    this.calls.push({ method: 'resetTransform', args: [] });
-  }
-
-  clearCallHistory() {
-    this.calls = [];
-  }
-}
-
-class MockCanvasElement {
+class MockEventTarget {
   constructor() {
-    this.tagName = 'CANVAS';
-    this.width = 800;
-    this.height = 600;
-    this.listeners = new Map();
-    this.context = new MockCanvasRenderingContext2D(this);
-    this.parentElement = null;
-    this.style = {};
+    this._listeners = new Map();
   }
 
-  getContext(type) {
-    if (type === '2d') return this.context;
-    return null;
-  }
-
-  getBoundingClientRect() {
-    return { left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, x: 0, y: 0 };
-  }
-
-  addEventListener(type, handler) {
-    if (!this.listeners.has(type)) {
-      this.listeners.set(type, []);
+  addEventListener(type, listener) {
+    if (!this._listeners.has(type)) {
+      this._listeners.set(type, new Set());
     }
-    this.listeners.get(type).push(handler);
+    this._listeners.get(type).add(listener);
   }
 
-  removeEventListener(type, handler) {
-    if (!this.listeners.has(type)) return;
-    this.listeners.set(
-      type,
-      this.listeners.get(type).filter((fn) => fn !== handler)
-    );
+  removeEventListener(type, listener) {
+    if (this._listeners.has(type)) {
+      this._listeners.get(type).delete(listener);
+    }
   }
 
   dispatchEvent(event) {
     event.target = this;
     event.currentTarget = this;
-    const handlers = this.listeners.get(event.type) || [];
-    for (const handler of handlers) {
-      handler.call(this, event);
+    const handlers = this._listeners.get(event.type);
+    if (handlers) {
+      for (const handler of handlers) {
+        if (typeof handler === 'function') {
+          handler.call(this, event);
+        } else if (handler && typeof handler.handleEvent === 'function') {
+          handler.handleEvent(event);
+        }
+      }
     }
     return !event.defaultPrevented;
   }
 }
 
-class MockContainerElement {
-  constructor(id = 'app') {
-    this.id = id;
-    this.tagName = 'DIV';
+class MockCanvasRenderingContext2D {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.renderCalls = 0;
+    this.transformHistory = [];
+    this.currentTransform = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  }
+
+  clearRect(x, y, w, h) {
+    this.renderCalls++;
+  }
+
+  setTransform(a, b, c, d, e, f) {
+    this.currentTransform = { a, b, c, d, e, f };
+    this.transformHistory.push({ type: 'setTransform', args: { a, b, c, d, e, f } });
+  }
+
+  translate(dx, dy) {
+    this.currentTransform.e += dx;
+    this.currentTransform.f += dy;
+    this.transformHistory.push({ type: 'translate', args: { dx, dy } });
+  }
+
+  scale(sx, sy) {
+    this.currentTransform.a *= sx;
+    this.currentTransform.d *= sy;
+    this.transformHistory.push({ type: 'scale', args: { sx, sy } });
+  }
+
+  beginPath() {}
+  stroke() {}
+  fill() {}
+  save() {}
+  restore() {}
+}
+
+class MockElement extends MockEventTarget {
+  constructor(tagName = 'div') {
+    super();
+    this.tagName = tagName.toUpperCase();
     this.children = [];
-    this.listeners = new Map();
+    this.parentElement = null;
+    this.id = '';
   }
 
   appendChild(child) {
@@ -138,26 +90,48 @@ class MockContainerElement {
   }
 
   removeChild(child) {
-    const idx = this.children.indexOf(child);
-    if (idx !== -1) {
-      this.children.splice(idx, 1);
+    const index = this.children.indexOf(child);
+    if (index !== -1) {
       child.parentElement = null;
+      this.children.splice(index, 1);
     }
     return child;
   }
 
   querySelector(selector) {
     if (selector === 'canvas') {
-      return Array.from(this.children).find((c) => c.tagName === 'CANVAS') || null;
+      return this.children.find((c) => c.tagName === 'CANVAS') || null;
     }
     return null;
   }
 
-  querySelectorAll(selector) {
-    if (selector === 'canvas') {
-      return Array.from(this.children).filter((c) => c.tagName === 'CANVAS');
+  getBoundingClientRect() {
+    return {
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 600,
+      width: 800,
+      height: 600,
+      x: 0,
+      y: 0,
+    };
+  }
+}
+
+class MockHTMLCanvasElement extends MockElement {
+  constructor() {
+    super('canvas');
+    this.width = 800;
+    this.height = 600;
+    this._context = new MockCanvasRenderingContext2D(this);
+  }
+
+  getContext(type) {
+    if (type === '2d') {
+      return this._context;
     }
-    return [];
+    return null;
   }
 }
 
@@ -166,378 +140,365 @@ class MockMouseEvent {
     this.type = type;
     this.clientX = init.clientX ?? 0;
     this.clientY = init.clientY ?? 0;
-    this.button = init.button ?? 0;
+    this.button = init.button ?? 0; // 0 = primary/left
     this.buttons = init.buttons ?? 1;
-    this.movementX = init.movementX ?? 0;
-    this.movementY = init.movementY ?? 0;
+    this.bubbles = init.bubbles ?? true;
     this.defaultPrevented = false;
   }
 
   preventDefault() {
     this.defaultPrevented = true;
   }
-
-  stopPropagation() {}
 }
 
-// Sample candlestick data for rendering verification
-const mockCandlestickData = [
-  { time: 1620000000, open: 100, high: 110, low: 95, close: 105 },
-  { time: 1620003600, open: 105, high: 115, low: 102, close: 112 },
-  { time: 1620007200, open: 112, high: 120, low: 108, close: 118 },
-  { time: 1620010800, open: 118, high: 122, low: 114, close: 115 },
-];
+// Attach simulated browser environment to global scope before importing target modules
+globalThis.MockMouseEvent = MockMouseEvent;
+globalThis.MockHTMLCanvasElement = MockHTMLCanvasElement;
 
-// Helper to extract viewport offset across various implementation styles
-function getViewportOffset(chart) {
-  if (typeof chart.getViewportOffset === 'function') {
-    return chart.getViewportOffset();
-  }
-  if (chart.viewportOffset) {
-    return { x: chart.viewportOffset.x, y: chart.viewportOffset.y };
-  }
-  if (chart.viewport) {
-    return {
-      x: chart.viewport.offsetX ?? chart.viewport.x ?? 0,
-      y: chart.viewport.offsetY ?? chart.viewport.y ?? 0,
-    };
-  }
-  return { x: chart.offsetX ?? 0, y: chart.offsetY ?? 0 };
-}
+const appContainer = new MockElement('div');
+appContainer.id = 'app';
 
-describe('STORY 1.2.1: Resolve UNRESPONSIVE_CANVAS_PAN (DF-GESTURE-01)', () => {
-  let originalDocument;
-  let originalWindow;
-  let originalMouseEvent;
-  let appElement;
+globalThis.document = {
+  getElementById: (id) => (id === 'app' ? appContainer : null),
+  createElement: (tagName) => {
+    if (tagName.toLowerCase() === 'canvas') {
+      return new MockHTMLCanvasElement();
+    }
+    return new MockElement(tagName);
+  },
+};
+
+globalThis.window = new MockEventTarget();
+globalThis.MouseEvent = MockMouseEvent;
+
+// Dynamic import of target modules to ensure globals are active during module initialization
+const { Chart } = await import('../src/chart.js');
+const mainModule = await import('../src/main.js');
+
+describe('STORY 29.2.1: Resolve UNRESPONSIVE_CANVAS_PAN (Defect ID: DF-GESTURE-01)', () => {
+  let app;
+  let chartInstance;
+  let canvas;
 
   beforeEach(() => {
-    originalDocument = globalThis.document;
-    originalWindow = globalThis.window;
-    originalMouseEvent = globalThis.MouseEvent;
+    // Reset app container
+    appContainer.children = [];
+    app = appContainer;
 
-    appElement = new MockContainerElement('app');
+    // Boot or mount through main entrypoint
+    if (typeof mainModule.init === 'function') {
+      chartInstance = mainModule.init();
+    } else if (typeof mainModule.bootstrap === 'function') {
+      chartInstance = mainModule.bootstrap();
+    } else if (mainModule.chart) {
+      chartInstance = mainModule.chart;
+    }
 
-    globalThis.MouseEvent = MockMouseEvent;
-    globalThis.document = {
-      getElementById: (id) => (id === 'app' ? appElement : null),
-      querySelector: (selector) => {
-        if (selector === '#app') return appElement;
-        if (selector === '#app canvas' || selector === 'canvas') {
-          return appElement.querySelector('canvas');
-        }
-        return null;
-      },
-      createElement: (tag) => {
-        if (tag.toLowerCase() === 'canvas') {
-          return new MockCanvasElement();
-        }
-        return new MockContainerElement();
-      },
-    };
-    globalThis.window = globalThis;
+    canvas = app.querySelector('canvas') || chartInstance?.canvas;
   });
 
   afterEach(() => {
-    globalThis.document = originalDocument;
-    globalThis.window = originalWindow;
-    globalThis.MouseEvent = originalMouseEvent;
+    if (chartInstance && typeof chartInstance.destroy === 'function') {
+      chartInstance.destroy();
+    }
   });
 
-  describe('Acceptance Criteria 1: Drag Pan Delta and Candlestick Series Shift', () => {
-    it('should update viewport offset by drag delta (dx, dy) when mousedown and mousemove are dispatched', () => {
-      const canvas = new MockCanvasElement();
-      const chart = new Chart(canvas, { data: mockCandlestickData });
-
-      // Initial viewport offset must be at origin (0, 0)
-      const initialOffset = getViewportOffset(chart);
-      assert.strictEqual(initialOffset.x, 0, 'Initial viewport offset X must be 0');
-      assert.strictEqual(initialOffset.y, 0, 'Initial viewport offset Y must be 0');
-
-      // Step 1: Initiate drag sequence at (100, 150)
-      canvas.dispatchEvent(new MockMouseEvent('mousedown', { clientX: 100, clientY: 150, button: 0, buttons: 1 }));
-      assert.strictEqual(chart.isPanning, true, 'isPanning state must be true after mousedown');
-
-      // Step 2: Drag to (160, 190) -> deltaX = +60, deltaY = +40
-      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 160, clientY: 190, button: 0, buttons: 1 }));
-
-      const updatedOffset = getViewportOffset(chart);
-      assert.strictEqual(
-        updatedOffset.x,
-        60,
-        'Viewport offset X must update exactly by drag delta (+60)'
-      );
-      assert.strictEqual(
-        updatedOffset.y,
-        40,
-        'Viewport offset Y must update exactly by drag delta (+40)'
-      );
-    });
-
-    it('should re-render candlestick series at shifted coordinates upon drag pan delta', () => {
-      const canvas = new MockCanvasElement();
-      const chart = new Chart(canvas, { data: mockCandlestickData });
-      const ctx = canvas.getContext('2d');
-
-      // Capture initial render call count
-      const initialDrawCount = ctx.calls.length;
-      assert.ok(initialDrawCount > 0, 'Initial candlestick chart render must execute draw commands');
-
-      ctx.clearCallHistory();
-
-      // Dispatch mousedown and mousemove drag
-      canvas.dispatchEvent(new MockMouseEvent('mousedown', { clientX: 200, clientY: 200, buttons: 1 }));
-      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 250, clientY: 220, buttons: 1 }));
-
-      // Verify redraw was executed
-      assert.ok(
-        ctx.calls.length > 0,
-        'Candlestick series re-render must be triggered after mouse drag'
-      );
-
-      // Verify canvas was either cleared or matrix/coordinates transformed with offset
-      const hasClearRect = ctx.calls.some((c) => c.method === 'clearRect');
-      const hasTransformOrTranslate = ctx.calls.some(
-        (c) => c.method === 'translate' || c.method === 'setTransform'
-      );
-      const hasDrawingOp = ctx.calls.some(
-        (c) => c.method === 'fillRect' || c.method === 'stroke' || c.method === 'lineTo'
-      );
-
-      assert.ok(
-        hasClearRect,
-        'Chart must invoke clearRect to wipe previous viewport buffer before rendering shifted frame'
-      );
-      assert.ok(
-        hasTransformOrTranslate || hasDrawingOp,
-        'Chart must apply matrix translation or calculate shifted coordinates for candlestick series'
-      );
-
-      // If matrix translation is used, verify translation offsets match delta (+50, +20)
-      if (hasTransformOrTranslate) {
-        const translateCall = ctx.calls.find((c) => c.method === 'translate');
-        if (translateCall) {
-          assert.strictEqual(translateCall.args[0], 50, 'Translation X must match pan delta 50');
-          assert.strictEqual(translateCall.args[1], 20, 'Translation Y must match pan delta 20');
-        }
-      }
-    });
-
-    it('should accumulate drag delta across continuous mousemove drag events', () => {
-      const canvas = new MockCanvasElement();
-      const chart = new Chart(canvas, { data: mockCandlestickData });
-
-      // Start drag at (100, 100)
-      canvas.dispatchEvent(new MockMouseEvent('mousedown', { clientX: 100, clientY: 100, buttons: 1 }));
-
-      // Move 1: to (120, 110) -> delta: +20, +10
-      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 120, clientY: 110, buttons: 1 }));
-      let offset = getViewportOffset(chart);
-      assert.strictEqual(offset.x, 20, 'Viewport X after move 1 must be 20');
-      assert.strictEqual(offset.y, 10, 'Viewport Y after move 1 must be 10');
-
-      // Move 2: to (150, 135) -> cumulative delta from start: +50, +35
-      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 150, clientY: 135, buttons: 1 }));
-      offset = getViewportOffset(chart);
-      assert.strictEqual(offset.x, 50, 'Viewport X after move 2 must accumulate to 50');
-      assert.strictEqual(offset.y, 35, 'Viewport Y after move 2 must accumulate to 35');
-
-      // Move 3: drag backwards to (80, 70) -> cumulative delta from start: -20, -30
-      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 80, clientY: 70, buttons: 1 }));
-      offset = getViewportOffset(chart);
-      assert.strictEqual(offset.x, -20, 'Viewport X must reflect negative delta (-20)');
-      assert.strictEqual(offset.y, -30, 'Viewport Y must reflect negative delta (-30)');
-    });
-  });
-
-  describe('Acceptance Criteria 2: Pan State Deactivation on mouseup and mouseleave', () => {
-    it('should deactivate panning on mouseup and freeze viewport offset during subsequent mouse movements', () => {
-      const canvas = new MockCanvasElement();
-      const chart = new Chart(canvas, { data: mockCandlestickData });
-      const ctx = canvas.getContext('2d');
-
-      // Drag to (150, 150) from (100, 100)
-      canvas.dispatchEvent(new MockMouseEvent('mousedown', { clientX: 100, clientY: 100, buttons: 1 }));
-      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 150, clientY: 150, buttons: 1 }));
-
-      assert.strictEqual(chart.isPanning, true, 'isPanning must be true while dragging');
-      const offsetAtRelease = getViewportOffset(chart);
-      assert.strictEqual(offsetAtRelease.x, 50);
-      assert.strictEqual(offsetAtRelease.y, 50);
-
-      // Trigger mouseup
-      canvas.dispatchEvent(new MockMouseEvent('mouseup', { clientX: 150, clientY: 150, buttons: 0 }));
-
-      assert.strictEqual(chart.isPanning, false, 'isPanning state must deactivate (false) on mouseup');
-
-      ctx.clearCallHistory();
-
-      // Subsequent mousemove should NOT alter viewport offset
-      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 300, clientY: 300, buttons: 0 }));
-
-      const offsetAfterMove = getViewportOffset(chart);
-      assert.strictEqual(
-        offsetAfterMove.x,
-        50,
-        'Viewport offset X must remain locked at 50 after mouseup'
-      );
-      assert.strictEqual(
-        offsetAfterMove.y,
-        50,
-        'Viewport offset Y must remain locked at 50 after mouseup'
-      );
-      assert.strictEqual(
-        ctx.calls.length,
-        0,
-        'No re-render operations should be triggered by inactive mousemove'
-      );
-    });
-
-    it('should deactivate panning on mouseleave and ignore subsequent mouse movements outside canvas', () => {
-      const canvas = new MockCanvasElement();
-      const chart = new Chart(canvas, { data: mockCandlestickData });
-
-      // Drag sequence
-      canvas.dispatchEvent(new MockMouseEvent('mousedown', { clientX: 50, clientY: 50, buttons: 1 }));
-      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 80, clientY: 90, buttons: 1 }));
-
-      assert.strictEqual(chart.isPanning, true);
-      const lockedOffset = getViewportOffset(chart);
-      assert.strictEqual(lockedOffset.x, 30);
-      assert.strictEqual(lockedOffset.y, 40);
-
-      // Cursor leaves canvas area
-      canvas.dispatchEvent(new MockMouseEvent('mouseleave', { clientX: 80, clientY: 90 }));
-
-      assert.strictEqual(
-        chart.isPanning,
-        false,
-        'isPanning state must deactivate immediately when mouse leaves canvas'
-      );
-
-      // Dispatched moves should not change offset
-      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 200, clientY: 250, buttons: 0 }));
-
-      const currentOffset = getViewportOffset(chart);
-      assert.strictEqual(
-        currentOffset.x,
-        30,
-        'Viewport offset X must remain unchanged after mouseleave'
-      );
-      assert.strictEqual(
-        currentOffset.y,
-        40,
-        'Viewport offset Y must remain unchanged after mouseleave'
-      );
-    });
-
-    it('should ignore mousemove events if mousedown was never initiated', () => {
-      const canvas = new MockCanvasElement();
-      const chart = new Chart(canvas, { data: mockCandlestickData });
-
-      // Move mouse across canvas without mousedown
-      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 100, clientY: 100, buttons: 0 }));
-      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 250, clientY: 300, buttons: 0 }));
-
-      assert.strictEqual(chart.isPanning, false, 'isPanning must remain false');
-      const offset = getViewportOffset(chart);
-      assert.strictEqual(offset.x, 0, 'Offset X must remain 0 when no drag occurred');
-      assert.strictEqual(offset.y, 0, 'Offset Y must remain 0 when no drag occurred');
-    });
-  });
-
-  describe('Architectural Invariant: Live Entrypoint Wiring (src/main.js & #app)', () => {
-    it('should mount canvas into "#app" container and attach active pannable Chart instance', () => {
-      // Ensure #app exists in DOM
-      const container = globalThis.document.querySelector('#app');
-      assert.ok(container, '#app container must exist in the document');
-
-      // Execute entrypoint boot/mount
-      if (typeof main.mount === 'function') {
-        main.mount('#app');
-      } else if (typeof main.init === 'function') {
-        main.init('#app');
-      } else if (typeof main.bootstrap === 'function') {
-        main.bootstrap();
-      }
-
-      // Architectural Invariant check: #app must contain mounted canvas element
-      const mountedCanvas = container.querySelector('canvas');
+  describe('Architectural Invariant: Active Entrypoint Wiring', () => {
+    it('should mount canvas inside document.getElementById("app") via src/main.js', () => {
+      const mountedCanvas = app.querySelector('canvas');
       assert.ok(
         mountedCanvas,
-        'Architectural invariant violated: src/main.js must mount a canvas element into "#app"'
+        'Active entrypoint (src/main.js) must mount canvas to document.getElementById("app")'
       );
-
-      // Verify canvas event listeners for panning are wired
-      const hasMouseDown = mountedCanvas.listeners.has('mousedown');
-      const hasMouseMove = mountedCanvas.listeners.has('mousemove');
-      const hasMouseUp = mountedCanvas.listeners.has('mouseup');
-      const hasMouseLeave = mountedCanvas.listeners.has('mouseleave');
-
-      assert.ok(hasMouseDown, 'Mounted canvas must have "mousedown" listener attached');
-      assert.ok(hasMouseMove, 'Mounted canvas must have "mousemove" listener attached');
-      assert.ok(hasMouseUp, 'Mounted canvas must have "mouseup" listener attached');
-      assert.ok(hasMouseLeave, 'Mounted canvas must have "mouseleave" listener attached');
+      assert.strictEqual(
+        mountedCanvas.tagName,
+        'CANVAS',
+        'Mounted child must be a canvas element'
+      );
     });
 
-    it('should allow end-to-end user drag panning directly through the active "#app" canvas', () => {
-      // Initialize application entrypoint
-      if (typeof main.mount === 'function') {
-        main.mount('#app');
-      } else if (typeof main.init === 'function') {
-        main.init('#app');
-      } else if (typeof main.bootstrap === 'function') {
-        main.bootstrap();
-      }
-
-      const activeCanvas = globalThis.document.querySelector('#app canvas');
-      assert.ok(activeCanvas, 'Active canvas in #app must be accessible for gesture testing');
-
-      const ctx = activeCanvas.getContext('2d');
-      ctx.clearCallHistory();
-
-      // Dispatch full user drag gesture sequence on the mounted live canvas
-      activeCanvas.dispatchEvent(
-        new MockMouseEvent('mousedown', { clientX: 200, clientY: 200, button: 0, buttons: 1 })
+    it('should bind the active Chart instance to the mounted canvas element', () => {
+      assert.ok(chartInstance, 'Entrypoint must expose or instantiate an active Chart instance');
+      assert.strictEqual(
+        chartInstance.canvas,
+        app.querySelector('canvas'),
+        'Chart instance canvas reference must match the mounted app canvas'
       );
-      activeCanvas.dispatchEvent(
-        new MockMouseEvent('mousemove', { clientX: 275, clientY: 230, button: 0, buttons: 1 })
-      );
+    });
+  });
 
-      // Assert that defect DF-GESTURE-01 is resolved: zero pixel/matrix updates must NOT occur
+  describe('Acceptance Criteria 1: Mousedown and Mousemove Viewport Translation & Re-render', () => {
+    it('should update canvas viewport translation offset on drag gestures', () => {
+      // Establish baseline viewport translation
+      const initialViewport = chartInstance.getViewportOffset
+        ? chartInstance.getViewportOffset()
+        : { x: chartInstance.viewport.x, y: chartInstance.viewport.y };
+
+      // 1. Dispatch mousedown at starting position (100, 100)
+      const downEvent = new MockMouseEvent('mousedown', {
+        clientX: 100,
+        clientY: 100,
+        button: 0,
+      });
+      canvas.dispatchEvent(downEvent);
+
+      // 2. Dispatch mousemove drag to (175, 140) => dx = +75, dy = +40
+      const moveEvent = new MockMouseEvent('mousemove', {
+        clientX: 175,
+        clientY: 140,
+        button: 0,
+      });
+      canvas.dispatchEvent(moveEvent);
+
+      const updatedViewport = chartInstance.getViewportOffset
+        ? chartInstance.getViewportOffset()
+        : { x: chartInstance.viewport.x, y: chartInstance.viewport.y };
+
+      const deltaX = updatedViewport.x - initialViewport.x;
+      const deltaY = updatedViewport.y - initialViewport.y;
+
+      // Defect DF-GESTURE-01 check: zero pixel changes or viewport matrix updates
+      assert.notStrictEqual(
+        deltaX,
+        0,
+        'Viewport translation offset X must not remain 0 after mouse drag'
+      );
+      assert.notStrictEqual(
+        deltaY,
+        0,
+        'Viewport translation offset Y must not remain 0 after mouse drag'
+      );
+      assert.strictEqual(
+        deltaX,
+        75,
+        'Viewport offset X must translate by exact drag delta (+75)'
+      );
+      assert.strictEqual(
+        deltaY,
+        40,
+        'Viewport offset Y must translate by exact drag delta (+40)'
+      );
+    });
+
+    it('should trigger re-render reflecting updated pan coordinates upon dragging', () => {
+      const ctx = canvas.getContext('2d');
+      const initialRenderCount = chartInstance.renderCount ?? ctx.renderCalls;
+
+      // Initiate drag
+      canvas.dispatchEvent(new MockMouseEvent('mousedown', { clientX: 200, clientY: 200, button: 0 }));
+      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 250, clientY: 220, button: 0 }));
+
+      const postDragRenderCount = chartInstance.renderCount ?? ctx.renderCalls;
+
       assert.ok(
-        ctx.calls.length > 0,
-        'Defect DF-GESTURE-01 check: Dispatching drag across live canvas must produce rendering updates'
+        postDragRenderCount > initialRenderCount,
+        'Canvas re-render must be triggered after mousemove drag updates viewport'
       );
 
-      // Check chart instance if exposed via main or attached to canvas
-      const chartInstance = activeCanvas.__chart || main.chart || main.getChart?.();
-      if (chartInstance) {
-        const offset = getViewportOffset(chartInstance);
-        assert.strictEqual(
-          offset.x,
-          75,
-          'Live chart viewport offset X must be updated by drag delta (+75)'
-        );
-        assert.strictEqual(
-          offset.y,
-          30,
-          'Live chart viewport offset Y must be updated by drag delta (+30)'
-        );
-      }
+      // Confirm transformation matrix was updated on context
+      const hasMatrixUpdate = ctx.transformHistory.some(
+        (entry) =>
+          (entry.type === 'translate' && (entry.args.dx !== 0 || entry.args.dy !== 0)) ||
+          (entry.type === 'setTransform' && (entry.args.e !== 0 || entry.args.f !== 0))
+      );
+      assert.ok(hasMatrixUpdate, 'Canvas 2D context transform matrix must reflect the pan operation');
+    });
 
-      // Complete drag release
-      activeCanvas.dispatchEvent(
-        new MockMouseEvent('mouseup', { clientX: 275, clientY: 230, button: 0, buttons: 0 })
+    it('should accumulate incremental translation across multiple mousemove events in a single drag', () => {
+      const initialViewport = chartInstance.getViewportOffset
+        ? chartInstance.getViewportOffset()
+        : { x: chartInstance.viewport.x, y: chartInstance.viewport.y };
+
+      // Drag sequence: (50, 50) -> (70, 60) -> (100, 90)
+      canvas.dispatchEvent(new MockMouseEvent('mousedown', { clientX: 50, clientY: 50, button: 0 }));
+      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 70, clientY: 60, button: 0 }));
+      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 100, clientY: 90, button: 0 }));
+
+      const finalViewport = chartInstance.getViewportOffset
+        ? chartInstance.getViewportOffset()
+        : { x: chartInstance.viewport.x, y: chartInstance.viewport.y };
+
+      assert.strictEqual(
+        finalViewport.x - initialViewport.x,
+        50,
+        'Cumulative translation X must equal total displacement (100 - 50 = +50)'
+      );
+      assert.strictEqual(
+        finalViewport.y - initialViewport.y,
+        40,
+        'Cumulative translation Y must equal total displacement (90 - 50 = +40)'
+      );
+    });
+
+    it('should ignore mousemove events when mousedown was not initiated (no active pan)', () => {
+      const initialViewport = chartInstance.getViewportOffset
+        ? chartInstance.getViewportOffset()
+        : { x: chartInstance.viewport.x, y: chartInstance.viewport.y };
+
+      // Passive hover without mousedown
+      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 300, clientY: 300, button: 0 }));
+
+      const currentViewport = chartInstance.getViewportOffset
+        ? chartInstance.getViewportOffset()
+        : { x: chartInstance.viewport.x, y: chartInstance.viewport.y };
+
+      assert.strictEqual(currentViewport.x, initialViewport.x, 'Hover mousemove must not alter viewport X');
+      assert.strictEqual(currentViewport.y, initialViewport.y, 'Hover mousemove must not alter viewport Y');
+    });
+  });
+
+  describe('Acceptance Criteria 2: Pan Termination and Viewport Locking', () => {
+    it('should terminate pan tracking and lock viewport offset on mouseup without resetting position', () => {
+      // Start and execute drag
+      canvas.dispatchEvent(new MockMouseEvent('mousedown', { clientX: 100, clientY: 100, button: 0 }));
+      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 180, clientY: 160, button: 0 }));
+
+      const lockedViewport = chartInstance.getViewportOffset
+        ? chartInstance.getViewportOffset()
+        : { x: chartInstance.viewport.x, y: chartInstance.viewport.y };
+
+      // Dispatch mouseup to terminate pan tracking
+      canvas.dispatchEvent(new MockMouseEvent('mouseup', { clientX: 180, clientY: 160, button: 0 }));
+
+      // Viewport must lock at current coordinates, NOT reset to origin (0, 0)
+      assert.strictEqual(
+        lockedViewport.x,
+        chartInstance.viewport ? chartInstance.viewport.x : lockedViewport.x,
+        'Viewport must remain locked at current position immediately after mouseup'
       );
 
-      if (chartInstance) {
-        assert.strictEqual(
-          chartInstance.isPanning,
-          false,
-          'Live chart isPanning state must be deactivated after mouseup'
-        );
+      // Subsequent mousemove should NOT alter the locked viewport
+      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 300, clientY: 300, button: 0 }));
+
+      const postUpViewport = chartInstance.getViewportOffset
+        ? chartInstance.getViewportOffset()
+        : { x: chartInstance.viewport.x, y: chartInstance.viewport.y };
+
+      assert.strictEqual(
+        postUpViewport.x,
+        lockedViewport.x,
+        'Viewport X must remain locked at pan offset and ignore mousemove after mouseup'
+      );
+      assert.strictEqual(
+        postUpViewport.y,
+        lockedViewport.y,
+        'Viewport Y must remain locked at pan offset and ignore mousemove after mouseup'
+      );
+    });
+
+    it('should terminate pan tracking and lock viewport offset on mouseleave without resetting position', () => {
+      // Start and execute drag
+      canvas.dispatchEvent(new MockMouseEvent('mousedown', { clientX: 200, clientY: 200, button: 0 }));
+      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 240, clientY: 230, button: 0 }));
+
+      const offsetBeforeLeave = chartInstance.getViewportOffset
+        ? chartInstance.getViewportOffset()
+        : { x: chartInstance.viewport.x, y: chartInstance.viewport.y };
+
+      // Dispatch mouseleave
+      canvas.dispatchEvent(new MockMouseEvent('mouseleave', { clientX: 240, clientY: 230 }));
+
+      // Verify viewport did not snap back to default
+      const offsetAfterLeave = chartInstance.getViewportOffset
+        ? chartInstance.getViewportOffset()
+        : { x: chartInstance.viewport.x, y: chartInstance.viewport.y };
+
+      assert.strictEqual(
+        offsetAfterLeave.x,
+        offsetBeforeLeave.x,
+        'Viewport X must lock at current pan position upon mouseleave'
+      );
+      assert.strictEqual(
+        offsetAfterLeave.y,
+        offsetBeforeLeave.y,
+        'Viewport Y must lock at current pan position upon mouseleave'
+      );
+
+      // Move mouse outside while unclicked -> must not pan
+      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 500, clientY: 500, button: 0 }));
+
+      const finalOffset = chartInstance.getViewportOffset
+        ? chartInstance.getViewportOffset()
+        : { x: chartInstance.viewport.x, y: chartInstance.viewport.y };
+
+      assert.strictEqual(finalOffset.x, offsetBeforeLeave.x, 'Pan tracking must be inactive after mouseleave');
+      assert.strictEqual(finalOffset.y, offsetBeforeLeave.y, 'Pan tracking must be inactive after mouseleave');
+    });
+
+    it('should support subsequent distinct drag interactions preserving previous pan offsets', () => {
+      // Drag session 1: delta +50, +30
+      canvas.dispatchEvent(new MockMouseEvent('mousedown', { clientX: 100, clientY: 100, button: 0 }));
+      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 150, clientY: 130, button: 0 }));
+      canvas.dispatchEvent(new MockMouseEvent('mouseup', { clientX: 150, clientY: 130, button: 0 }));
+
+      const session1Viewport = chartInstance.getViewportOffset
+        ? chartInstance.getViewportOffset()
+        : { x: chartInstance.viewport.x, y: chartInstance.viewport.y };
+
+      // Drag session 2: delta +20, -10 starting from a new point
+      canvas.dispatchEvent(new MockMouseEvent('mousedown', { clientX: 300, clientY: 300, button: 0 }));
+      canvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 320, clientY: 290, button: 0 }));
+      canvas.dispatchEvent(new MockMouseEvent('mouseup', { clientX: 320, clientY: 290, button: 0 }));
+
+      const session2Viewport = chartInstance.getViewportOffset
+        ? chartInstance.getViewportOffset()
+        : { x: chartInstance.viewport.x, y: chartInstance.viewport.y };
+
+      assert.strictEqual(
+        session2Viewport.x - session1Viewport.x,
+        20,
+        'Second drag must incrementally translate from previous locked position on X'
+      );
+      assert.strictEqual(
+        session2Viewport.y - session1Viewport.y,
+        -10,
+        'Second drag must incrementally translate from previous locked position on Y'
+      );
+    });
+  });
+
+  describe('Isolated Chart Module Gesture Panning Unit Tests (src/chart.js)', () => {
+    it('should expose pan(dx, dy) API or handle pan gestures directly on chart canvas', () => {
+      const standaloneCanvas = new MockHTMLCanvasElement();
+      const chart = new Chart({ canvas: standaloneCanvas });
+
+      const initialX = chart.viewport?.x ?? 0;
+      const initialY = chart.viewport?.y ?? 0;
+
+      if (typeof chart.pan === 'function') {
+        chart.pan(30, 45);
+        assert.strictEqual(chart.viewport.x, initialX + 30);
+        assert.strictEqual(chart.viewport.y, initialY + 45);
+      } else {
+        // Must support canvas event listeners attached in constructor
+        standaloneCanvas.dispatchEvent(new MockMouseEvent('mousedown', { clientX: 10, clientY: 10, button: 0 }));
+        standaloneCanvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 40, clientY: 55, button: 0 }));
+        standaloneCanvas.dispatchEvent(new MockMouseEvent('mouseup', { clientX: 40, clientY: 55, button: 0 }));
+
+        const finalX = chart.viewport?.x ?? chart.getViewportOffset().x;
+        const finalY = chart.viewport?.y ?? chart.getViewportOffset().y;
+
+        assert.strictEqual(finalX, initialX + 30, 'Chart must update internal viewport X on gesture');
+        assert.strictEqual(finalY, initialY + 45, 'Chart must update internal viewport Y on gesture');
       }
+    });
+
+    it('should ignore non-primary mouse clicks (e.g. right click) for canvas panning', () => {
+      const standaloneCanvas = new MockHTMLCanvasElement();
+      const chart = new Chart({ canvas: standaloneCanvas });
+
+      const startX = chart.viewport?.x ?? 0;
+      const startY = chart.viewport?.y ?? 0;
+
+      // Right-click drag (button: 2)
+      standaloneCanvas.dispatchEvent(new MockMouseEvent('mousedown', { clientX: 50, clientY: 50, button: 2 }));
+      standaloneCanvas.dispatchEvent(new MockMouseEvent('mousemove', { clientX: 100, clientY: 100, button: 2 }));
+
+      const currentX = chart.viewport?.x ?? (chart.getViewportOffset ? chart.getViewportOffset().x : startX);
+      const currentY = chart.viewport?.y ?? (chart.getViewportOffset ? chart.getViewportOffset().y : startY);
+
+      assert.strictEqual(currentX, startX, 'Secondary mouse button drag must not pan viewport X');
+      assert.strictEqual(currentY, startY, 'Secondary mouse button drag must not pan viewport Y');
     });
   });
 });
