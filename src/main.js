@@ -1975,3 +1975,6 @@ if (typeof document !== 'undefined') {
 }
 
 export default initApp;
+export const init = mountApp;
+
+export const initialize = mountApp;
