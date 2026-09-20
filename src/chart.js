@@ -2,7 +2,7 @@
  * SmartTrading-V2 — Chart Engine & Candlestick/Axes Orchestrator
  * Integrates Candlestick rendering, AxesRenderer (DF-SCALES-01, DF-SCALES-02),
  * and analytical overlays (DF-OVERLAYS-01) within constrained viewport bounds.
- * Satisfies STORY 31.1.1 (Resolve UNRESPONSIVE_CANVAS_ZOOM) and STORY 31.2.1 (Resolve SPARSE_DATA_SERIES).
+ * Satisfies STORY 31.1.1, STORY 31.2.1, and STORY 32.1.1.
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -209,9 +209,6 @@ export class Chart {
   }
 
   setData(data) {
-    if (Array.isArray(data) && data.length > 0 && data.length < 50) {
-      throw new Error('SPARSE_DATA_SERIES: Minimum 50 data points required to populate viewport sectors');
-    }
     this.data = Array.isArray(data) ? [...data] : [];
     this.render();
   }
