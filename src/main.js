@@ -3,7 +3,8 @@
  * Responsible for root application mounting, layout composition,
  * coordinate mapping, interactive control binding, and pan/zoom gesture wiring.
  * Satisfies STORY 29.4.1 (DF-GRAPHICS-01), STORY 29.7.1 (DF-TOOLS-01),
- * STORY 29.2.1 (DF-GESTURE-01), and STORY 29.3.1 (DF-GESTURE-02).
+ * STORY 29.2.1 (DF-GESTURE-01), STORY 29.3.1 (DF-GESTURE-02),
+ * and STORY 29.6.1 (DF-SCALES-02).
  */
 
 import {
@@ -216,6 +217,15 @@ export function calculateEMA(data, period = 20) {
     prevEMA = curEMA;
   }
   return ema;
+}
+
+/**
+ * Returns the currently active Chart instance.
+ *
+ * @returns {Chart|null}
+ */
+export function activeChartInstance() {
+  return chart;
 }
 
 /**
@@ -462,6 +472,21 @@ export function mount(container) {
   canvas._chart = chartInstance;
   chart = chartInstance;
 
+  // Window resize synchronization anchoring horizontal time scale above fold (DF-SCALES-02)
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    if (target._resizeHandler && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('resize', target._resizeHandler);
+    }
+    target._resizeHandler = () => {
+      const w = (typeof window !== 'undefined' && window.innerWidth) || (target && target.clientWidth) || 800;
+      const h = (typeof window !== 'undefined' && window.innerHeight) || (target && target.clientHeight) || 600;
+      if (chartInstance && typeof chartInstance.resize === 'function') {
+        chartInstance.resize(w, h);
+      }
+    };
+    window.addEventListener('resize', target._resizeHandler);
+  }
+
   btnZoomIn.addEventListener('click', () => {
     if (typeof chartInstance.zoomIn === 'function') {
       chartInstance.zoomIn();
@@ -484,7 +509,7 @@ export function mount(container) {
   });
 
   try {
-    if (typeof chartInstance.mount === 'function') chartInstance.mount();
+    if (typeof chartInstance.mount === 'function') chartInstance.mount(canvas);
     if (typeof chartInstance.render === 'function') chartInstance.render();
   } catch {
     // Graceful fallback for non-graphical test mocks
@@ -582,7 +607,7 @@ export function mount(container) {
 /**
  * Lifecycle mountApp function alias.
  *
- * @param {HTMLElement|Object} container
+ * @param {HTMLElement|Object} [container]
  * @returns {HTMLElement|Object}
  */
 export function mountApp(container) {

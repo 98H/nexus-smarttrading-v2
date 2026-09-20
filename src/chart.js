@@ -2,11 +2,19 @@
  * SmartTrading-V2 — Charting Engine
  * Implements financial chart rendering, price/time scales, candlestick series,
  * indicator overlays, layout geometry, interactive pan gestures, and canvas zoom.
- * Satisfies STORY 29.4.1 (DF-GRAPHICS-01), STORY 29.2.1 (DF-GESTURE-01), and STORY 29.3.1 (DF-GESTURE-02).
+ * Satisfies STORY 29.4.1 (DF-GRAPHICS-01), STORY 29.2.1 (DF-GESTURE-01),
+ * STORY 29.3.1 (DF-GESTURE-02), and STORY 29.6.1 (DF-SCALES-02).
  */
 
 export const PERIOD_DEFAULT = 20;
 export const SECTOR_COUNT_MINIMUM = 3;
+
+export const TIME_AXIS_FORMATS = {
+  HOURLY: 'HH:mm',
+  DAILY: 'YYYY-MM-DD',
+  TIME: 'HH:mm',
+  DATE: 'YYYY-MM-DD',
+};
 
 /**
  * Calculates Simple Moving Average (SMA) over candle close prices.
@@ -272,7 +280,7 @@ export function renderPriceScale(ctx, plotArea, priceRange, width, height) {
 }
 
 /**
- * Renders horizontal time scale baseline and timestamp markers (DF-SCALES-02).
+ * Renders horizontal time scale baseline and timestamp markers anchored within the bottom axis (DF-SCALES-02).
  */
 export function renderTimeScale(ctx, plotArea, candles, width, height, reservedBottom = 30) {
   if (!ctx) return;
@@ -280,6 +288,7 @@ export function renderTimeScale(ctx, plotArea, candles, width, height, reservedB
 
   ctx.save?.();
 
+  // Baseline separator along bottom boundary
   ctx.beginPath?.();
   ctx.strokeStyle = '#2a2e39';
   ctx.lineWidth = 1;
@@ -327,6 +336,7 @@ export function renderTimeScale(ctx, plotArea, candles, width, height, reservedB
     if (!candle) continue;
     const x = Math.round(plotArea.left + (idx + 0.5) * candleStep);
 
+    // Tick marker rendered on bottom axis line
     ctx.beginPath?.();
     ctx.strokeStyle = '#363c4e';
     ctx.lineWidth = 1;
@@ -456,7 +466,7 @@ export class AxesRenderer {
 
 /**
  * Core quantitative Chart class supporting viewport panning, responsive rendering,
- * and wheel gesture zooming with dynamic time/price scale recalculation (DF-GESTURE-02).
+ * horizontal time axis anchoring, and wheel gesture zooming (DF-SCALES-02, DF-GESTURE-02).
  */
 export class Chart {
   constructor(canvasOrOptions = {}, maybeOptions = {}) {
@@ -471,14 +481,32 @@ export class Chart {
       canvas = options.canvas || null;
     }
 
+    let container = options.container || null;
+    if (typeof container === 'string' && typeof document !== 'undefined') {
+      container = document.querySelector(container);
+    }
+
+    if (container) {
+      if (!canvas && typeof container.querySelector === 'function') {
+        canvas = container.querySelector('canvas');
+      }
+      if (!canvas && typeof document !== 'undefined' && typeof document.createElement === 'function') {
+        canvas = document.createElement('canvas');
+        if (typeof container.appendChild === 'function') {
+          container.appendChild(canvas);
+        }
+      }
+    }
+
     this.canvas = canvas;
+    this.container = container;
     this.options = options;
     this.width = options.width || (canvas ? canvas.width : 800) || 800;
     this.height = options.height || (canvas ? canvas.height : 600) || 600;
 
     if (this.canvas) {
-      if (!this.canvas.width) this.canvas.width = this.width;
-      if (!this.canvas.height) this.canvas.height = this.height;
+      this.canvas.width = this.width;
+      this.canvas.height = this.height;
     }
 
     this.ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
@@ -515,6 +543,7 @@ export class Chart {
     this.layout = {
       topMargin: 20,
       bottomMargin: reservedBottom,
+      bottomPadding: reservedBottom,
       leftMargin: 20,
       rightMargin: 65,
       padding: {
@@ -525,8 +554,8 @@ export class Chart {
       },
     };
 
-    const initialCandles = options.data || options.candles;
-    this.candles = initialCandles ? initialCandles : generateDenseCandles(80);
+    const initialCandles = options.data !== undefined ? options.data : options.candles;
+    this.candles = initialCandles !== undefined ? initialCandles : generateDenseCandles(80);
     this.data = this.candles;
     this.overlayType = options.overlay || 'SMA (20)';
 
@@ -539,6 +568,28 @@ export class Chart {
     }
 
     this.updatePlotArea();
+  }
+
+  getLayout() {
+    const bottomPadding = Math.max(
+      20,
+      this.layout.bottomMargin ?? this.layout.bottomPadding ?? this.layout.padding?.bottom ?? 30
+    );
+    return {
+      ...this.layout,
+      bottomPadding,
+      bottomMargin: bottomPadding,
+      topMargin: this.layout.topMargin ?? 20,
+      leftMargin: this.layout.leftMargin ?? 20,
+      rightMargin: this.layout.rightMargin ?? 65,
+      padding: {
+        ...this.layout.padding,
+        top: this.layout.topMargin ?? 20,
+        bottom: bottomPadding,
+        left: this.layout.leftMargin ?? 20,
+        right: this.layout.rightMargin ?? 65,
+      },
+    };
   }
 
   _recalculateScales() {
@@ -726,8 +777,8 @@ export class Chart {
       }
     }
 
-    if (!this.candles || this.candles.length < 50 || this.candles.length > 100) {
-      this.candles = hydrateCandles(this.candles, 80);
+    if (!this.candles || (this.candles.length === 0 && this.options.data === undefined)) {
+      this.candles = generateDenseCandles(80);
       this.data = this.candles;
     }
 
@@ -771,7 +822,7 @@ export class Chart {
   updatePlotArea() {
     const w = (this.canvas && this.canvas.width) || this.width || 800;
     const h = (this.canvas && this.canvas.height) || this.height || 600;
-    const reservedBottom = this.layout.bottomMargin ?? this.layout.padding.bottom;
+    const reservedBottom = this.layout.bottomMargin ?? this.layout.bottomPadding ?? this.layout.padding.bottom;
     const reservedTop = this.layout.topMargin ?? this.layout.padding.top;
     const reservedLeft = this.layout.leftMargin ?? this.layout.padding.left;
     const reservedRight = this.layout.rightMargin ?? this.layout.padding.right;
@@ -820,12 +871,35 @@ export class Chart {
     this.render();
   }
 
+  /**
+   * Synchronously updates timeseries or candlestick dataset and redraws time axis (DF-SCALES-02).
+   *
+   * @param {Array<Object>} candles New candlestick timeseries domain
+   */
+  updateData(candles) {
+    this.candles = Array.isArray(candles) ? [...candles] : [];
+    this.data = this.candles;
+    this._recalculateScales();
+    this.render();
+  }
+
   setOverlay(type) {
     this.overlayType = type;
     this.render();
   }
 
   render() {
+    if (!this.canvas && this.container && typeof document !== 'undefined' && typeof document.createElement === 'function') {
+      this.canvas = document.createElement('canvas');
+      this.canvas.width = this.width;
+      this.canvas.height = this.height;
+      if (typeof this.container.appendChild === 'function') {
+        this.container.appendChild(this.canvas);
+      }
+      this.ctx = typeof this.canvas.getContext === 'function' ? this.canvas.getContext('2d') : null;
+      this._attachEvents(this.canvas);
+    }
+
     const ctx = this.ctx || (this.canvas && this.canvas.getContext && this.canvas.getContext('2d'));
     if (!ctx) return;
 
@@ -833,7 +907,7 @@ export class Chart {
     this.updatePlotArea();
     const w = (this.canvas && this.canvas.width) || this.width || 800;
     const h = (this.canvas && this.canvas.height) || this.height || 600;
-    const reservedBottom = this.layout.bottomMargin ?? this.layout.padding.bottom;
+    const reservedBottom = this.layout.bottomMargin ?? this.layout.bottomPadding ?? this.layout.padding.bottom;
 
     if (typeof ctx.setTransform === 'function') {
       try {
@@ -844,29 +918,31 @@ export class Chart {
       ctx.clearRect(0, 0, w, h);
     }
 
+    const priceRange = this.getPriceRange();
+
+    // 1. Grid lines
+    renderGrid(ctx, this.plotArea, w, h);
+
+    // 2. Candlestick series and indicator overlay inside viewport transform
+    if (typeof ctx.save === 'function') ctx.save();
     if (typeof ctx.translate === 'function') {
       try {
         ctx.translate(this.viewport.x, this.viewport.y);
       } catch {}
     }
 
-    const priceRange = this.getPriceRange();
-
-    // 1. Grid lines
-    renderGrid(ctx, this.plotArea, w, h);
-
-    // 2. Candlestick series
     renderCandlesticksSeries(ctx, this.plotArea, this.candles, priceRange);
 
-    // 3. Analytical indicator overlay
     if (this.overlayType && this.overlayType !== 'None') {
       renderOverlay(ctx, this.plotArea, this.candles, priceRange, this.overlayType);
     }
 
-    // 4. Vertical price scale
+    if (typeof ctx.restore === 'function') ctx.restore();
+
+    // 3. Vertical price scale along the right boundary
     renderPriceScale(ctx, this.plotArea, priceRange, w, h);
 
-    // 5. Horizontal time scale axis (DF-SCALES-02)
+    // 4. Horizontal time scale axis anchored along the bottom boundary above the fold (DF-SCALES-02)
     renderTimeScale(ctx, this.plotArea, this.candles, w, h, reservedBottom);
   }
 }
