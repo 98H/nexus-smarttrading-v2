@@ -1384,8 +1384,8 @@ export function initApp(options = {}) {
     ? root.clientHeight
     : (win && win.innerHeight ? win.innerHeight : 600);
 
-  chartContainer.clientWidth = Math.round(initialVpWidth * 0.65);
-  chartContainer.clientHeight = initialVpHeight;
+  try { chartContainer.clientWidth = Math.round(initialVpWidth * 0.65); } catch (_) {}
+  try { chartContainer.clientHeight = initialVpHeight; } catch (_) {}
 
   // 6. Active Canvas Component
   const canvas = createElement('canvas', {
@@ -1403,10 +1403,10 @@ export function initApp(options = {}) {
   });
 
   if (opts.width && typeof canvas.clientWidth !== 'number') {
-    try { canvas.clientWidth = opts.width; } catch (_) {}
+    try { try { canvas.clientWidth = opts.width; } catch (_) {} } catch (_) {}
   }
   if (opts.height && typeof canvas.clientHeight !== 'number') {
-    try { canvas.clientHeight = opts.height; } catch (_) {}
+    try { try { canvas.clientHeight = opts.height; } catch (_) {} } catch (_) {}
   }
 
   let ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
@@ -1726,11 +1726,11 @@ export function initApp(options = {}) {
       : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
 
     if (currentWin && typeof currentWin.innerWidth === 'number') {
-      if (chartContainer) chartContainer.clientWidth = Math.round(currentWin.innerWidth * 0.65);
+      if (chartContainer) try { chartContainer.clientWidth = Math.round(currentWin.innerWidth * 0.65); } catch (_) {}
       if (canvas) canvas.width = Math.round(currentWin.innerWidth * 0.65);
     }
     if (currentWin && typeof currentWin.innerHeight === 'number') {
-      if (chartContainer) chartContainer.clientHeight = currentWin.innerHeight;
+      if (chartContainer) try { chartContainer.clientHeight = currentWin.innerHeight; } catch (_) {}
       if (canvas) canvas.height = currentWin.innerHeight;
     }
 
@@ -1796,18 +1796,18 @@ export function initApp(options = {}) {
             const h = typeof cr.height === 'number' && cr.height > 0 ? cr.height : (target && target.clientHeight);
             if (typeof w === 'number' && w > 0) {
               if (target) {
-                try { target.clientWidth = w; } catch (_) {}
+                try { try { target.clientWidth = w; } catch (_) {} } catch (_) {}
               }
               if (target === chartContainer || target === workspaceContainer || target === canvas) {
-                try { canvas.clientWidth = w; } catch (_) {}
+                try { try { canvas.clientWidth = w; } catch (_) {} } catch (_) {}
               }
             }
             if (typeof h === 'number' && h > 0) {
               if (target) {
-                try { target.clientHeight = h; } catch (_) {}
+                try { try { target.clientHeight = h; } catch (_) {} } catch (_) {}
               }
               if (target === chartContainer || target === workspaceContainer || target === canvas) {
-                try { canvas.clientHeight = h; } catch (_) {}
+                try { try { canvas.clientHeight = h; } catch (_) {} } catch (_) {}
               }
             }
           }

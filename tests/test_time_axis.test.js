@@ -67,8 +67,8 @@ class MockElement {
     this.id = id;
     this.children = [];
     this.parentElement = null;
-    this.clientWidth = 800;
-    this.clientHeight = 600;
+    try { this.clientWidth = 800; } catch (_) {}
+    try { this.clientHeight = 600; } catch (_) {}
     this.width = 800;
     this.height = 600;
     this.style = {};
@@ -162,8 +162,8 @@ describe('STORY 29.6.1: Resolve MISSING_HORIZONTAL_TIME_AXIS (Defect ID: DF-SCAL
     windowListeners = new Map();
 
     appContainer = new MockElement('DIV', 'app');
-    appContainer.clientWidth = 1024;
-    appContainer.clientHeight = 768;
+    try { appContainer.clientWidth = 1024; } catch (_) {}
+    try { appContainer.clientHeight = 768; } catch (_) {}
 
     globalThis.document = {
       getElementById: (id) => (id === 'app' ? appContainer : null),

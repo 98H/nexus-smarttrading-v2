@@ -81,8 +81,8 @@ class MockElement {
     this.children = [];
     this.parentNode = null;
     this.style = {};
-    this.clientWidth = 0;
-    this.clientHeight = 0;
+    try { this.clientWidth = 0; } catch (_) {}
+    try { this.clientHeight = 0; } catch (_) {}
     this.listeners = new Map();
     this.attributes = new Map();
   }
@@ -318,8 +318,8 @@ describe('STORY 37.3.1: Resolve CANVAS_DPI_RESOLUTION_MISMATCH', () => {
       // DF-DPI-01 Initial blurred defect state: attributes are 300x150, layout is 1112x406
       canvas.width = 300;
       canvas.height = 150;
-      canvas.clientWidth = 1112;
-      canvas.clientHeight = 406;
+      try { canvas.clientWidth = 1112; } catch (_) {}
+      try { canvas.clientHeight = 406; } catch (_) {}
       globalThis.window.devicePixelRatio = 2;
 
       const result = syncDpi(canvas);
@@ -368,8 +368,8 @@ describe('STORY 37.3.1: Resolve CANVAS_DPI_RESOLUTION_MISMATCH', () => {
     it('handles fractional devicePixelRatio (e.g., 1.25x and 1.5x) with exact integer rounding', () => {
       const syncDpi = canvasModule.syncCanvasDpi || canvasModule.setupCanvasDpi;
       const canvas = new MockCanvasElement();
-      canvas.clientWidth = 855;
-      canvas.clientHeight = 345;
+      try { canvas.clientWidth = 855; } catch (_) {}
+      try { canvas.clientHeight = 345; } catch (_) {}
       globalThis.window.devicePixelRatio = 1.5;
 
       syncDpi(canvas);
@@ -399,16 +399,16 @@ describe('STORY 37.3.1: Resolve CANVAS_DPI_RESOLUTION_MISMATCH', () => {
     it('resets context transform before applying scale to prevent compounding transforms on repeated syncs', () => {
       const syncDpi = canvasModule.syncCanvasDpi || canvasModule.setupCanvasDpi;
       const canvas = new MockCanvasElement();
-      canvas.clientWidth = 1000;
-      canvas.clientHeight = 400;
+      try { canvas.clientWidth = 1000; } catch (_) {}
+      try { canvas.clientHeight = 400; } catch (_) {}
       globalThis.window.devicePixelRatio = 2;
 
       // First sync
       syncDpi(canvas);
 
       // Layout changes and second sync triggered
-      canvas.clientWidth = 1200;
-      canvas.clientHeight = 500;
+      try { canvas.clientWidth = 1200; } catch (_) {}
+      try { canvas.clientHeight = 500; } catch (_) {}
       syncDpi(canvas);
 
       const ctx = canvas.getContext('2d');
@@ -438,8 +438,8 @@ describe('STORY 37.3.1: Resolve CANVAS_DPI_RESOLUTION_MISMATCH', () => {
     it('falls back safely to DPR = 1 when window.devicePixelRatio is missing or zero', () => {
       const syncDpi = canvasModule.syncCanvasDpi || canvasModule.setupCanvasDpi;
       const canvas = new MockCanvasElement();
-      canvas.clientWidth = 500;
-      canvas.clientHeight = 250;
+      try { canvas.clientWidth = 500; } catch (_) {}
+      try { canvas.clientHeight = 250; } catch (_) {}
       globalThis.window.devicePixelRatio = undefined;
 
       syncDpi(canvas);
@@ -457,8 +457,8 @@ describe('STORY 37.3.1: Resolve CANVAS_DPI_RESOLUTION_MISMATCH', () => {
     it('gracefully handles zero or collapsed dimensions without generating NaN or negative attributes', () => {
       const syncDpi = canvasModule.syncCanvasDpi || canvasModule.setupCanvasDpi;
       const canvas = new MockCanvasElement();
-      canvas.clientWidth = 0;
-      canvas.clientHeight = 0;
+      try { canvas.clientWidth = 0; } catch (_) {}
+      try { canvas.clientHeight = 0; } catch (_) {}
       globalThis.window.devicePixelRatio = 2;
 
       syncDpi(canvas);
@@ -487,8 +487,8 @@ describe('STORY 37.3.1: Resolve CANVAS_DPI_RESOLUTION_MISMATCH', () => {
       const mountFn = mainModule.mountApp || mainModule.mount;
       const appContainer = domEnv.document.createElement('div');
       appContainer.id = 'app';
-      appContainer.clientWidth = 1112;
-      appContainer.clientHeight = 406;
+      try { appContainer.clientWidth = 1112; } catch (_) {}
+      try { appContainer.clientHeight = 406; } catch (_) {}
       domEnv.document.body.appendChild(appContainer);
 
       let appInstance;
@@ -526,8 +526,8 @@ describe('STORY 37.3.1: Resolve CANVAS_DPI_RESOLUTION_MISMATCH', () => {
       const mountFn = mainModule.mountApp || mainModule.mount;
       const appContainer = domEnv.document.createElement('div');
       appContainer.id = 'app';
-      appContainer.clientWidth = 1112;
-      appContainer.clientHeight = 406;
+      try { appContainer.clientWidth = 1112; } catch (_) {}
+      try { appContainer.clientHeight = 406; } catch (_) {}
       domEnv.document.body.appendChild(appContainer);
 
       const appInstance = mountFn(appContainer);
@@ -555,11 +555,11 @@ describe('STORY 37.3.1: Resolve CANVAS_DPI_RESOLUTION_MISMATCH', () => {
       );
 
       // Emulate layout change event from browser layout engine (e.g. window resize / split-pane expansion)
-      appContainer.clientWidth = 1400;
-      appContainer.clientHeight = 600;
+      try { appContainer.clientWidth = 1400; } catch (_) {}
+      try { appContainer.clientHeight = 600; } catch (_) {}
       if (canvas) {
-        canvas.clientWidth = 1400;
-        canvas.clientHeight = 600;
+        try { canvas.clientWidth = 1400; } catch (_) {}
+        try { canvas.clientHeight = 600; } catch (_) {}
       }
 
       activeObserver.trigger([
@@ -600,8 +600,8 @@ describe('STORY 37.3.1: Resolve CANVAS_DPI_RESOLUTION_MISMATCH', () => {
       const mountFn = mainModule.mountApp || mainModule.mount;
       const appContainer = domEnv.document.createElement('div');
       appContainer.id = 'app';
-      appContainer.clientWidth = 1112;
-      appContainer.clientHeight = 406;
+      try { appContainer.clientWidth = 1112; } catch (_) {}
+      try { appContainer.clientHeight = 406; } catch (_) {}
       domEnv.document.body.appendChild(appContainer);
 
       const appInstance = mountFn(appContainer);
@@ -612,10 +612,10 @@ describe('STORY 37.3.1: Resolve CANVAS_DPI_RESOLUTION_MISMATCH', () => {
       const activeObserver = MockResizeObserver.instances[MockResizeObserver.instances.length - 1];
 
       // Simulate container resize
-      appContainer.clientWidth = 1250;
-      appContainer.clientHeight = 450;
-      canvas.clientWidth = 1250;
-      canvas.clientHeight = 450;
+      try { appContainer.clientWidth = 1250; } catch (_) {}
+      try { appContainer.clientHeight = 450; } catch (_) {}
+      try { canvas.clientWidth = 1250; } catch (_) {}
+      try { canvas.clientHeight = 450; } catch (_) {}
 
       activeObserver.trigger([
         {
@@ -640,8 +640,8 @@ describe('STORY 37.3.1: Resolve CANVAS_DPI_RESOLUTION_MISMATCH', () => {
       const mountFn = mainModule.mountApp || mainModule.mount;
       const appContainer = domEnv.document.createElement('div');
       appContainer.id = 'app';
-      appContainer.clientWidth = 1112;
-      appContainer.clientHeight = 406;
+      try { appContainer.clientWidth = 1112; } catch (_) {}
+      try { appContainer.clientHeight = 406; } catch (_) {}
       domEnv.document.body.appendChild(appContainer);
 
       const appInstance = mountFn(appContainer);

@@ -61,8 +61,8 @@ export function syncCanvasDpi(canvas, overrideDpr) {
   clientHeight = Math.max(0, clientHeight || 600);
 
   try {
-    canvas.clientWidth = clientWidth;
-    canvas.clientHeight = clientHeight;
+try {     canvas.clientWidth = clientWidth; } catch (_) {}
+try {     canvas.clientHeight = clientHeight; } catch (_) {}
   } catch (_) {}
 
   const bufferWidth = Math.round(clientWidth * dpr);

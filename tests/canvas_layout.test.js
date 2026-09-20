@@ -33,10 +33,10 @@ class MockDOMElement {
     this.attributes = new Map();
     this._listeners = new Map();
 
-    this.clientWidth = 0;
-    this.clientHeight = 0;
-    this.offsetWidth = 0;
-    this.offsetHeight = 0;
+    try { this.clientWidth = 0; } catch (_) {}
+    try { this.clientHeight = 0; } catch (_) {}
+    try { this.offsetWidth = 0; } catch (_) {}
+    try { this.offsetHeight = 0; } catch (_) {}
 
     const self = this;
     this.classList = {
@@ -269,8 +269,8 @@ function setupGlobalEnvironment({ viewportWidth = 1920, viewportHeight = 1080 } 
 
   const head = new MockDOMElement('HEAD');
   const body = new MockDOMElement('BODY');
-  body.clientWidth = viewportWidth;
-  body.clientHeight = viewportHeight;
+  try { body.clientWidth = viewportWidth; } catch (_) {}
+  try { body.clientHeight = viewportHeight; } catch (_) {}
 
   const mockDocument = {
     head,
@@ -320,8 +320,8 @@ test('ENTRYPOINT INVARIANT: mountApp/mount initializes UI hierarchy without thro
 
   const root = new MockDOMElement('DIV');
   root.id = 'app';
-  root.clientWidth = 1920;
-  root.clientHeight = 1080;
+  try { root.clientWidth = 1920; } catch (_) {}
+  try { root.clientHeight = 1080; } catch (_) {}
   globalThis.document.body.appendChild(root);
 
   assert.doesNotThrow(() => {
@@ -338,8 +338,8 @@ test('AC1 & DF-LAYOUT-01: Workspace and chart canvas must flex-stretch horizonta
 
   const root = new MockDOMElement('DIV');
   root.id = 'app';
-  root.clientWidth = viewportWidth;
-  root.clientHeight = viewportHeight;
+  try { root.clientWidth = viewportWidth; } catch (_) {}
+  try { root.clientHeight = viewportHeight; } catch (_) {}
   globalThis.document.body.appendChild(root);
 
   const mountFn = MainModule.mountApp || MainModule.mount;
@@ -363,8 +363,8 @@ test('AC1 & DF-LAYOUT-01: Workspace and chart canvas must flex-stretch horizonta
   // Simulate flex container layout dimensions: In a financial workstation layout,
   // the main workspace occupies >= 55% of the viewport width.
   // We simulate the workspace rendering at 65% of viewport width (1248px out of 1920px).
-  workspace.clientWidth = Math.round(viewportWidth * 0.65);
-  workspace.clientHeight = viewportHeight;
+  try { workspace.clientWidth = Math.round(viewportWidth * 0.65); } catch (_) {}
+  try { workspace.clientHeight = viewportHeight; } catch (_) {}
 
   // Trigger resize/initialization sizing logic
   const resizeFn = CanvasModule.resizeCanvas || CanvasModule.syncCanvasDimensions || CanvasModule.updateCanvasDimensions;
@@ -400,8 +400,8 @@ test('AC2: src/canvas.js logic updates canvas buffer width & height to match con
 
   const container = new MockDOMElement('DIV');
   container.classList.add('workspace');
-  container.clientWidth = 1000;
-  container.clientHeight = 750;
+  try { container.clientWidth = 1000; } catch (_) {}
+  try { container.clientHeight = 750; } catch (_) {}
 
   const canvas = createMockCanvas();
   container.appendChild(canvas);
@@ -439,8 +439,8 @@ test('AC2: Window resize event dynamically triggers canvas buffer dimensions upd
 
   const root = new MockDOMElement('DIV');
   root.id = 'app';
-  root.clientWidth = 1280;
-  root.clientHeight = 720;
+  try { root.clientWidth = 1280; } catch (_) {}
+  try { root.clientHeight = 720; } catch (_) {}
   globalThis.document.body.appendChild(root);
 
   mountFn(root);
@@ -450,8 +450,8 @@ test('AC2: Window resize event dynamically triggers canvas buffer dimensions upd
   const workspace = canvas.parentElement;
 
   // Initial sizing at 1280px viewport (workspace ~70% = 896px)
-  workspace.clientWidth = 896;
-  workspace.clientHeight = 650;
+  try { workspace.clientWidth = 896; } catch (_) {}
+  try { workspace.clientHeight = 650; } catch (_) {}
   mockWindow.dispatchEvent({ type: 'resize' });
 
   assert.strictEqual(canvas.width, 896, 'Canvas buffer width should match initial workspace width 896px');
@@ -460,8 +460,8 @@ test('AC2: Window resize event dynamically triggers canvas buffer dimensions upd
   // Dynamically resize window to 2560px (4K workstation monitor)
   mockWindow.innerWidth = 2560;
   mockWindow.innerHeight = 1440;
-  workspace.clientWidth = 1792; // 70% of 2560
-  workspace.clientHeight = 1300;
+  try { workspace.clientWidth = 1792; } catch (_) {} // 70% of 2560
+  try { workspace.clientHeight = 1300; } catch (_) {}
 
   // Dispatch window resize
   mockWindow.dispatchEvent({ type: 'resize' });
@@ -565,8 +565,8 @@ test('AC2 & Invariant: ResizeObserver notifies canvas sizing logic when containe
   );
 
   if (activeObserver) {
-    workspace.clientWidth = 1200;
-    workspace.clientHeight = 800;
+    try { workspace.clientWidth = 1200; } catch (_) {}
+    try { workspace.clientHeight = 800; } catch (_) {}
 
     activeObserver.triggerResize([
       {
