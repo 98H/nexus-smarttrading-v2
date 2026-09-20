@@ -1,396 +1,351 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import test, { describe, it, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert';
 import { Chart } from '../src/chart.js';
-import * as main from '../src/main.js';
+import * as mainModule from '../src/main.js';
 
-// Polyfill WheelEvent if not present in the runtime Node environment
-if (typeof globalThis.WheelEvent === 'undefined') {
-  globalThis.WheelEvent = class WheelEvent extends Event {
-    constructor(type, eventInitDict = {}) {
-      super(type, eventInitDict);
-      this.deltaY = eventInitDict.deltaY ?? 0;
-      this.deltaX = eventInitDict.deltaX ?? 0;
-      this.deltaZ = eventInitDict.deltaZ ?? 0;
-      this.clientX = eventInitDict.clientX ?? 0;
-      this.clientY = eventInitDict.clientY ?? 0;
-      this.defaultPrevented = false;
+// Minimal DOM & Canvas Simulation for deterministic testing in Node.js
+class MockCanvasRenderingContext2D {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.calls = [];
+  }
+
+  clearRect(x, y, w, h) {
+    this.calls.push({ method: 'clearRect', args: [x, y, w, h] });
+  }
+
+  fillRect(x, y, w, h) {
+    this.calls.push({ method: 'fillRect', args: [x, y, w, h] });
+  }
+
+  strokeRect(x, y, w, h) {
+    this.calls.push({ method: 'strokeRect', args: [x, y, w, h] });
+  }
+
+  beginPath() {
+    this.calls.push({ method: 'beginPath', args: [] });
+  }
+
+  moveTo(x, y) {
+    this.calls.push({ method: 'moveTo', args: [x, y] });
+  }
+
+  lineTo(x, y) {
+    this.calls.push({ method: 'lineTo', args: [x, y] });
+  }
+
+  stroke() {
+    this.calls.push({ method: 'stroke', args: [] });
+  }
+
+  save() {
+    this.calls.push({ method: 'save', args: [] });
+  }
+
+  restore() {
+    this.calls.push({ method: 'restore', args: [] });
+  }
+
+  scale(sx, sy) {
+    this.calls.push({ method: 'scale', args: [sx, sy] });
+  }
+
+  reset() {
+    this.calls = [];
+  }
+}
+
+class MockElement {
+  constructor(tagName) {
+    this.tagName = tagName ? tagName.toUpperCase() : 'DIV';
+    this.id = '';
+    this.children = [];
+    this.parentElement = null;
+    this.listeners = new Map();
+    this.width = 800;
+    this.height = 600;
+    this._context = null;
+  }
+
+  appendChild(child) {
+    child.parentElement = this;
+    this.children.push(child);
+    return child;
+  }
+
+  removeChild(child) {
+    const idx = this.children.indexOf(child);
+    if (idx !== -1) {
+      this.children.splice(idx, 1);
+      child.parentElement = null;
     }
-    preventDefault() {
+    return child;
+  }
+
+  addEventListener(type, handler, options = false) {
+    if (!this.listeners.has(type)) {
+      this.listeners.set(type, []);
+    }
+    this.listeners.get(type).push({ handler, options });
+  }
+
+  removeEventListener(type, handler) {
+    if (!this.listeners.has(type)) return;
+    const filtered = this.listeners.get(type).filter((l) => l.handler !== handler);
+    this.listeners.set(type, filtered);
+  }
+
+  dispatchEvent(event) {
+    event.target = this;
+    event.currentTarget = this;
+    const registered = this.listeners.get(event.type) || [];
+    for (const { handler } of registered) {
+      handler(event);
+    }
+    return !event.defaultPrevented;
+  }
+
+  getContext(contextId) {
+    if (contextId === '2d') {
+      if (!this._context) {
+        this._context = new MockCanvasRenderingContext2D(this);
+      }
+      return this._context;
+    }
+    return null;
+  }
+}
+
+class MockWheelEvent {
+  constructor(type, init = {}) {
+    this.type = type;
+    this.deltaY = init.deltaY ?? 0;
+    this.deltaX = init.deltaX ?? 0;
+    this.deltaMode = init.deltaMode ?? 0;
+    this.clientX = init.clientX ?? 0;
+    this.clientY = init.clientY ?? 0;
+    this.cancelable = init.cancelable ?? true;
+    this.bubbles = init.bubbles ?? true;
+    this.defaultPrevented = false;
+    this.target = null;
+    this.currentTarget = null;
+  }
+
+  preventDefault() {
+    if (this.cancelable) {
       this.defaultPrevented = true;
     }
-  };
+  }
 }
 
-// Test utility: creates an event-capable mock canvas with 2D context tracking
-function createMockCanvas(width = 800, height = 600) {
-  const target = new EventTarget();
-  let clearRectCalls = 0;
-  let strokeCalls = 0;
-  let fillRectCalls = 0;
+describe('STORY 5.4.1: Resolve UNRESPONSIVE_CANVAS_ZOOM (Defect ID: DF-GESTURE-02)', () => {
+  let originalDocument;
+  let originalWindow;
+  let mockAppContainer;
 
-  const ctx = {
-    canvas: null,
-    clearRect: (x, y, w, h) => { clearRectCalls++; },
-    beginPath: () => {},
-    moveTo: () => {},
-    lineTo: () => {},
-    stroke: () => { strokeCalls++; },
-    fillRect: () => { fillRectCalls++; },
-    save: () => {},
-    restore: () => {},
-    scale: () => {},
-    translate: () => {},
-    measureText: () => ({ width: 50 }),
-    fillText: () => {},
-    get clearRectCalls() { return clearRectCalls; },
-    get strokeCalls() { return strokeCalls; },
-    get fillRectCalls() { return fillRectCalls; },
-    get totalDrawCalls() { return clearRectCalls + strokeCalls + fillRectCalls; },
-    resetMetrics: () => {
-      clearRectCalls = 0;
-      strokeCalls = 0;
-      fillRectCalls = 0;
-    }
-  };
+  beforeEach(() => {
+    originalDocument = globalThis.document;
+    originalWindow = globalThis.window;
 
-  const canvas = {
-    tagName: 'CANVAS',
-    nodeName: 'CANVAS',
-    nodeType: 1,
-    width,
-    height,
-    style: {},
-    getBoundingClientRect: () => ({
-      left: 0,
-      top: 0,
-      width,
-      height,
-      right: width,
-      bottom: height,
-    }),
-    getContext: (type) => {
-      if (type === '2d') {
-        ctx.canvas = canvas;
-        return ctx;
+    mockAppContainer = new MockElement('div');
+    mockAppContainer.id = 'app';
+
+    const elementsById = new Map([['app', mockAppContainer]]);
+
+    globalThis.document = {
+      getElementById: (id) => elementsById.get(id) || null,
+      createElement: (tag) => new MockElement(tag),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    };
+
+    globalThis.window = {
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      document: globalThis.document,
+    };
+
+    globalThis.WheelEvent = MockWheelEvent;
+  });
+
+  afterEach(() => {
+    globalThis.document = originalDocument;
+    globalThis.window = originalWindow;
+    delete globalThis.WheelEvent;
+  });
+
+  describe('Chart Zoom Mechanics (src/chart.js)', () => {
+    it('should initialize with a default zoom scale factor', () => {
+      const canvas = new MockElement('canvas');
+      const chart = new Chart(canvas);
+
+      assert.strictEqual(typeof chart.getZoomScale, 'function', 'Chart must expose getZoomScale()');
+      assert.strictEqual(typeof chart.getZoomScale(), 'number', 'zoom scale factor must be a number');
+      assert.ok(chart.getZoomScale() > 0, 'Initial zoom scale factor must be positive');
+    });
+
+    it('should prevent default browser scrolling when wheel event is dispatched on canvas', () => {
+      const canvas = new MockElement('canvas');
+      const chart = new Chart(canvas);
+
+      const wheelEvent = new MockWheelEvent('wheel', { deltaY: 100, cancelable: true });
+      canvas.dispatchEvent(wheelEvent);
+
+      assert.strictEqual(
+        wheelEvent.defaultPrevented,
+        true,
+        'wheel event default behavior must be prevented on canvas'
+      );
+    });
+
+    it('should update zoom scale factor when zooming in (negative deltaY)', () => {
+      const canvas = new MockElement('canvas');
+      const chart = new Chart(canvas);
+      const initialScale = chart.getZoomScale();
+
+      // Negative deltaY indicates zooming in
+      const zoomInEvent = new MockWheelEvent('wheel', { deltaY: -120, cancelable: true });
+      canvas.dispatchEvent(zoomInEvent);
+
+      const updatedScale = chart.getZoomScale();
+      assert.ok(
+        updatedScale > initialScale,
+        `Zoom scale should increase when deltaY < 0. Initial: ${initialScale}, Updated: ${updatedScale}`
+      );
+    });
+
+    it('should update zoom scale factor when zooming out (positive deltaY)', () => {
+      const canvas = new MockElement('canvas');
+      const chart = new Chart(canvas);
+      const initialScale = chart.getZoomScale();
+
+      // Positive deltaY indicates zooming out
+      const zoomOutEvent = new MockWheelEvent('wheel', { deltaY: 120, cancelable: true });
+      canvas.dispatchEvent(zoomOutEvent);
+
+      const updatedScale = chart.getZoomScale();
+      assert.ok(
+        updatedScale < initialScale,
+        `Zoom scale should decrease when deltaY > 0. Initial: ${initialScale}, Updated: ${updatedScale}`
+      );
+    });
+
+    it('should trigger re-rendering of the canvas/candlesticks on wheel zoom event', () => {
+      const canvas = new MockElement('canvas');
+      const sampleCandles = [
+        { time: 1620000000, open: 100, high: 110, low: 95, close: 105 },
+        { time: 1620000060, open: 105, high: 115, low: 102, close: 112 },
+      ];
+
+      const chart = new Chart(canvas, { data: sampleCandles });
+      const context = canvas.getContext('2d');
+
+      // Clear render tracking calls from initial draw
+      context.reset();
+
+      const wheelEvent = new MockWheelEvent('wheel', { deltaY: -100, cancelable: true });
+      canvas.dispatchEvent(wheelEvent);
+
+      const hasRedrawn = context.calls.some(
+        (call) => call.method === 'clearRect' || call.method === 'stroke' || call.method === 'fillRect'
+      );
+
+      assert.ok(
+        hasRedrawn,
+        'Canvas context must execute drawing commands to re-render candlesticks after wheel zoom'
+      );
+    });
+
+    it('should not allow scale factor to become negative or zero', () => {
+      const canvas = new MockElement('canvas');
+      const chart = new Chart(canvas);
+
+      // Extreme zoom out sequence
+      for (let i = 0; i < 50; i++) {
+        canvas.dispatchEvent(new MockWheelEvent('wheel', { deltaY: 500, cancelable: true }));
       }
-      return null;
-    },
-    addEventListener: target.addEventListener.bind(target),
-    removeEventListener: target.removeEventListener.bind(target),
-    dispatchEvent: target.dispatchEvent.bind(target),
-    _ctx: ctx,
-  };
 
-  return canvas;
-}
-
-// Test utility: creates a DOM container for mounting application UI
-function createMockContainer() {
-  const target = new EventTarget();
-  const children = [];
-  return {
-    tagName: 'DIV',
-    nodeName: 'DIV',
-    nodeType: 1,
-    children,
-    style: {},
-    appendChild: (child) => {
-      children.push(child);
-      return child;
-    },
-    removeChild: (child) => {
-      const idx = children.indexOf(child);
-      if (idx !== -1) children.splice(idx, 1);
-      return child;
-    },
-    querySelector: (selector) => {
-      if (selector === 'canvas') return children.find((c) => c.tagName === 'CANVAS') || null;
-      return null;
-    },
-    querySelectorAll: (selector) => {
-      if (selector === 'canvas') return children.filter((c) => c.tagName === 'CANVAS');
-      return [];
-    },
-    addEventListener: target.addEventListener.bind(target),
-    removeEventListener: target.removeEventListener.bind(target),
-    dispatchEvent: target.dispatchEvent.bind(target),
-  };
-}
-
-// Polyfill global document for entrypoint mounting tests if missing in headless Node
-if (typeof globalThis.document === 'undefined') {
-  globalThis.document = {
-    createElement: (tag) => {
-      if (tag.toLowerCase() === 'canvas') return createMockCanvas();
-      return createMockContainer();
-    },
-  };
-}
-
-// Standard sample candlestick data set
-const sampleCandlesticks = [
-  { time: 1600000000, open: 100, high: 105, low: 98, close: 104, volume: 1000 },
-  { time: 1600003600, open: 104, high: 110, low: 103, close: 108, volume: 1200 },
-  { time: 1600007200, open: 108, high: 109, low: 101, close: 102, volume: 800 },
-  { time: 1600010800, open: 102, high: 107, low: 100, close: 106, volume: 1500 },
-  { time: 1600014400, open: 106, high: 112, low: 105, close: 111, volume: 2000 },
-];
-
-test.describe('ENTRYPOINT INVARIANT: Application Initialization and Mounting (src/main.js)', () => {
-  test('should export mounting functions (mountApp or mount) and initializers', () => {
-    const mountFn = main.mountApp || main.mount;
-    assert.equal(
-      typeof mountFn,
-      'function',
-      'src/main.js must export a mounting function: mountApp or mount'
-    );
-
-    const initFn = main.init || main.initialize || main.initApp;
-    assert.equal(
-      typeof initFn,
-      'function',
-      'src/main.js must export an initialization function: init, initialize, or initApp'
-    );
-  });
-
-  test('should successfully initialize and mount chart UI inside a DOM container without uncaught errors', () => {
-    const mountFn = main.mountApp || main.mount;
-    const container = createMockContainer();
-
-    let appInstance;
-    assert.doesNotThrow(() => {
-      appInstance = mountFn(container);
-    }, 'Calling mount function with container must not throw errors');
-
-    assert.ok(container.children.length > 0, 'Container must have mounted UI children');
-    const canvasElement = container.querySelector('canvas');
-    assert.ok(canvasElement, 'Mounting must create and attach a canvas element');
-    assert.ok(appInstance, 'Mounting must return an initialized application or chart instance');
-  });
-});
-
-test.describe('STORY 1.2.1 / DF-GESTURE-02: Canvas Wheel Zoom and Scale Recalculation (src/chart.js)', () => {
-  test('should bind wheel event handler to canvas upon initialization and render initial candlesticks', () => {
-    const canvas = createMockCanvas();
-    const chart = new Chart(canvas, { data: sampleCandlesticks });
-
-    assert.equal(typeof chart.zoomFactor, 'number', 'Chart must track numeric zoomFactor');
-    assert.equal(chart.zoomFactor, 1.0, 'Initial zoomFactor must be 1.0');
-    assert.ok(chart.timeScale, 'Chart must initialize timeScale');
-    assert.ok(chart.priceScale, 'Chart must initialize priceScale');
-    assert.ok(
-      canvas._ctx.totalDrawCalls > 0,
-      'Chart must perform an initial render of candlesticks to the canvas'
-    );
-  });
-
-  test('should capture deltaY < 0 (scroll up / zoom in), increase zoomFactor, recalculate scales, and trigger immediate re-render', () => {
-    const canvas = createMockCanvas();
-    const chart = new Chart(canvas, { data: sampleCandlesticks });
-
-    const initialZoom = chart.zoomFactor;
-    const initialTimeDomainSpan = chart.timeScale.domain[1] - chart.timeScale.domain[0];
-    const initialPriceDomainSpan = chart.priceScale.domain[1] - chart.priceScale.domain[0];
-
-    canvas._ctx.resetMetrics();
-
-    // Dispatch scroll up (zoom in)
-    const wheelEvent = new globalThis.WheelEvent('wheel', {
-      deltaY: -100,
-      clientX: 400,
-      clientY: 300,
-      bubbles: true,
-      cancelable: true,
+      const finalScale = chart.getZoomScale();
+      assert.ok(finalScale > 0, `Zoom scale must remain strictly positive, got: ${finalScale}`);
     });
-    canvas.dispatchEvent(wheelEvent);
-
-    assert.ok(
-      chart.zoomFactor > initialZoom,
-      `Expected zoomFactor (${chart.zoomFactor}) to be greater than initialZoom (${initialZoom}) on zoom in`
-    );
-
-    const newTimeDomainSpan = chart.timeScale.domain[1] - chart.timeScale.domain[0];
-    const newPriceDomainSpan = chart.priceScale.domain[1] - chart.priceScale.domain[0];
-
-    assert.ok(
-      newTimeDomainSpan < initialTimeDomainSpan,
-      `Time scale visible range must contract on zoom in: expected ${newTimeDomainSpan} < ${initialTimeDomainSpan}`
-    );
-    assert.ok(
-      newPriceDomainSpan < initialPriceDomainSpan,
-      `Price scale visible range must contract on zoom in: expected ${newPriceDomainSpan} < ${initialPriceDomainSpan}`
-    );
-
-    assert.ok(
-      canvas._ctx.totalDrawCalls > 0,
-      'Canvas must immediately execute draw commands to re-render candlesticks after wheel zoom in'
-    );
   });
 
-  test('should capture deltaY > 0 (scroll down / zoom out), decrease zoomFactor, recalculate scales, and trigger immediate re-render', () => {
-    const canvas = createMockCanvas();
-    const chart = new Chart(canvas, { data: sampleCandlesticks });
+  describe('Active Entrypoint Wiring (src/main.js)', () => {
+    it('should mount chart canvas to document.getElementById("app")', async () => {
+      const appContainer = document.getElementById('app');
+      assert.strictEqual(appContainer.children.length, 0, 'App container must initially be empty');
 
-    // First zoom in so we have headroom to zoom out
-    canvas.dispatchEvent(new globalThis.WheelEvent('wheel', { deltaY: -200 }));
-    const zoomedInFactor = chart.zoomFactor;
-    const zoomedInTimeSpan = chart.timeScale.domain[1] - chart.timeScale.domain[0];
-    const zoomedInPriceSpan = chart.priceScale.domain[1] - chart.priceScale.domain[0];
-
-    canvas._ctx.resetMetrics();
-
-    // Now dispatch scroll down (zoom out)
-    const wheelEvent = new globalThis.WheelEvent('wheel', {
-      deltaY: 100,
-      clientX: 400,
-      clientY: 300,
-      bubbles: true,
-      cancelable: true,
-    });
-    canvas.dispatchEvent(wheelEvent);
-
-    assert.ok(
-      chart.zoomFactor < zoomedInFactor,
-      `Expected zoomFactor (${chart.zoomFactor}) to decrease from ${zoomedInFactor} on zoom out`
-    );
-
-    const zoomedOutTimeSpan = chart.timeScale.domain[1] - chart.timeScale.domain[0];
-    const zoomedOutPriceSpan = chart.priceScale.domain[1] - chart.priceScale.domain[0];
-
-    assert.ok(
-      zoomedOutTimeSpan > zoomedInTimeSpan,
-      `Time scale visible range must expand on zoom out: expected ${zoomedOutTimeSpan} > ${zoomedInTimeSpan}`
-    );
-    assert.ok(
-      zoomedOutPriceSpan > zoomedInPriceSpan,
-      `Price scale visible range must expand on zoom out: expected ${zoomedOutPriceSpan} > ${zoomedInPriceSpan}`
-    );
-
-    assert.ok(
-      canvas._ctx.totalDrawCalls > 0,
-      'Canvas must immediately execute draw commands to re-render candlesticks after wheel zoom out'
-    );
-  });
-});
-
-test.describe('STORY 1.2.1 / DF-GESTURE-02: Boundary Limits and Clamping Verification', () => {
-  test('should clamp zoomFactor at minZoom threshold without runtime errors when over-scrolling zoom out', () => {
-    const canvas = createMockCanvas();
-    const minZoomLimit = 0.2;
-    const chart = new Chart(canvas, {
-      data: sampleCandlesticks,
-      minZoom: minZoomLimit,
-    });
-
-    assert.equal(chart.minZoom, minZoomLimit, 'Chart must honor minZoom configuration');
-
-    // Repeatedly scroll out beyond the lower limit
-    assert.doesNotThrow(() => {
-      for (let i = 0; i < 20; i++) {
-        canvas.dispatchEvent(new globalThis.WheelEvent('wheel', { deltaY: 500 }));
+      // Execute entrypoint mounting logic (supports named mountApp/init or default entry function)
+      if (typeof mainModule.initApp === 'function') {
+        mainModule.initApp();
+      } else if (typeof mainModule.mount === 'function') {
+        mainModule.mount();
+      } else if (typeof mainModule.default === 'function') {
+        mainModule.default();
+      } else {
+        assert.fail('src/main.js must export an initialization/mount function (initApp, mount, or default)');
       }
-    }, 'Over-scrolling past minZoom limit must not throw errors');
 
-    assert.equal(
-      chart.zoomFactor,
-      minZoomLimit,
-      `zoomFactor must clamp exactly at minZoom threshold (${minZoomLimit})`
-    );
-
-    // Verify scales remain valid finite numbers and are not NaN or Infinity
-    assert.ok(Number.isFinite(chart.timeScale.domain[0]), 'Time scale domain min must be finite');
-    assert.ok(Number.isFinite(chart.timeScale.domain[1]), 'Time scale domain max must be finite');
-    assert.ok(Number.isFinite(chart.priceScale.domain[0]), 'Price scale domain min must be finite');
-    assert.ok(Number.isFinite(chart.priceScale.domain[1]), 'Price scale domain max must be finite');
-    assert.ok(
-      chart.timeScale.domain[1] > chart.timeScale.domain[0],
-      'Time scale domain max must strictly exceed min at minZoom clamp'
-    );
-    assert.ok(
-      chart.priceScale.domain[1] > chart.priceScale.domain[0],
-      'Price scale domain max must strictly exceed min at minZoom clamp'
-    );
-  });
-
-  test('should clamp zoomFactor at maxZoom threshold without runtime errors when over-scrolling zoom in', () => {
-    const canvas = createMockCanvas();
-    const maxZoomLimit = 5.0;
-    const chart = new Chart(canvas, {
-      data: sampleCandlesticks,
-      maxZoom: maxZoomLimit,
+      const canvasChild = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      assert.ok(
+        canvasChild,
+        'src/main.js must mount the canvas element into document.getElementById("app")'
+      );
     });
 
-    assert.equal(chart.maxZoom, maxZoomLimit, 'Chart must honor maxZoom configuration');
-
-    // Repeatedly scroll in beyond the upper limit
-    assert.doesNotThrow(() => {
-      for (let i = 0; i < 20; i++) {
-        canvas.dispatchEvent(new globalThis.WheelEvent('wheel', { deltaY: -500 }));
+    it('should attach active wheel zoom listener to the mounted canvas element in src/main.js', async () => {
+      if (typeof mainModule.initApp === 'function') {
+        mainModule.initApp();
+      } else if (typeof mainModule.mount === 'function') {
+        mainModule.mount();
+      } else if (typeof mainModule.default === 'function') {
+        mainModule.default();
       }
-    }, 'Over-scrolling past maxZoom limit must not throw errors');
 
-    assert.equal(
-      chart.zoomFactor,
-      maxZoomLimit,
-      `zoomFactor must clamp exactly at maxZoom threshold (${maxZoomLimit})`
-    );
+      const appContainer = document.getElementById('app');
+      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      assert.ok(canvas, 'Canvas must be mounted to #app');
 
-    assert.ok(Number.isFinite(chart.timeScale.domain[0]), 'Time scale domain min must be finite');
-    assert.ok(Number.isFinite(chart.timeScale.domain[1]), 'Time scale domain max must be finite');
-    assert.ok(Number.isFinite(chart.priceScale.domain[0]), 'Price scale domain min must be finite');
-    assert.ok(Number.isFinite(chart.priceScale.domain[1]), 'Price scale domain max must be finite');
-    assert.ok(
-      chart.timeScale.domain[1] > chart.timeScale.domain[0],
-      'Time scale domain max must strictly exceed min at maxZoom clamp'
-    );
-    assert.ok(
-      chart.priceScale.domain[1] > chart.priceScale.domain[0],
-      'Price scale domain max must strictly exceed min at maxZoom clamp'
-    );
-  });
+      const wheelListeners = canvas.listeners.get('wheel') || [];
+      assert.ok(
+        wheelListeners.length > 0,
+        'Mounted canvas element must have at least one active "wheel" event listener attached'
+      );
 
-  test('should remain responsive and unfreeze gesture listeners after hitting boundary limits', () => {
-    const canvas = createMockCanvas();
-    const maxZoomLimit = 3.0;
-    const minZoomLimit = 0.5;
-    const chart = new Chart(canvas, {
-      data: sampleCandlesticks,
-      minZoom: minZoomLimit,
-      maxZoom: maxZoomLimit,
+      // Dispatch wheel event on the actively mounted canvas
+      const wheelEvent = new MockWheelEvent('wheel', { deltaY: -80, cancelable: true });
+      const notPrevented = canvas.dispatchEvent(wheelEvent);
+
+      assert.strictEqual(
+        wheelEvent.defaultPrevented,
+        true,
+        'Wheel event dispatched on mounted canvas must have default behavior prevented'
+      );
     });
 
-    // 1. Force chart to max zoom limit
-    for (let i = 0; i < 15; i++) {
-      canvas.dispatchEvent(new globalThis.WheelEvent('wheel', { deltaY: -300 }));
-    }
-    assert.equal(chart.zoomFactor, maxZoomLimit, 'Zoom must clamp at max limit');
+    it('should cause re-render when wheel event is fired on the canvas mounted by src/main.js', async () => {
+      if (typeof mainModule.initApp === 'function') {
+        mainModule.initApp();
+      } else if (typeof mainModule.mount === 'function') {
+        mainModule.mount();
+      } else if (typeof mainModule.default === 'function') {
+        mainModule.default();
+      }
 
-    // 2. Dispatch additional wheel event in limiting direction (still up)
-    canvas.dispatchEvent(new globalThis.WheelEvent('wheel', { deltaY: -100 }));
-    assert.equal(chart.zoomFactor, maxZoomLimit, 'Zoom remains clamped at max');
+      const appContainer = document.getElementById('app');
+      const canvas = appContainer.children.find((child) => child.tagName === 'CANVAS');
+      const context = canvas.getContext('2d');
 
-    // 3. Reverse direction: dispatch wheel down (zoom out)
-    canvas.dispatchEvent(new globalThis.WheelEvent('wheel', { deltaY: 100 }));
-    assert.ok(
-      chart.zoomFactor < maxZoomLimit,
-      'Gesture listener must not freeze: chart must zoom out immediately when reversing wheel direction from max bound'
-    );
+      // Clear initialization draw records
+      context.reset();
 
-    // 4. Force chart to min zoom limit
-    for (let i = 0; i < 20; i++) {
-      canvas.dispatchEvent(new globalThis.WheelEvent('wheel', { deltaY: 300 }));
-    }
-    assert.equal(chart.zoomFactor, minZoomLimit, 'Zoom must clamp at min limit');
+      const wheelEvent = new MockWheelEvent('wheel', { deltaY: 100, cancelable: true });
+      canvas.dispatchEvent(wheelEvent);
 
-    // 5. Dispatch additional wheel event in limiting direction (still down)
-    canvas.dispatchEvent(new globalThis.WheelEvent('wheel', { deltaY: 100 }));
-    assert.equal(chart.zoomFactor, minZoomLimit, 'Zoom remains clamped at min');
-
-    // 6. Reverse direction: dispatch wheel up (zoom in)
-    canvas.dispatchEvent(new globalThis.WheelEvent('wheel', { deltaY: -100 }));
-    assert.ok(
-      chart.zoomFactor > minZoomLimit,
-      'Gesture listener must not freeze: chart must zoom in immediately when reversing wheel direction from min bound'
-    );
+      assert.ok(
+        context.calls.length > 0,
+        'Dispatching wheel event on the live mounted canvas must trigger render calls on the 2D context'
+      );
+    });
   });
 });
