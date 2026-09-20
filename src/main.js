@@ -6,7 +6,7 @@
  * with selectable tool modes (crosshair, trendline, ray, measurement) (DF-TOOLS-01, STORY 49.2.1),
  * auxiliary dock hosting secondary workflows (DF-PANEL-01, STORY 31.4.1, STORY 37.2.1, STORY 38.3.1),
  * continuous ResizeObserver canvas DPI synchronization (STORY 37.3.1),
- * continuous render loop (STORY 38.1.1, STORY 39.1.1: Resolve STATIC_APPLICATION),
+ * continuous render loop (STORY 38.1.1, STORY 39.1.1, STORY 50.1.1: Resolve STATIC_APPLICATION),
  * realistic synthetic market walk generator (STORY 38.4.1: Resolve SYNTHETIC_STRAIGHT_LINE_DATA),
  * strictly idempotent container lifecycle resolution (STORY 37.1.1, STORY 39.2.1: Resolve DUPLICATE_COMPONENT_MOUNTING),
  * responsive 100vh flex layout preventing squished canvas sizing (STORY 40.1.1: Resolve SQUISHED_CANVAS_VIEWPORT),
@@ -15,7 +15,7 @@
  * Resolves UNCAUGHT_JAVASCRIPT_EXCEPTION by synchronizing viewport dimensions safely without assigning to clientWidth/clientHeight (STORY 49.1.1).
  */
 
-import { AxesRenderer, computeRanges } from './axes.js';
+import { AxesRenderer, computeRanges, formatTimestamp, updateDOMTimeAxisTrack } from './axes.js';
 import {
   Chart,
   polyfillCanvasContext,
@@ -93,6 +93,8 @@ export const syncCanvasDpi =
 export {
   AxesRenderer,
   computeRanges,
+  formatTimestamp,
+  updateDOMTimeAxisTrack,
   Chart,
   polyfillCanvasContext,
   mapYToPrice,
@@ -141,7 +143,7 @@ function createClassListPolyfill(el) {
       const current = (el.className || '').split(/\s+/).filter(Boolean);
       const filtered = current.filter((c) => !tokens.includes(c));
       if (filtered.length !== current.length) {
-        el.className = filtered.join(' ');
+        el.className = current.join(' ');
         if (typeof el.setAttribute === 'function') el.setAttribute('class', el.className);
       }
     },
@@ -863,8 +865,22 @@ export function initControls(header, options = {}) {
   return controls;
 }
 
+/**
+ * Starts continuous render loop linking animation frame progression to canvas/DOM updates.
+ * Satisfies STORY 50.1.1 (Resolve STATIC_APPLICATION).
+ *
+ * @param {Object} instance Chart instance
+ * @returns {Function} Stop cleanup function
+ */
 export function startRenderLoop(instance) {
+  if (!instance) return () => {};
+  if (instance._stopRenderLoop) {
+    return instance._stopRenderLoop;
+  }
+
   let isRunning = true;
+  let lastTickTime = 0;
+  const tickInterval = 250;
 
   const getRaf = () => {
     if (typeof globalThis !== 'undefined' && typeof globalThis.requestAnimationFrame === 'function') {
@@ -891,54 +907,72 @@ export function startRenderLoop(instance) {
   const raf = getRaf();
   const caf = getCaf();
 
-  if (!raf) {
-    if (typeof setInterval === 'function') {
-      const timerId = setInterval(() => {
-        if (!isRunning) return;
-        const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-        if (typeof instance.renderFrame === 'function') {
-          instance.renderFrame(now);
-        } else if (typeof instance.render === 'function') {
-          instance.render(now);
-        }
-      }, 16);
-      if (timerId && typeof timerId.unref === 'function') {
-        timerId.unref();
-      }
-      return () => {
-        isRunning = false;
-        if (typeof clearInterval === 'function') {
-          clearInterval(timerId);
-        }
-      };
-    }
-    return () => {
-      isRunning = false;
-    };
-  }
-
   function renderFrame(timestamp) {
     if (!isRunning) return;
-    if (typeof instance.renderFrame === 'function') {
-      instance.renderFrame(timestamp);
-    } else if (typeof instance.render === 'function') {
-      instance.render(timestamp);
+
+    const now = typeof timestamp === 'number' && Number.isFinite(timestamp)
+      ? timestamp
+      : (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+
+    // Generate real-time tick periodically to couple data updates with animation frames
+    if (now - lastTickTime >= tickInterval) {
+      lastTickTime = now;
+      if (typeof instance.generateRealtimeTick === 'function') {
+        instance.generateRealtimeTick();
+      } else if (typeof instance.updateTick === 'function' && Array.isArray(instance.data) && instance.data.length > 0) {
+        const lastCandle = instance.data[instance.data.length - 1];
+        const tick = generateTick(lastCandle, { volatility: 0.5 });
+        instance.updateTick(tick);
+      }
     }
-    instance.rafId = raf(renderFrame);
+
+    if (typeof instance.renderFrame === 'function') {
+      instance.renderFrame(now);
+    } else if (typeof instance.render === 'function') {
+      instance.render(now);
+    }
+
+    if (raf) {
+      instance.rafId = raf(renderFrame);
+    }
   }
 
-  instance.rafId = raf(renderFrame);
+  if (raf) {
+    instance.rafId = raf(renderFrame);
+  } else if (typeof setInterval === 'function') {
+    const timerId = setInterval(() => {
+      if (!isRunning) return;
+      const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+      renderFrame(now);
+    }, 16);
+    instance.rafId = timerId;
+  }
 
-  return () => {
+  const stop = () => {
     isRunning = false;
-    if (instance.rafId && caf) {
-      caf(instance.rafId);
+    if (instance.rafId) {
+      if (caf && typeof instance.rafId === 'number') {
+        caf(instance.rafId);
+      } else if (typeof clearInterval === 'function') {
+        clearInterval(instance.rafId);
+      }
       instance.rafId = null;
     }
+    instance._stopRenderLoop = null;
   };
+
+  instance._stopRenderLoop = stop;
+  return stop;
 }
 
-export function startRealtimeUpdates(instance, interval = 1000) {
+/**
+ * Starts continuous real-time streaming updates for chart instances.
+ *
+ * @param {Object} instance
+ * @param {number} [interval=250]
+ * @returns {Object|null}
+ */
+export function startRealtimeUpdates(instance, interval = 250) {
   if (!instance) return null;
   if (typeof instance.startStreaming === 'function') {
     return instance.startStreaming(interval);
@@ -1192,6 +1226,50 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     }
   });
 
+  // Real-time DOM price & timestamp indicators
+  const indicatorsContainer = createElement('div', {
+    className: 'header-indicators price-time-indicators',
+    'data-testid': 'price-time-indicators',
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '12px',
+      fontSize: '12px',
+      fontFamily: 'monospace',
+    },
+  });
+
+  const lastCandle = initialData[initialData.length - 1] || { close: 100, time: 1700000000 };
+  const initialPriceVal = (lastCandle.close ?? lastCandle.price ?? 100).toFixed(2);
+  const initialTimeVal = formatTimestamp(lastCandle.time ?? 1700000000);
+
+  const priceIndicator = createElement('span', {
+    className: 'price-indicator live-price',
+    id: 'live-price-indicator',
+    'data-testid': 'price-indicator',
+    style: {
+      color: '#26a69a',
+      fontWeight: '600',
+    },
+    textContent: `$${initialPriceVal}`,
+  });
+
+  const timestampIndicator = createElement('span', {
+    className: 'timestamp-indicator live-timestamp',
+    id: 'live-timestamp-indicator',
+    'data-testid': 'timestamp-indicator',
+    style: {
+      color: '#787b86',
+      fontSize: '11px',
+    },
+    textContent: initialTimeVal,
+  });
+
+  if (typeof indicatorsContainer.appendChild === 'function') {
+    indicatorsContainer.appendChild(priceIndicator);
+    indicatorsContainer.appendChild(timestampIndicator);
+  }
+
   const legendLabel = `${overlayType} (${period})`;
   const legend = createIndicatorLegend(header, {
     id: `${overlayType.toLowerCase()}-${period}`,
@@ -1219,6 +1297,7 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     } else {
       header.appendChild(navControls);
     }
+    header.appendChild(indicatorsContainer);
   }
 
   // 3. Interactive Tool Palette Component (STORY 49.2.1: Resolve MISSING_INTERACTIVE_TOOL_PALETTE)
@@ -1483,6 +1562,8 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
     plotHeight,
     coordinateScale: ranges,
     trackElement: bottomAxisTrack,
+    priceIndicator,
+    timestampIndicator,
     initialZoom: opts.initialZoom || opts.zoom || 1.0,
     minZoom: opts.minZoom !== undefined ? opts.minZoom : 0.2,
     maxZoom: opts.maxZoom !== undefined ? opts.maxZoom : 5.0,
@@ -1494,6 +1575,8 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   chartInstance.header = header;
   chartInstance.navControls = navControls;
   chartInstance.legend = legend;
+  chartInstance.priceIndicator = priceIndicator;
+  chartInstance.timestampIndicator = timestampIndicator;
   chartInstance.canvas = canvas;
   chartInstance.chartContainer = chartContainer;
   chartInstance.workspaceContainer = workspaceContainer;
@@ -1767,6 +1850,12 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   activeResizeObserver = resizeObserver;
 
   chartInstance.unmount = function () {
+    if (this._stopRenderLoop) {
+      this._stopRenderLoop();
+    }
+    if (typeof this.stopStreaming === 'function') {
+      this.stopStreaming();
+    }
     if (resizeObserver && typeof resizeObserver.disconnect === 'function') {
       resizeObserver.disconnect();
     }
@@ -1796,7 +1885,17 @@ export function initApp(containerOrOptions = {}, maybeOptions = {}) {
   activeChart = chartInstance;
   chart = chartInstance;
 
+  // Immediate frame paint followed by active continuous RAF and tick loops
   chartInstance.render();
+
+  if (opts.autoAnimate !== false) {
+    startRenderLoop(chartInstance);
+  }
+
+  if (opts.streaming !== false) {
+    chartInstance.startStreaming(250);
+  }
+
   return chartInstance;
 }
 
@@ -1814,6 +1913,10 @@ export function mount(target, options = {}) {
 
 export function mountApp(target, options = {}) {
   return initApp(target, options);
+}
+
+export function start(options = {}) {
+  return initApp(options);
 }
 
 export function destroyWorkspace() {
