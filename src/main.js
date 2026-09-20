@@ -48,7 +48,7 @@ export function mountApp(container, options = {}) {
     clockEl.textContent = new Date().toISOString();
   }
 
-  let chart = null;
+  let chart = options.chart || null;
   const canvasEl =
     root && typeof root.querySelector === 'function'
       ? root.querySelector('canvas')
@@ -56,8 +56,10 @@ export function mountApp(container, options = {}) {
         ? root
         : null;
 
-  if (canvasEl) {
+  if (!chart && canvasEl) {
     chart = new Chart(canvasEl, options.chartOptions || options);
+    chart.start();
+  } else if (chart && typeof chart.start === 'function' && !chart.animationTimer) {
     chart.start();
   }
 
@@ -80,6 +82,15 @@ export function mountApp(container, options = {}) {
     }
     if (currentClock) {
       currentClock.textContent = new Date().toISOString();
+    }
+
+    if (chart) {
+      const currentPrice = 50000 + mutationCount * 1.5;
+      if (typeof chart.updateTick === 'function') {
+        chart.updateTick(currentPrice);
+      } else if (typeof chart.render === 'function') {
+        chart.render();
+      }
     }
   };
 
