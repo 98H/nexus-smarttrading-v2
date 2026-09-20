@@ -3,7 +3,8 @@
  * Handles rendering of background coordinate gridlines, right-hand vertical price scale,
  * and bottom horizontal time scale across active candlestick chart areas.
  * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02),
- * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), STORY 46.1.1, and STORY 47.1.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
+ * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), STORY 46.1.1, STORY 47.1.1,
+ * and STORY 48.1.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
  */
 
 /**
@@ -119,7 +120,7 @@ export function computeRanges(candles) {
 /**
  * Calculates time axis tick positions and timestamps scaled dynamically across [plotLeft, plotRight].
  * Distributes timestamp markers proportionally across the chart width with marker span covering
- * at least 50% of the active plot area without clumping (resolves TIME_AXIS_TEXT_CLUMPING, STORY 47.1.1).
+ * at least 50% of the active plot area without clumping (resolves TIME_AXIS_TEXT_CLUMPING, STORY 48.1.1).
  *
  * @param {Object|number|Array} [optionsOrRange={}]
  * @param {Object|number} [maybePlotArea=null]
@@ -240,6 +241,7 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
     (opts.dimensions && opts.dimensions.width) ||
     (canvas && canvas.width) ||
     (opts.plotArea && opts.plotArea.width ? opts.plotArea.width + priceAxisWidth : 0) ||
+    (opts.plotWidth ? opts.plotWidth + priceAxisWidth : 0) ||
     800;
 
   const defaultPlotWidth = Math.max(0, chartW - priceAxisWidth);
@@ -254,7 +256,7 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
     ? opts.plotWidth
     : (plotArea.width !== undefined ? plotArea.width : ((opts.viewport && opts.viewport.plotWidth) || (opts.dimensions && opts.dimensions.plotWidth) || defaultPlotWidth));
 
-  // Guarantee proportional label distribution across at least 50% of horizontal chart width (STORY 47.1.1)
+  // Guarantee proportional label distribution across at least 50% of horizontal chart width (STORY 48.1.1)
   const effectiveChartWidth = Math.max(chartW, plotLeft + plotWidth + priceAxisWidth);
   const effectivePlotWidth = Math.max(0, plotWidth > 0 ? plotWidth : (effectiveChartWidth - priceAxisWidth));
   const minRequiredSpan = Math.max(effectiveChartWidth * 0.5, effectivePlotWidth * 0.5, 100);
@@ -1007,14 +1009,14 @@ export class AxesRenderer {
       max = tmp;
     }
 
+    const plotArea = (r && r.plotArea) || this.plotArea;
     const canvasWidth = (this.canvas && typeof this.canvas.width === 'number' && this.canvas.width > 0)
       ? this.canvas.width
-      : (r.width || (this.plotArea.left + this.plotArea.width + this.priceAxisWidth) || 800);
+      : (r.width || (plotArea.left + plotArea.width + this.priceAxisWidth) || 800);
     const canvasHeight = (this.canvas && typeof this.canvas.height === 'number' && this.canvas.height > 0)
       ? this.canvas.height
-      : (r.height || (this.plotArea.top + this.plotArea.height + this.timeAxisHeight) || 600);
+      : (r.height || (plotArea.top + plotArea.height + this.timeAxisHeight) || 600);
 
-    const plotArea = this.plotArea;
     const axisY = plotArea.top + plotArea.height;
 
     ctx.save?.();
