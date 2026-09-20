@@ -165,19 +165,36 @@ export class Chart {
       throw new Error('Chart container element cannot be null or invalid');
     }
 
-    const options = maybeOptions || {};
+    let options = maybeOptions || {};
     let canvas = null;
     let container = null;
 
     if (
       containerOrCanvas.tagName === 'CANVAS' ||
-      (typeof containerOrCanvas.getContext === 'function' && !containerOrCanvas.appendChild)
+      (typeof containerOrCanvas.getContext === 'function' && containerOrCanvas.tagName !== 'DIV')
     ) {
       canvas = containerOrCanvas;
-      container = containerOrCanvas.parentElement || null;
-    } else if (typeof containerOrCanvas.appendChild === 'function') {
+      container = canvas.parentElement || options.container || null;
+    } else if (containerOrCanvas.canvas) {
+      options = { ...containerOrCanvas, ...maybeOptions };
+      canvas = options.canvas;
+      container = options.container || (canvas && canvas.parentElement) || null;
+    } else if (containerOrCanvas.container) {
+      options = { ...containerOrCanvas, ...maybeOptions };
+      container = options.container;
+    } else if (
+      typeof containerOrCanvas.appendChild === 'function' ||
+      (containerOrCanvas.tagName && containerOrCanvas.tagName !== 'CANVAS')
+    ) {
       container = containerOrCanvas;
-      if (Array.isArray(container.children)) {
+    } else {
+      throw new Error('Chart container element must be a valid DOM node');
+    }
+
+    if (container && !canvas) {
+      if (typeof container.querySelector === 'function') {
+        canvas = container.querySelector('canvas');
+      } else if (Array.isArray(container.children)) {
         canvas = container.children.find((child) => child.tagName === 'CANVAS') || null;
       }
       if (!canvas) {
@@ -185,12 +202,10 @@ export class Chart {
           typeof document !== 'undefined' && typeof document.createElement === 'function'
             ? document.createElement('canvas')
             : null;
-        if (canvas) {
+        if (canvas && typeof container.appendChild === 'function') {
           container.appendChild(canvas);
         }
       }
-    } else {
-      throw new Error('Chart container element must be a valid DOM node');
     }
 
     const width =
@@ -223,6 +238,7 @@ export class Chart {
     this.container = container;
     this.canvas = canvas;
     this.options = options;
+    this.chart = this;
     this.timeframe = options.timeframe || '1m';
     this.sectorCount = options.sectorCount || 4;
     this.zoomScale = typeof options.zoomScale === 'number' && options.zoomScale > 0 ? options.zoomScale : 1.0;
@@ -247,13 +263,44 @@ export class Chart {
       ...(options.theme || {}),
     };
 
-    // Pan state and viewport coordinates
+    // Pan state and viewport tracking
     this.isPanning = false;
-    const initX = options.offsetX ?? options.viewportOffset?.x ?? options.viewport?.x ?? 0;
-    const initY = options.offsetY ?? options.viewportOffset?.y ?? options.viewport?.y ?? 0;
+    this.renderCount = 0;
+    const initX =
+      options.offsetX ?? options.viewportOffset?.x ?? options.viewport?.offsetX ?? options.viewport?.x ?? 0;
+    const initY =
+      options.offsetY ?? options.viewportOffset?.y ?? options.viewport?.offsetY ?? options.viewport?.y ?? 0;
     this.viewportOffset = { x: initX, y: initY };
     this._panStart = { x: 0, y: 0 };
     this._initialOffset = { x: initX, y: initY };
+
+    const self = this;
+    this._viewport = {
+      get x() {
+        return self.viewportOffset.x;
+      },
+      set x(val) {
+        self.viewportOffset.x = val;
+      },
+      get y() {
+        return self.viewportOffset.y;
+      },
+      set y(val) {
+        self.viewportOffset.y = val;
+      },
+      get offsetX() {
+        return self.viewportOffset.x;
+      },
+      set offsetX(val) {
+        self.viewportOffset.x = val;
+      },
+      get offsetY() {
+        return self.viewportOffset.y;
+      },
+      set offsetY(val) {
+        self.viewportOffset.y = val;
+      },
+    };
 
     this._intervalId = null;
     this._listeners = [];
@@ -304,12 +351,16 @@ export class Chart {
   }
 
   get viewport() {
-    return {
-      x: this.viewportOffset.x,
-      y: this.viewportOffset.y,
-      offsetX: this.viewportOffset.x,
-      offsetY: this.viewportOffset.y,
-    };
+    return this._viewport;
+  }
+
+  set viewport(vp) {
+    if (vp && typeof vp === 'object') {
+      const x = vp.offsetX ?? vp.x ?? this.viewportOffset.x;
+      const y = vp.offsetY ?? vp.y ?? this.viewportOffset.y;
+      this.viewportOffset.x = x;
+      this.viewportOffset.y = y;
+    }
   }
 
   zoom(factor) {
@@ -323,7 +374,7 @@ export class Chart {
     if (e && typeof e.preventDefault === 'function') {
       e.preventDefault();
     }
-    const deltaY = (e && typeof e.deltaY === 'number') ? e.deltaY : 0;
+    const deltaY = e && typeof e.deltaY === 'number' ? e.deltaY : 0;
     if (deltaY < 0) {
       this.zoom(1.1);
     } else if (deltaY > 0) {
@@ -337,7 +388,17 @@ export class Chart {
     this.draw();
   }
 
+  bindPanGestures(canvas = this.canvas) {
+    if (canvas) {
+      this.canvas = canvas;
+    }
+    this._setupInteractivity();
+    return this;
+  }
+
   _setupInteractivity() {
+    this._removeInteractivity();
+
     if (this.canvas && typeof this.canvas.addEventListener === 'function') {
       const onMouseDown = (e) => {
         if (e.button !== undefined && e.button !== 0) return;
@@ -402,8 +463,17 @@ export class Chart {
         }
         this.render();
       };
+
+      const onWindowMouseUp = () => {
+        this.isPanning = false;
+      };
+
       window.addEventListener('resize', onResize);
-      this._windowListeners.push({ type: 'resize', handler: onResize });
+      window.addEventListener('mouseup', onWindowMouseUp);
+      this._windowListeners.push(
+        { type: 'resize', handler: onResize },
+        { type: 'mouseup', handler: onWindowMouseUp }
+      );
     }
   }
 
@@ -488,6 +558,7 @@ export class Chart {
    * right-hand price scale axis, and bottom time scale axis with ticks and labels.
    */
   render() {
+    this.renderCount = (this.renderCount || 0) + 1;
     if (!this.canvas || typeof this.canvas.getContext !== 'function') return;
     const ctx = this.canvas.getContext('2d');
     if (!ctx) return;
@@ -559,7 +630,8 @@ export class Chart {
     const plotAreaTop = topMargin;
     const plotAreaHeight = Math.max(10, plotHeight - plotAreaTop);
 
-    const getY = (price) => plotAreaTop + plotAreaHeight * (1 - (price - effectiveMin) / effectiveRange);
+    const getY = (price) =>
+      plotAreaTop + plotAreaHeight * (1 - (price - effectiveMin) / effectiveRange) + (this.viewportOffset.y || 0);
 
     const scale = typeof this.zoomScale === 'number' && this.zoomScale > 0 ? this.zoomScale : 1.0;
     const candleWidth = Math.max(2, Math.floor(((plotWidth - leftMargin) / Math.max(1, n)) * 0.7 * scale));
@@ -574,7 +646,7 @@ export class Chart {
       const p = minPrice + (i / (priceTickCount - 1)) * (maxPrice - minPrice);
       priceTicks.push({
         price: p,
-        y: getY(p),
+        y: plotAreaTop + plotAreaHeight * (1 - (p - effectiveMin) / effectiveRange),
       });
     }
 
@@ -632,7 +704,7 @@ export class Chart {
     // -------------------------------------------------------------------------
     for (let i = 0; i < n; i++) {
       const candle = candles[i];
-      const candleX = Math.round(leftMargin + i * step);
+      const candleX = Math.round(leftMargin + i * step + (this.viewportOffset.x || 0));
       const candleCenterX = Math.round(candleX + candleWidth / 2);
 
       const openY = getY(candle.open);
