@@ -3,7 +3,7 @@
  * Handles rendering of background coordinate gridlines, right-hand vertical price scale,
  * and bottom horizontal time scale across active candlestick chart areas.
  * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02),
- * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), and STORY 46.1.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
+ * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), STORY 46.1.1, and STORY 47.1.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
  */
 
 /**
@@ -36,6 +36,7 @@ export function formatTimestamp(timestamp, isDaily = false) {
 
 /**
  * Computes price and time domain ranges from a candle dataset.
+ * Seamlessly handles minimal streaming update batches (1-2 items) without throwing errors.
  *
  * @param {Array<Object>} candles - Candlestick series
  * @returns {{ priceRange: { min: number, max: number }, timeRange: { min: number, max: number } }}
@@ -117,8 +118,8 @@ export function computeRanges(candles) {
 
 /**
  * Calculates time axis tick positions and timestamps scaled dynamically across [plotLeft, plotRight].
- * Distributes timestamp markers proportionally across at least 50% of the horizontal chart width
- * without clumping (resolves TIME_AXIS_TEXT_CLUMPING, STORY 46.1.1).
+ * Distributes timestamp markers proportionally across the chart width with marker span covering
+ * at least 50% of the active plot area without clumping (resolves TIME_AXIS_TEXT_CLUMPING, STORY 47.1.1).
  *
  * @param {Object|number|Array} [optionsOrRange={}]
  * @param {Object|number} [maybePlotArea=null]
@@ -129,19 +130,29 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
   let opts = {};
 
   if (typeof optionsOrRange === 'number') {
-    if (optionsOrRange > 1e6 && typeof maybePlotArea === 'number' && maybePlotArea > 1e6) {
+    if (optionsOrRange > 1e7) {
       opts.min = optionsOrRange;
-      opts.max = maybePlotArea;
-      if (typeof maybeCandleCount === 'number') {
-        opts.width = maybeCandleCount;
-        opts.chartWidth = maybeCandleCount;
-        opts.plotWidth = maybeCandleCount;
-      } else if (typeof maybeCandleCount === 'object' && maybeCandleCount !== null) {
-        opts.plotArea = maybeCandleCount;
-        if (maybeCandleCount.width !== undefined) {
-          opts.width = maybeCandleCount.width;
-          opts.chartWidth = maybeCandleCount.width;
-          opts.plotWidth = maybeCandleCount.width;
+      if (typeof maybePlotArea === 'number') {
+        opts.max = maybePlotArea;
+        if (typeof maybeCandleCount === 'number') {
+          opts.width = maybeCandleCount;
+          opts.chartWidth = maybeCandleCount;
+          opts.plotWidth = maybeCandleCount;
+        } else if (typeof maybeCandleCount === 'object' && maybeCandleCount !== null) {
+          opts.plotArea = maybeCandleCount;
+          if (maybeCandleCount.width !== undefined) {
+            opts.width = maybeCandleCount.width;
+            opts.chartWidth = maybeCandleCount.width;
+            opts.plotWidth = maybeCandleCount.width;
+          }
+        }
+      } else if (typeof maybePlotArea === 'object' && maybePlotArea !== null) {
+        if (maybePlotArea.max !== undefined) opts.max = maybePlotArea.max;
+        opts.plotArea = maybePlotArea;
+        if (maybePlotArea.width !== undefined) {
+          opts.width = maybePlotArea.width;
+          opts.chartWidth = maybePlotArea.width;
+          opts.plotWidth = maybePlotArea.width;
         }
       }
     } else {
@@ -159,7 +170,12 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
           }
         }
       } else if (typeof maybePlotArea === 'number') {
-        opts.min = maybePlotArea;
+        if (maybePlotArea > 1e7) {
+          opts.min = maybePlotArea;
+          if (typeof maybeCandleCount === 'number') opts.max = maybeCandleCount;
+        } else {
+          opts.plotWidth = maybePlotArea;
+        }
       }
     }
   } else if (Array.isArray(optionsOrRange)) {
@@ -227,13 +243,18 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
     800;
 
   const defaultPlotWidth = Math.max(0, chartW - priceAxisWidth);
-  const plotArea = opts.plotArea || { top: 0, left: 0, width: defaultPlotWidth, height: 550 };
+  const plotArea = opts.plotArea || {
+    top: 0,
+    left: 0,
+    width: (opts.viewport && opts.viewport.plotWidth) || (opts.dimensions && opts.dimensions.plotWidth) || defaultPlotWidth,
+    height: (opts.viewport && opts.viewport.plotHeight) || (opts.dimensions && opts.dimensions.plotHeight) || 550,
+  };
   const plotLeft = opts.plotLeft !== undefined ? opts.plotLeft : (plotArea.left || 0);
   const plotWidth = opts.plotWidth !== undefined
     ? opts.plotWidth
-    : (plotArea.width !== undefined ? plotArea.width : defaultPlotWidth);
+    : (plotArea.width !== undefined ? plotArea.width : ((opts.viewport && opts.viewport.plotWidth) || (opts.dimensions && opts.dimensions.plotWidth) || defaultPlotWidth));
 
-  // Guarantee proportional label distribution across at least 50% of horizontal chart width (STORY 46.1.1)
+  // Guarantee proportional label distribution across at least 50% of horizontal chart width (STORY 47.1.1)
   const effectiveChartWidth = Math.max(chartW, plotLeft + plotWidth + priceAxisWidth);
   const effectivePlotWidth = Math.max(0, plotWidth > 0 ? plotWidth : (effectiveChartWidth - priceAxisWidth));
   const minRequiredSpan = Math.max(effectiveChartWidth * 0.5, effectivePlotWidth * 0.5, 100);
@@ -331,6 +352,11 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
     });
   }
 
+  ticks.span = printableWidth;
+  ticks.markerSpan = printableWidth;
+  ticks.plotWidth = effectivePlotWidth;
+  ticks.coverage = printableWidth / (effectivePlotWidth || 1);
+
   return ticks;
 }
 
@@ -426,6 +452,14 @@ export class AxesRenderer {
    * @param {{ top: number, left: number, width: number, height: number }} [options.plotArea]
    * @param {number} [options.priceAxisWidth=70]
    * @param {number} [options.timeAxisHeight=50]
+   * @param {number} [options.width]
+   * @param {number} [options.height]
+   * @param {number} [options.canvasWidth]
+   * @param {number} [options.canvasHeight]
+   * @param {Object} [options.viewport]
+   * @param {number} [options.viewportWidth]
+   * @param {number} [options.viewportHeight]
+   * @param {Object} [options.dimensions]
    * @param {string} [options.gridColor='#2a2e39']
    * @param {string} [options.axisColor='#363c4e']
    * @param {string} [options.textColor='#787b86']
@@ -446,10 +480,15 @@ export class AxesRenderer {
 
     const canvasWidth = (this.canvas && typeof this.canvas.width === 'number' && this.canvas.width > 0)
       ? this.canvas.width
-      : (opts.width || opts.viewportWidth || 800);
+      : (opts.width || opts.canvasWidth || opts.viewportWidth || (opts.viewport && opts.viewport.width) || (opts.dimensions && opts.dimensions.width) || 800);
     const canvasHeight = (this.canvas && typeof this.canvas.height === 'number' && this.canvas.height > 0)
       ? this.canvas.height
-      : (opts.height || opts.viewportHeight || 600);
+      : (opts.height || opts.canvasHeight || opts.viewportHeight || (opts.viewport && opts.viewport.height) || (opts.dimensions && opts.dimensions.height) || 600);
+
+    this.canvasWidth = canvasWidth;
+    this.canvasHeight = canvasHeight;
+    this.width = canvasWidth;
+    this.height = canvasHeight;
 
     if (opts.plotArea) {
       this.plotArea = {
@@ -469,6 +508,30 @@ export class AxesRenderer {
 
     this.plotWidth = opts.plotWidth !== undefined ? opts.plotWidth : this.plotArea.width;
     this.plotHeight = opts.plotHeight !== undefined ? opts.plotHeight : this.plotArea.height;
+    this.plotArea.width = this.plotWidth;
+    this.plotArea.height = this.plotHeight;
+
+    this.viewportWidth = opts.viewportWidth || canvasWidth;
+    this.viewportHeight = opts.viewportHeight || canvasHeight;
+    this.viewport = opts.viewport || {
+      width: canvasWidth,
+      height: canvasHeight,
+      plotWidth: this.plotWidth,
+      plotHeight: this.plotHeight,
+      x: 0,
+      y: 0,
+    };
+    this.dimensions = opts.dimensions || {
+      width: canvasWidth,
+      height: canvasHeight,
+      canvasWidth,
+      canvasHeight,
+      plotWidth: this.plotWidth,
+      plotHeight: this.plotHeight,
+      priceAxisWidth: this.priceAxisWidth,
+      timeAxisHeight: this.timeAxisHeight,
+    };
+
     this.candleCount = opts.candleCount || 0;
     this.candles = opts.candles || opts.data || null;
 
@@ -501,6 +564,13 @@ export class AxesRenderer {
     const w = typeof width === 'number' ? width : ((this.canvas && this.canvas.width) || 800);
     const h = typeof height === 'number' ? height : ((this.canvas && this.canvas.height) || 600);
 
+    this.width = w;
+    this.height = h;
+    this.canvasWidth = w;
+    this.canvasHeight = h;
+    this.viewportWidth = w;
+    this.viewportHeight = h;
+
     this.plotArea = {
       top,
       left,
@@ -511,6 +581,23 @@ export class AxesRenderer {
     this.plotHeight = this.plotArea.height;
     this._lastCanvasWidth = w;
     this._lastCanvasHeight = h;
+
+    this.viewport = {
+      ...(this.viewport || {}),
+      width: w,
+      height: h,
+      plotWidth: this.plotWidth,
+      plotHeight: this.plotHeight,
+    };
+    this.dimensions = {
+      ...(this.dimensions || {}),
+      width: w,
+      height: h,
+      canvasWidth: w,
+      canvasHeight: h,
+      plotWidth: this.plotWidth,
+      plotHeight: this.plotHeight,
+    };
   }
 
   setPlotArea(plotArea) {
@@ -550,6 +637,50 @@ export class AxesRenderer {
     }
   }
 
+  setViewport(viewport) {
+    if (!viewport || typeof viewport !== 'object') return;
+    this.viewport = { ...(this.viewport || {}), ...viewport };
+    if (typeof viewport.width === 'number') {
+      this.viewportWidth = viewport.width;
+      this.canvasWidth = viewport.width;
+      this.width = viewport.width;
+    }
+    if (typeof viewport.height === 'number') {
+      this.viewportHeight = viewport.height;
+      this.canvasHeight = viewport.height;
+      this.height = viewport.height;
+    }
+    if (typeof viewport.plotWidth === 'number') {
+      this.setPlotWidth(viewport.plotWidth);
+    }
+    if (typeof viewport.plotHeight === 'number') {
+      this.setPlotHeight(viewport.plotHeight);
+    }
+  }
+
+  getViewport() {
+    return { ...(this.viewport || {}) };
+  }
+
+  setDimensions(dimensions) {
+    if (!dimensions || typeof dimensions !== 'object') return;
+    this.dimensions = { ...(this.dimensions || {}), ...dimensions };
+    if (typeof dimensions.width === 'number') {
+      this.width = dimensions.width;
+      this.canvasWidth = dimensions.width;
+    }
+    if (typeof dimensions.height === 'number') {
+      this.height = dimensions.height;
+      this.canvasHeight = dimensions.height;
+    }
+    if (typeof dimensions.plotWidth === 'number') {
+      this.setPlotWidth(dimensions.plotWidth);
+    }
+    if (typeof dimensions.plotHeight === 'number') {
+      this.setPlotHeight(dimensions.plotHeight);
+    }
+  }
+
   getPlotArea() {
     return { ...this.plotArea };
   }
@@ -567,10 +698,11 @@ export class AxesRenderer {
       plotWidth: this.getPlotWidth(),
       plotHeight: this.getPlotHeight(),
       plotArea: this.getPlotArea(),
-      canvasWidth: (this.canvas && this.canvas.width) || 0,
-      canvasHeight: (this.canvas && this.canvas.height) || 0,
+      canvasWidth: (this.canvas && this.canvas.width) || this.canvasWidth || 0,
+      canvasHeight: (this.canvas && this.canvas.height) || this.canvasHeight || 0,
       priceAxisWidth: this.priceAxisWidth,
       timeAxisHeight: this.timeAxisHeight,
+      ...(this.dimensions || {}),
     };
   }
 
@@ -602,8 +734,8 @@ export class AxesRenderer {
    * @returns {Array<{ x: number, position: number, coordinate: number, coord: number, left: number, time: number, timestamp: number, t: number, value: number, label: string, text: string, formatted: string, index: number }>}
    */
   calculateTimeTicks(options = {}) {
-    const canvasW = (this.canvas && this.canvas.width) || 0;
-    const canvasH = (this.canvas && this.canvas.height) || 0;
+    const canvasW = (this.canvas && this.canvas.width) || this.canvasWidth || this.width || (this.viewport && this.viewport.width) || 800;
+    const canvasH = (this.canvas && this.canvas.height) || this.canvasHeight || this.height || (this.viewport && this.viewport.height) || 600;
 
     const effectiveMin = options.min !== undefined
       ? options.min
@@ -620,8 +752,8 @@ export class AxesRenderer {
     const pArea = options.plotArea || this.plotArea || {
       top: 0,
       left: 0,
-      width: Math.max(0, (canvasW || 800) - this.priceAxisWidth),
-      height: Math.max(0, (canvasH || 600) - this.timeAxisHeight),
+      width: Math.max(0, canvasW - this.priceAxisWidth),
+      height: Math.max(0, canvasH - this.timeAxisHeight),
     };
 
     const effectiveWidth = canvasW || (pArea.left + pArea.width + this.priceAxisWidth) || 800;
@@ -634,7 +766,13 @@ export class AxesRenderer {
       canvasHeight: canvasH || 600,
       viewportWidth: effectiveWidth,
       viewportHeight: canvasH || 600,
-      viewport: {
+      viewport: this.viewport || {
+        width: effectiveWidth,
+        height: canvasH || 600,
+        plotWidth: pArea.width,
+        plotHeight: pArea.height,
+      },
+      dimensions: this.dimensions || {
         width: effectiveWidth,
         height: canvasH || 600,
         plotWidth: pArea.width,
@@ -903,7 +1041,12 @@ export class AxesRenderer {
       plotRight: plotArea.left + plotArea.width,
       plotWidth: plotArea.width,
       chartWidth: canvasWidth,
+      canvasWidth,
+      canvasHeight,
+      viewport: this.viewport,
+      dimensions: this.dimensions,
       width: canvasWidth,
+      height: canvasHeight,
     });
 
     const span = Math.abs(max - min);
