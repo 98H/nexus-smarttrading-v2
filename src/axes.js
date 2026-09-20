@@ -2,7 +2,7 @@
  * SmartTrading-V2 — Coordinate Axes Renderer
  * Handles rendering of background coordinate gridlines, right-hand vertical price scale,
  * and bottom horizontal time scale across active candlestick chart areas.
- * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02), and STORY 33.2.1 (MISSING_HORIZONTAL_TIME_AXIS).
+ * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02), and STORY 34.1.1 (MISSING_HORIZONTAL_TIME_AXIS).
  */
 
 /**
@@ -280,7 +280,7 @@ export class AxesRenderer {
 
   /**
    * Draws a bottom horizontal time scale axis with timestamp tick marks and formatted labels.
-   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 33.2.1).
+   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 34.1.1).
    *
    * @param {Object|Array} [range={}]
    * @param {number} [range.min=1700000000]
@@ -303,22 +303,56 @@ export class AxesRenderer {
         min = r.min;
       } else if (r.timeRange && r.timeRange.min !== undefined) {
         min = r.timeRange.min;
+      } else if (r.startTime !== undefined) {
+        min = r.startTime;
+      } else if (r.start !== undefined) {
+        min = r.start;
+      } else if (r.from !== undefined) {
+        min = r.from;
       }
 
       if (r.max !== undefined) {
         max = r.max;
       } else if (r.timeRange && r.timeRange.max !== undefined) {
         max = r.timeRange.max;
+      } else if (r.endTime !== undefined) {
+        max = r.endTime;
+      } else if (r.end !== undefined) {
+        max = r.end;
+      } else if (r.to !== undefined) {
+        max = r.to;
       }
+    }
+
+    if (typeof min === 'string' || min instanceof Date) {
+      const parsed = new Date(min).getTime();
+      if (!Number.isNaN(parsed)) min = parsed;
+    }
+    if (typeof max === 'string' || max instanceof Date) {
+      const parsed = new Date(max).getTime();
+      if (!Number.isNaN(parsed)) max = parsed;
+    }
+
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      min = 1700000000;
+      max = 1700086400;
     }
 
     if (min === max) {
       const delta = min > 1e11 ? 60000 : 60;
       min -= delta;
       max += delta;
+    } else if (min > max) {
+      const tmp = min;
+      min = max;
+      max = tmp;
     }
+
     const plotArea = this.plotArea;
     const axisY = plotArea.top + plotArea.height;
+    const canvasHeight = (this.canvas && typeof this.canvas.height === 'number' && this.canvas.height > 0)
+      ? this.canvas.height
+      : (axisY + this.timeAxisHeight);
 
     ctx.save?.();
     ctx.strokeStyle = this.axisColor;
@@ -339,21 +373,35 @@ export class AxesRenderer {
     const spanMs = span < 1e11 ? span * 1000 : span;
     const isDaily = spanMs >= 86400000 * 2;
 
+    const tickLength = 5;
+    const fontSize = 11;
+    // Calculate label Y: strictly in the bottom scale area (labelY >= axisY)
+    // and strictly within canvas bounds (labelY + fontSize <= canvasHeight)
+    const availableHeight = Math.max(0, canvasHeight - axisY);
+    const idealOffset = Math.min(12, Math.max(tickLength + 2, Math.floor(availableHeight / 3)));
+    const maxOffset = Math.max(0, availableHeight - fontSize - 2);
+    const labelOffset = Math.min(idealOffset, maxOffset);
+    const labelY = axisY + Math.max(0, labelOffset);
+
     for (let i = 0; i <= steps; i++) {
       const timeVal = min + ((max - min) * i) / steps;
       const x = plotArea.left + (plotArea.width * i) / steps;
 
       // Tick mark: short vertical line crossing into bottom axis area (y >= axisY)
+      const tickEndY = Math.min(canvasHeight, axisY + tickLength);
       ctx.beginPath?.();
       ctx.moveTo?.(x, axisY);
-      ctx.lineTo?.(x, axisY + 5);
+      ctx.lineTo?.(x, tickEndY);
       ctx.stroke?.();
 
       // Formatted timestamp label placed strictly in bottom scale region (y >= axisY)
       const t = timeVal < 1e11 ? timeVal * 1000 : timeVal;
-      const date = new Date(t);
+      const validTime = Number.isFinite(t) ? t : Date.now();
+      const date = new Date(validTime);
       let timeLabel;
-      if (isDaily) {
+      if (Number.isNaN(date.getTime())) {
+        timeLabel = String(Math.round(timeVal));
+      } else if (isDaily) {
         const year = date.getUTCFullYear();
         const month = String(date.getUTCMonth() + 1).padStart(2, '0');
         const day = String(date.getUTCDate()).padStart(2, '0');
@@ -375,7 +423,7 @@ export class AxesRenderer {
         ctx.textAlign = 'center';
       }
 
-      ctx.fillText?.(timeLabel, drawX, axisY + 12);
+      ctx.fillText?.(timeLabel, drawX, labelY);
     }
 
     ctx.restore?.();

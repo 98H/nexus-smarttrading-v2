@@ -1,6 +1,6 @@
 /**
  * SmartTrading-V2 — Chart Engine & Candlestick/Axes Orchestrator
- * Integrates Candlestick rendering, AxesRenderer (DF-SCALES-01, DF-SCALES-02, STORY 33.2.1),
+ * Integrates Candlestick rendering, AxesRenderer (DF-SCALES-01, DF-SCALES-02, STORY 34.1.1),
  * pan gestures (DF-GESTURE-01, STORY 33.1.1), and analytical overlays (DF-OVERLAYS-01)
  * within constrained viewport bounds.
  */
@@ -324,31 +324,32 @@ export class Chart {
   }
 
   updateData(data) {
-    if (Array.isArray(data)) {
-      if (this.data.length > 0 && data.length < this.data.length) {
-        const map = new Map();
-        this.data.forEach((c) => {
-          const k = c.time ?? c.timestamp ?? c.t ?? c.date;
-          if (k !== undefined) map.set(k, c);
-        });
-        data.forEach((c) => {
-          const k = c.time ?? c.timestamp ?? c.t ?? c.date;
-          if (k !== undefined) map.set(k, c);
-        });
-        if (map.size >= this.data.length) {
-          this.data = Array.from(map.values()).sort((a, b) => {
-            const tA = a.time ?? a.timestamp ?? a.t ?? a.date ?? 0;
-            const tB = b.time ?? b.timestamp ?? b.t ?? b.date ?? 0;
-            return tA - tB;
-          });
-        } else {
-          this.data = [...this.data, ...data];
-        }
-      } else {
-        this.data = [...data];
-      }
+    if (!data) return this.data;
+    const batch = Array.isArray(data) ? data : [data];
+    if (batch.length === 0) return this.data;
+
+    if (this.data && this.data.length > 0) {
+      const map = new Map();
+      this.data.forEach((c) => {
+        if (!c) return;
+        const k = c.time ?? c.timestamp ?? c.t ?? c.date;
+        if (k !== undefined) map.set(k, c);
+      });
+      batch.forEach((c) => {
+        if (!c) return;
+        const k = c.time ?? c.timestamp ?? c.t ?? c.date;
+        if (k !== undefined) map.set(k, c);
+      });
+      this.data = Array.from(map.values()).sort((a, b) => {
+        const tA = a.time ?? a.timestamp ?? a.t ?? a.date ?? 0;
+        const tB = b.time ?? b.timestamp ?? b.t ?? b.date ?? 0;
+        return tA - tB;
+      });
+    } else {
+      this.data = [...batch];
     }
     this.render();
+    return this.data;
   }
 
   setOverlay(type, period = 20) {
@@ -367,6 +368,22 @@ export class Chart {
     if (this.axesRenderer) {
       this.axesRenderer.resize(w, h);
     }
+    this.render();
+  }
+
+  renderTimeScale(range) {
+    if (this.axesRenderer) {
+      return this.axesRenderer.renderTimeScale(range !== undefined ? range : this.data);
+    }
+  }
+
+  renderPriceScale(range) {
+    if (this.axesRenderer) {
+      return this.axesRenderer.renderPriceScale(range !== undefined ? range : this.data);
+    }
+  }
+
+  renderFrame() {
     this.render();
   }
 
@@ -396,7 +413,7 @@ export class Chart {
 
     const data = this.data;
 
-    // Redraw axes mapped accurately to current candle ranges
+    // Redraw coordinate axes and time scale mapped to current candle ranges
     if (this.axesRenderer) {
       this.axesRenderer.context = ctx;
       this.axesRenderer.canvas = this.canvas;
