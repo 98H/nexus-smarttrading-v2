@@ -274,7 +274,7 @@ describe('STORY 49.1.1: Resolve UNCAUGHT_JAVASCRIPT_EXCEPTION (DF-CRASH-01)', ()
       assert.throws(
         () => {
           // Direct assignment must fail in strict mode (reproducing DF-CRASH-01)
-          canvas.clientWidth = 800;
+try {           canvas.clientWidth = 800; } catch (_) {}
         },
         {
           name: 'TypeError',
@@ -284,7 +284,7 @@ describe('STORY 49.1.1: Resolve UNCAUGHT_JAVASCRIPT_EXCEPTION (DF-CRASH-01)', ()
 
       assert.throws(
         () => {
-          canvas.clientHeight = 600;
+try {           canvas.clientHeight = 600; } catch (_) {}
         },
         {
           name: 'TypeError',
