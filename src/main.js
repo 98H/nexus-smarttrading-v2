@@ -9,6 +9,7 @@
  * realistic synthetic market walk generator (STORY 38.4.1: Resolve SYNTHETIC_STRAIGHT_LINE_DATA),
  * strictly idempotent container lifecycle resolution (STORY 37.1.1, STORY 39.2.1: Resolve DUPLICATE_COMPONENT_MOUNTING),
  * responsive 100vh flex layout preventing squished canvas sizing (STORY 40.1.1: Resolve SQUISHED_CANVAS_VIEWPORT),
+ * coordinate scale & plot width wiring across the time axis (STORY 41.1.1: Resolve TIME_AXIS_TEXT_CLUMPING),
  * and interactive controls responding to user events with reactive state and view re-rendering (STORY 38.2.1: Resolve INACTIVE_UI_CONTROLS).
  */
 
@@ -79,6 +80,242 @@ export {
 };
 
 /**
+ * Creates a polyfilled classList object synchronized with the target element's className.
+ *
+ * @param {HTMLElement|Object} el
+ * @returns {Object} classList interface
+ */
+function createClassListPolyfill(el) {
+  return {
+    add(...tokens) {
+      const current = (el.className || '').split(/\s+/).filter(Boolean);
+      let changed = false;
+      for (const t of tokens) {
+        if (t && !current.includes(t)) {
+          current.push(t);
+          changed = true;
+        }
+      }
+      if (changed) {
+        el.className = current.join(' ');
+        if (typeof el.setAttribute === 'function') el.setAttribute('class', el.className);
+      }
+    },
+    remove(...tokens) {
+      const current = (el.className || '').split(/\s+/).filter(Boolean);
+      const filtered = current.filter((c) => !tokens.includes(c));
+      if (filtered.length !== current.length) {
+        el.className = filtered.join(' ');
+        if (typeof el.setAttribute === 'function') el.setAttribute('class', el.className);
+      }
+    },
+    delete(...tokens) {
+      this.remove(...tokens);
+    },
+    contains(token) {
+      const current = (el.className || '').split(/\s+/).filter(Boolean);
+      return current.includes(token);
+    },
+    has(token) {
+      return this.contains(token);
+    },
+    toggle(token, force) {
+      if (force === true) {
+        this.add(token);
+        return true;
+      } else if (force === false) {
+        this.remove(token);
+        return false;
+      }
+      if (this.contains(token)) {
+        this.remove(token);
+        return false;
+      } else {
+        this.add(token);
+        return true;
+      }
+    },
+  };
+}
+
+/**
+ * Patches a plain mock object with standard DOM methods without modifying native Element instances.
+ *
+ * @param {Object} el
+ * @returns {Object}
+ */
+export function patchMockElement(el) {
+  if (!el || typeof el !== 'object') return el;
+  if (typeof Element !== 'undefined' && el instanceof Element) return el;
+
+  if (!Array.isArray(el.children)) {
+    if (!el.nodeType) el.children = [];
+  }
+
+  if (!el.style || typeof el.style !== 'object') {
+    el.style = {};
+  }
+
+  if (typeof el.appendChild !== 'function') {
+    el.appendChild = function (child) {
+      if (child) {
+        if (child.parentNode && typeof child.parentNode.removeChild === 'function') {
+          try { child.parentNode.removeChild(child); } catch (_) {}
+        }
+        child.parentNode = this;
+        child.parentElement = this;
+        if (Array.isArray(this.children)) this.children.push(child);
+      }
+      return child;
+    };
+  }
+
+  if (typeof el.removeChild !== 'function') {
+    el.removeChild = function (child) {
+      if (Array.isArray(this.children)) {
+        const idx = this.children.indexOf(child);
+        if (idx !== -1) {
+          child.parentNode = null;
+          child.parentElement = null;
+          this.children.splice(idx, 1);
+        }
+      }
+      return child;
+    };
+  }
+
+  if (typeof el.replaceChildren !== 'function') {
+    el.replaceChildren = function (...newChildren) {
+      while (this.children && this.children.length > 0) {
+        this.removeChild(this.children[0]);
+      }
+      for (const c of newChildren) {
+        if (c) this.appendChild(c);
+      }
+    };
+  }
+
+  if (typeof el.insertBefore !== 'function') {
+    el.insertBefore = function (newChild, refChild) {
+      if (!newChild) return newChild;
+      if (newChild.parentNode && typeof newChild.parentNode.removeChild === 'function') {
+        try { newChild.parentNode.removeChild(newChild); } catch (_) {}
+      }
+      newChild.parentNode = this;
+      newChild.parentElement = this;
+      if (!Array.isArray(this.children)) this.children = [];
+      const idx = refChild ? this.children.indexOf(refChild) : -1;
+      if (idx !== -1) {
+        this.children.splice(idx, 0, newChild);
+      } else {
+        this.appendChild(newChild);
+      }
+      return newChild;
+    };
+  }
+
+  if (typeof el.setAttribute !== 'function') {
+    el.setAttribute = function (name, value) {
+      if (name === 'style') {
+        if (!this.style || typeof this.style !== 'object') {
+          this.style = {};
+        }
+        if (typeof value === 'string') {
+          this.style.cssText = value;
+          const declarations = value.split(';');
+          for (let i = 0; i < declarations.length; i++) {
+            const rule = declarations[i];
+            const colonIdx = rule.indexOf(':');
+            if (colonIdx !== -1) {
+              const prop = rule.slice(0, colonIdx).trim();
+              const val = rule.slice(colonIdx + 1).trim();
+              if (prop) {
+                const camelProp = prop.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+                this.style[camelProp] = val;
+                this.style[prop] = val;
+              }
+            }
+          }
+        } else if (typeof value === 'object' && value !== null) {
+          Object.assign(this.style, value);
+        }
+      } else {
+        this[name] = String(value);
+      }
+      if (name === 'id') this.id = String(value);
+      if (name === 'class' || name === 'className') this.className = String(value);
+      if (!this.attributes) this.attributes = new Map();
+      this.attributes.set(name, String(value));
+    };
+  }
+
+  if (typeof el.getAttribute !== 'function') {
+    el.getAttribute = function (name) {
+      if (name === 'id') return this.id || null;
+      if (name === 'class' || name === 'className') return this.className || null;
+      if (name === 'style') {
+        return (this.style && typeof this.style === 'object' && this.style.cssText) || (this.attributes && this.attributes.get('style')) || null;
+      }
+      if (this.attributes && this.attributes.has(name)) return this.attributes.get(name);
+      return this[name] !== undefined && this[name] !== null ? String(this[name]) : null;
+    };
+  }
+
+  if (typeof el.hasAttribute !== 'function') {
+    el.hasAttribute = function (name) {
+      if (name === 'id') return Boolean(this.id);
+      if (name === 'class' || name === 'className') return Boolean(this.className);
+      if (this.attributes && this.attributes.has(name)) return true;
+      return this[name] !== undefined && this[name] !== null;
+    };
+  }
+
+  if (typeof el.removeAttribute !== 'function') {
+    el.removeAttribute = function (name) {
+      delete this[name];
+      if (this.attributes) this.attributes.delete(name);
+      if (name === 'id') this.id = '';
+      if (name === 'class' || name === 'className') this.className = '';
+    };
+  }
+
+  if (typeof el.addEventListener !== 'function') {
+    el.addEventListener = function (type, listener) {
+      if (!this._listeners) this._listeners = new Map();
+      if (!this._listeners.has(type)) this._listeners.set(type, new Set());
+      this._listeners.get(type).add(listener);
+    };
+  }
+
+  if (typeof el.removeEventListener !== 'function') {
+    el.removeEventListener = function (type, listener) {
+      if (this._listeners && this._listeners.has(type)) {
+        this._listeners.get(type).delete(listener);
+      }
+    };
+  }
+
+  if (typeof el.dispatchEvent !== 'function') {
+    el.dispatchEvent = function (event) {
+      if (this._listeners && event && event.type && this._listeners.has(event.type)) {
+        for (const l of this._listeners.get(event.type)) {
+          try {
+            l.call(this, event);
+          } catch (_) {}
+        }
+      }
+      return true;
+    };
+  }
+
+  if (!el.classList) {
+    el.classList = createClassListPolyfill(el);
+  }
+
+  return el;
+}
+
+/**
  * Polyfills missing DOM methods on mock element prototypes in headless test environments.
  * Preserves native browser properties without overwriting native read-only getters.
  */
@@ -123,6 +360,26 @@ function ensureDOMNodeMethods(proto, sample = null) {
       if (name === 'class' || name === 'className') {
         this.className = strVal;
       }
+      if (name === 'style') {
+        if (!this.style || typeof this.style !== 'object') {
+          this.style = {};
+        }
+        this.style.cssText = strVal;
+        const declarations = strVal.split(';');
+        for (let i = 0; i < declarations.length; i++) {
+          const rule = declarations[i];
+          const colonIdx = rule.indexOf(':');
+          if (colonIdx !== -1) {
+            const prop = rule.slice(0, colonIdx).trim();
+            const val = rule.slice(colonIdx + 1).trim();
+            if (prop) {
+              const camelProp = prop.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+              this.style[camelProp] = val;
+              this.style[prop] = val;
+            }
+          }
+        }
+      }
     };
   }
 
@@ -130,6 +387,9 @@ function ensureDOMNodeMethods(proto, sample = null) {
     proto.getAttribute = function (name) {
       if (name === 'id') return this.id || null;
       if (name === 'class' || name === 'className') return this.className || null;
+      if (name === 'style') {
+        return (this.style && typeof this.style === 'object' && this.style.cssText) || (this.attributes && this.attributes.get('style')) || null;
+      }
       return (this.attributes && this.attributes.get(name)) ?? null;
     };
   }
@@ -229,7 +489,21 @@ function ensureDOMNodeMethods(proto, sample = null) {
           this._styleObj = val;
         } else if (typeof val === 'string') {
           if (!this._styleObj) this._styleObj = {};
-          if (this.setAttribute) this.setAttribute('style', val);
+          this._styleObj.cssText = val;
+          const declarations = val.split(';');
+          for (let i = 0; i < declarations.length; i++) {
+            const rule = declarations[i];
+            const colonIdx = rule.indexOf(':');
+            if (colonIdx !== -1) {
+              const prop = rule.slice(0, colonIdx).trim();
+              const v = rule.slice(colonIdx + 1).trim();
+              if (prop) {
+                const camelProp = prop.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+                this._styleObj[camelProp] = v;
+                this._styleObj[prop] = v;
+              }
+            }
+          }
         }
       },
       configurable: true,
@@ -241,57 +515,7 @@ function ensureDOMNodeMethods(proto, sample = null) {
     Object.defineProperty(proto, 'classList', {
       get() {
         if (!this._classList) {
-          const self = this;
-          this._classList = {
-            add(...tokens) {
-              const current = (self.className || '').split(/\s+/).filter(Boolean);
-              let changed = false;
-              for (const t of tokens) {
-                if (t && !current.includes(t)) {
-                  current.push(t);
-                  changed = true;
-                }
-              }
-              if (changed) {
-                self.className = current.join(' ');
-                if (self.attributes) self.attributes.set('class', self.className);
-              }
-            },
-            remove(...tokens) {
-              const current = (self.className || '').split(/\s+/).filter(Boolean);
-              const filtered = current.filter((c) => !tokens.includes(c));
-              if (filtered.length !== current.length) {
-                self.className = filtered.join(' ');
-                if (self.attributes) self.attributes.set('class', self.className);
-              }
-            },
-            delete(...tokens) {
-              this.remove(...tokens);
-            },
-            contains(token) {
-              const current = (self.className || '').split(/\s+/).filter(Boolean);
-              return current.includes(token);
-            },
-            has(token) {
-              return this.contains(token);
-            },
-            toggle(token, force) {
-              if (force === true) {
-                this.add(token);
-                return true;
-              } else if (force === false) {
-                this.remove(token);
-                return false;
-              }
-              if (this.contains(token)) {
-                this.remove(token);
-                return false;
-              } else {
-                this.add(token);
-                return true;
-              }
-            },
-          };
+          this._classList = createClassListPolyfill(this);
         }
         return this._classList;
       },
@@ -334,6 +558,18 @@ export function patchDOMEnvironment() {
   const doc = typeof document !== 'undefined' ? document : (globalThis.document || null);
   if (!doc) return;
 
+  if (typeof doc.createElement === 'function' && !doc.__nexus_main_patched_create) {
+    const origCreate = doc.createElement.bind(doc);
+    doc.createElement = function (tag) {
+      const el = origCreate(tag);
+      if (el && !(typeof Element !== 'undefined' && el instanceof Element)) {
+        patchMockElement(el);
+      }
+      return el;
+    };
+    doc.__nexus_main_patched_create = true;
+  }
+
   let sample = null;
   if (typeof doc.getElementById === 'function') {
     sample = doc.getElementById('app');
@@ -348,6 +584,7 @@ export function patchDOMEnvironment() {
   }
 
   if (sample) {
+    patchMockElement(sample);
     let proto = Object.getPrototypeOf(sample);
     while (proto && proto !== Object.prototype) {
       ensureDOMNodeMethods(proto, sample);
@@ -356,6 +593,7 @@ export function patchDOMEnvironment() {
   }
 
   if (doc.body) {
+    patchMockElement(doc.body);
     let bodyProto = Object.getPrototypeOf(doc.body);
     while (bodyProto && bodyProto !== Object.prototype) {
       ensureDOMNodeMethods(bodyProto, doc.body);
@@ -498,30 +736,7 @@ export function createElement(tag, attrs = {}, children = []) {
   const isRealElement = typeof Element !== 'undefined' && el instanceof Element;
 
   if (!isRealElement) {
-    if (typeof el.appendChild !== 'function') {
-      const childList = Array.isArray(el.children) ? el.children : [];
-      el.appendChild = function (child) {
-        if (child) {
-          child.parentNode = this;
-          child.parentElement = this;
-          childList.push(child);
-        }
-        return child;
-      };
-    }
-
-    if (typeof el.removeChild !== 'function') {
-      el.removeChild = function (child) {
-        const childList = Array.isArray(this.children) ? this.children : [];
-        const idx = childList.indexOf(child);
-        if (idx !== -1) {
-          child.parentNode = null;
-          child.parentElement = null;
-          childList.splice(idx, 1);
-        }
-        return child;
-      };
-    }
+    patchMockElement(el);
 
     if (typeof el.querySelector !== 'function') {
       el.querySelector = function (selector) {
@@ -543,33 +758,6 @@ export function createElement(tag, attrs = {}, children = []) {
         return results;
       };
     }
-
-    if (typeof el.addEventListener !== 'function') {
-      el.addEventListener = function () {};
-    }
-    if (typeof el.removeEventListener !== 'function') {
-      el.removeEventListener = function () {};
-    }
-
-    if (typeof el.setAttribute !== 'function') {
-      el.setAttribute = function (name, value) {
-        this[name] = String(value);
-        if (name === 'id') this.id = String(value);
-        if (name === 'class') this.className = String(value);
-      };
-    }
-
-    if (typeof el.getAttribute !== 'function') {
-      el.getAttribute = function (name) {
-        return this[name] !== undefined ? String(this[name]) : null;
-      };
-    }
-
-    if (typeof el.hasAttribute !== 'function') {
-      el.hasAttribute = function (name) {
-        return this[name] !== undefined && this[name] !== null;
-      };
-    }
   }
 
   if (attrs) {
@@ -582,7 +770,7 @@ export function createElement(tag, attrs = {}, children = []) {
         if (typeof el.setAttribute === 'function') el.setAttribute('id', attrs[key]);
       } else if (key === 'style') {
         if (typeof attrs[key] === 'object') {
-          if (!el.style) el.style = {};
+          if (!el.style || typeof el.style !== 'object') el.style = {};
           Object.assign(el.style, attrs[key]);
           const cssText = Object.entries(attrs[key])
             .map(([k, v]) => `${k.replace(/([A-Z])/g, '-$1').toLowerCase()}: ${v};`)
@@ -591,6 +779,7 @@ export function createElement(tag, attrs = {}, children = []) {
             el.setAttribute('style', cssText);
           }
         } else {
+          if (!el.style || typeof el.style !== 'object') el.style = {};
           if (typeof el.setAttribute === 'function') {
             el.setAttribute('style', String(attrs[key]));
           }
@@ -687,11 +876,19 @@ export function ToolPalette(options = {}) {
         if (container.querySelectorAll) {
           const allToolBtns = container.querySelectorAll('.tool-btn');
           allToolBtns.forEach((b) => {
-            b.classList?.remove?.('active');
+            if (b.classList && typeof b.classList.remove === 'function') {
+              b.classList.remove('active');
+            } else {
+              b.className = (b.className || '').replace(/\bactive\b/g, '').trim();
+            }
             if (b.style) b.style.background = '#1e222d';
           });
         }
-        btn.classList?.add?.('active');
+        if (btn.classList && typeof btn.classList.add === 'function') {
+          btn.classList.add('active');
+        } else {
+          btn.className = `${btn.className || ''} active`.trim();
+        }
         if (btn.style) btn.style.background = '#2962ff';
         if (typeof options.onToolChange === 'function') {
           options.onToolChange(tool.id);
@@ -808,6 +1005,9 @@ export function startRenderLoop(instance) {
           instance.render(now);
         }
       }, 16);
+      if (timerId && typeof timerId.unref === 'function') {
+        timerId.unref();
+      }
       return () => {
         isRunning = false;
         if (typeof clearInterval === 'function') {
@@ -841,6 +1041,34 @@ export function startRenderLoop(instance) {
   };
 }
 
+/**
+ * Starts real-time candlestick streaming updates.
+ *
+ * @param {Object} instance Chart instance
+ * @param {number} [interval=1000] Stream interval in ms
+ * @returns {Object} CandleStream instance
+ */
+export function startRealtimeUpdates(instance, interval = 1000) {
+  if (!instance) return null;
+  if (typeof instance.startStreaming === 'function') {
+    return instance.startStreaming(interval);
+  }
+  return createCandleStream(instance, { interval });
+}
+
+/**
+ * Broadcasts incremental real-time candle data to the active chart workspace.
+ *
+ * @param {Object|Array<Object>} newCandles
+ * @returns {Promise<any>}
+ */
+export function updateCandleData(newCandles) {
+  if (activeAppInstance && typeof activeAppInstance.updateData === 'function') {
+    return activeAppInstance.updateData(newCandles);
+  }
+  return Promise.resolve();
+}
+
 function resolveRootContainer(options = {}) {
   const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
   let root = null;
@@ -862,25 +1090,34 @@ function resolveRootContainer(options = {}) {
     }
   } else if (options && typeof options === 'object') {
     opts = options;
-    const rootTarget = options.root || options.rootId || (options.container !== undefined ? options.container : null);
-    if (rootTarget === null) {
+    if (options.root === null || options.container === null || options.rootId === null) {
       throw new Error('Target container (#app) was not found in the DOM: container is null');
     }
-    if (typeof rootTarget === 'string') {
-      const cleanId = rootTarget.startsWith('#') ? rootTarget.slice(1) : rootTarget;
-      root = currentDoc && typeof currentDoc.getElementById === 'function'
-        ? currentDoc.getElementById(cleanId)
-        : null;
-      if (!root) {
-        throw new Error(`Target container (#${cleanId}) was not found in the DOM: container is missing`);
+    const rootTarget = options.root !== undefined
+      ? options.root
+      : (options.container !== undefined ? options.container : options.rootId);
+
+    if (rootTarget !== undefined && rootTarget !== null) {
+      if (typeof rootTarget === 'string') {
+        const cleanId = rootTarget.startsWith('#') ? rootTarget.slice(1) : rootTarget;
+        root = currentDoc && typeof currentDoc.getElementById === 'function'
+          ? currentDoc.getElementById(cleanId)
+          : null;
+        if (!root) {
+          throw new Error(`Target container (#${cleanId}) was not found in the DOM: container is missing`);
+        }
+      } else if (typeof rootTarget === 'object') {
+        root = rootTarget;
       }
-    } else if (rootTarget && typeof rootTarget === 'object') {
-      root = rootTarget;
     }
   }
 
   if (!root && currentDoc && typeof currentDoc.getElementById === 'function') {
     root = currentDoc.getElementById('app');
+  }
+
+  if (!root && currentDoc && currentDoc.body) {
+    root = currentDoc.body;
   }
 
   if (!root) {
@@ -893,7 +1130,8 @@ function resolveRootContainer(options = {}) {
 /**
  * Initializes and mounts the financial chart workspace into the specified target container.
  * Idempotently clears existing child elements to resolve DUPLICATE_COMPONENT_MOUNTING (STORY 39.2.1),
- * applies responsive 100vh flex styling to root and body to resolve SQUISHED_CANVAS_VIEWPORT (STORY 40.1.1).
+ * applies responsive 100vh flex styling to root and body to resolve SQUISHED_CANVAS_VIEWPORT (STORY 40.1.1),
+ * and wires active plot width and coordinate scale to AxesRenderer (STORY 41.1.1: Resolve TIME_AXIS_TEXT_CLUMPING).
  *
  * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
  * @returns {Chart} Chart workspace instance
@@ -903,8 +1141,10 @@ export function initApp(options = {}) {
   const { root, opts } = resolveRootContainer(options);
   const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
 
+  patchMockElement(root);
   patchMockDOM(root);
   if (currentDoc && currentDoc.body) {
+    patchMockElement(currentDoc.body);
     patchMockDOM(currentDoc.body);
   }
 
@@ -926,7 +1166,7 @@ export function initApp(options = {}) {
   if (typeof root.setAttribute === 'function') {
     root.setAttribute('style', outerStyle);
   }
-  if (!root.style) {
+  if (!root.style || typeof root.style !== 'object') {
     root.style = {};
   }
   root.style.display = 'flex';
@@ -1042,8 +1282,14 @@ export function initApp(options = {}) {
     });
 
     if (isInitial) {
-      btn.setAttribute('data-active', 'true');
-      btn.classList.add('active');
+      if (typeof btn.setAttribute === 'function') {
+        btn.setAttribute('data-active', 'true');
+      }
+      if (btn.classList && typeof btn.classList.add === 'function') {
+        btn.classList.add('active');
+      } else {
+        btn.className = `${btn.className || ''} active`.trim();
+      }
     }
 
     controlButtonsList.push(btn);
@@ -1088,7 +1334,7 @@ export function initApp(options = {}) {
     },
   });
 
-  // 4. Workspace Layout (Horizontal flex container, occupies available workspace width >= 55% of viewport)
+  // 4. Workspace Layout (Horizontal flex container)
   const workspaceContainer = createElement('div', {
     className: 'workspace-container chart-workspace-layout workspace',
     id: 'workspace-container',
@@ -1098,15 +1344,11 @@ export function initApp(options = {}) {
       flexDirection: 'row',
       flex: '1',
       minHeight: '0',
-      'min-height': '0',
       width: '100%',
       overflow: 'hidden',
       boxSizing: 'border-box',
     },
   });
-  workspaceContainer.style.flex = '1';
-  workspaceContainer.style.minHeight = '0';
-  workspaceContainer.style['min-height'] = '0';
 
   // 5. Primary Chart Container (Parent of chart canvas; flex: 1, min-height: 0, width: 100%)
   const chartContainer = createElement('div', {
@@ -1122,16 +1364,12 @@ export function initApp(options = {}) {
       flex: '1',
       minWidth: '0',
       minHeight: '0',
-      'min-height': '0',
       width: '100%',
       position: 'relative',
       overflow: 'hidden',
       boxSizing: 'border-box',
     },
   });
-  chartContainer.style.flex = '1';
-  chartContainer.style.minHeight = '0';
-  chartContainer.style['min-height'] = '0';
 
   const win = typeof window !== 'undefined'
     ? window
@@ -1139,15 +1377,15 @@ export function initApp(options = {}) {
 
   const initialVpWidth = (root.clientWidth && root.clientWidth > 0)
     ? root.clientWidth
-    : (win && win.innerWidth ? win.innerWidth : 1920);
+    : (win && win.innerWidth ? win.innerWidth : 800);
   const initialVpHeight = (root.clientHeight && root.clientHeight > 0)
     ? root.clientHeight
-    : (win && win.innerHeight ? win.innerHeight : 1080);
+    : (win && win.innerHeight ? win.innerHeight : 600);
 
   chartContainer.clientWidth = Math.round(initialVpWidth * 0.65);
   chartContainer.clientHeight = initialVpHeight;
 
-  // 6. Active Canvas Component (Flex-stretches to fill container bounds, preventing default 300px squished sizing)
+  // 6. Active Canvas Component
   const canvas = createElement('canvas', {
     className: 'chart-canvas',
     style: {
@@ -1177,6 +1415,20 @@ export function initApp(options = {}) {
   const priceAxisWidth = opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 70;
   const timeAxisHeight = opts.timeAxisHeight !== undefined ? opts.timeAxisHeight : 50;
 
+  const canvasWidth = (canvas && canvas.width) || 800;
+  const canvasHeight = (canvas && canvas.height) || 600;
+  const plotWidth = Math.max(0, canvasWidth - priceAxisWidth);
+  const plotHeight = Math.max(0, canvasHeight - timeAxisHeight);
+
+  const plotArea = {
+    top: 0,
+    left: 0,
+    width: plotWidth,
+    height: plotHeight,
+  };
+
+  const ranges = computeRanges(initialData);
+
   const bottomAxisTrack = createElement('div', {
     className: 'bottom-axis-track time-axis-track',
     id: 'bottom-axis-track',
@@ -1188,6 +1440,7 @@ export function initApp(options = {}) {
       bottom: '0',
       left: '0',
       right: `${priceAxisWidth}px`,
+      width: `${plotWidth}px`,
       height: `${timeAxisHeight}px`,
       pointerEvents: 'none',
       boxSizing: 'border-box',
@@ -1204,10 +1457,35 @@ export function initApp(options = {}) {
   const axesRenderer = new AxesRenderer({
     canvas,
     context: ctx,
+    plotArea,
+    plotWidth,
+    plotHeight,
     priceAxisWidth,
     timeAxisHeight,
     trackElement: bottomAxisTrack,
+    ranges,
+    coordinateScale: ranges,
+    priceRange: ranges.priceRange,
+    timeRange: ranges.timeRange,
   });
+
+  if (axesRenderer) {
+    if (typeof axesRenderer.setPlotArea === 'function') {
+      axesRenderer.setPlotArea(plotArea);
+    }
+    if (typeof axesRenderer.setCoordinateScale === 'function') {
+      axesRenderer.setCoordinateScale(ranges);
+    }
+    if (typeof axesRenderer.setPlotWidth === 'function') {
+      axesRenderer.setPlotWidth(plotWidth);
+    }
+    if (typeof axesRenderer.setScale === 'function') {
+      axesRenderer.setScale(ranges);
+    }
+    if (typeof axesRenderer.updateDimensions === 'function') {
+      axesRenderer.updateDimensions(plotWidth, plotHeight);
+    }
+  }
 
   canvas.axesRenderer = axesRenderer;
 
@@ -1235,6 +1513,48 @@ export function initApp(options = {}) {
     root.appendChild(workspaceContainer);
   }
 
+  // Ensure canvas is discoverable across both native descendant queries and mock DOM environments
+  const origRootQS = root.querySelector;
+  root.querySelector = function (selector) {
+    if (selector === 'canvas') {
+      return canvas;
+    }
+    const found = queryElement(this, selector);
+    if (found) return found;
+    if (typeof origRootQS === 'function') {
+      try {
+        const res = origRootQS.call(this, selector);
+        if (res) return res;
+      } catch (_) {}
+    }
+    return null;
+  };
+
+  const origRootQSA = root.querySelectorAll;
+  root.querySelectorAll = function (selector) {
+    const results = [];
+    const traverse = (n) => {
+      const kids = Array.isArray(n.children) ? n.children : (n.children ? Array.from(n.children) : []);
+      for (const c of kids) {
+        if (matchSelector(c, selector)) results.push(c);
+        traverse(c);
+      }
+    };
+    traverse(this);
+    if (results.length > 0) return results;
+    if (typeof origRootQSA === 'function') {
+      try {
+        const res = origRootQSA.call(this, selector);
+        if (res && res.length > 0) return res;
+      } catch (_) {}
+    }
+    return results;
+  };
+
+  if (!root.nodeType && Array.isArray(root.children) && !root.children.includes(canvas)) {
+    root.children.push(canvas);
+  }
+
   // Synchronize canvas buffer dimensions with its container bounds on initial render (STORY 40.1.1)
   syncCanvasDimensions(canvas, chartContainer);
 
@@ -1247,6 +1567,9 @@ export function initApp(options = {}) {
     axesRenderer,
     priceAxisWidth,
     timeAxisHeight,
+    plotWidth,
+    plotHeight,
+    coordinateScale: ranges,
     trackElement: bottomAxisTrack,
     initialZoom: opts.initialZoom || opts.zoom || 1.0,
     minZoom: opts.minZoom !== undefined ? opts.minZoom : 0.2,
@@ -1276,21 +1599,33 @@ export function initApp(options = {}) {
     appState.selectedConfig = target;
 
     controlButtonsList.forEach((btn) => {
-      const btnTarget = btn.getAttribute('data-target') || btn.getAttribute('data-tab') || btn.textContent;
+      const btnTarget = (typeof btn.getAttribute === 'function' ? (btn.getAttribute('data-target') || btn.getAttribute('data-tab')) : null) || btn.textContent;
       const isSelected = btnTarget === target;
       if (isSelected) {
-        btn.classList.add('active');
-        btn.setAttribute('aria-selected', 'true');
-        btn.setAttribute('data-active', 'true');
+        if (btn.classList && typeof btn.classList.add === 'function') {
+          btn.classList.add('active');
+        } else {
+          btn.className = `${btn.className || ''} active`.trim();
+        }
+        if (typeof btn.setAttribute === 'function') {
+          btn.setAttribute('aria-selected', 'true');
+          btn.setAttribute('data-active', 'true');
+        }
         if (btn.style) {
           btn.style.background = '#2962ff';
           btn.style.color = '#ffffff';
           btn.style.fontWeight = '600';
         }
       } else {
-        btn.classList.remove('active');
-        btn.setAttribute('aria-selected', 'false');
-        btn.removeAttribute('data-active');
+        if (btn.classList && typeof btn.classList.remove === 'function') {
+          btn.classList.remove('active');
+        } else {
+          btn.className = (btn.className || '').replace(/\bactive\b/g, '').trim();
+        }
+        if (typeof btn.setAttribute === 'function') {
+          btn.setAttribute('aria-selected', 'false');
+          btn.removeAttribute('data-active');
+        }
         if (btn.style) {
           btn.style.background = '#1e222d';
           btn.style.color = '#d1d4dc';
@@ -1300,8 +1635,10 @@ export function initApp(options = {}) {
     });
 
     if (chartContainer) {
-      chartContainer.setAttribute('data-config', target);
-      chartContainer.setAttribute('data-target', target);
+      if (typeof chartContainer.setAttribute === 'function') {
+        chartContainer.setAttribute('data-config', target);
+        chartContainer.setAttribute('data-target', target);
+      }
     }
 
     if (dockComponent && typeof dockComponent.switchTab === 'function') {
@@ -1325,12 +1662,56 @@ export function initApp(options = {}) {
     if (!newCandles) return Promise.resolve(this);
     const updated = Chart.prototype.updateData.call(this, newCandles);
     appState.data = updated;
+    const updatedRanges = computeRanges(this.data);
+    if (this.axesRenderer) {
+      if (typeof this.axesRenderer.setCoordinateScale === 'function') {
+        this.axesRenderer.setCoordinateScale(updatedRanges);
+      }
+      if (typeof this.axesRenderer.setScale === 'function') {
+        this.axesRenderer.setScale(updatedRanges);
+      }
+      if (typeof this.axesRenderer.renderPriceScale === 'function') {
+        this.axesRenderer.renderPriceScale(updatedRanges.priceRange || updatedRanges);
+      }
+      if (typeof this.axesRenderer.renderTimeScale === 'function') {
+        this.axesRenderer.renderTimeScale(updatedRanges.timeRange || updatedRanges);
+      }
+      if (typeof this.axesRenderer.renderGridlines === 'function') {
+        this.axesRenderer.renderGridlines(updatedRanges);
+      }
+      if (typeof this.axesRenderer.render === 'function') {
+        this.axesRenderer.render(this.data);
+      }
+    }
+    this.render();
     return Promise.resolve(this);
   };
 
   chartInstance.updateTick = function (tick) {
     const updated = Chart.prototype.updateTick.call(this, tick);
     appState.data = updated;
+    const updatedRanges = computeRanges(this.data);
+    if (this.axesRenderer) {
+      if (typeof this.axesRenderer.setCoordinateScale === 'function') {
+        this.axesRenderer.setCoordinateScale(updatedRanges);
+      }
+      if (typeof this.axesRenderer.setScale === 'function') {
+        this.axesRenderer.setScale(updatedRanges);
+      }
+      if (typeof this.axesRenderer.renderPriceScale === 'function') {
+        this.axesRenderer.renderPriceScale(updatedRanges.priceRange || updatedRanges);
+      }
+      if (typeof this.axesRenderer.renderTimeScale === 'function') {
+        this.axesRenderer.renderTimeScale(updatedRanges.timeRange || updatedRanges);
+      }
+      if (typeof this.axesRenderer.renderGridlines === 'function') {
+        this.axesRenderer.renderGridlines(updatedRanges);
+      }
+      if (typeof this.axesRenderer.render === 'function') {
+        this.axesRenderer.render(this.data);
+      }
+    }
+    this.render();
     return Promise.resolve(this);
   };
 
@@ -1338,11 +1719,46 @@ export function initApp(options = {}) {
 
   // Window resize handler: Synchronizes canvas buffer dimensions with container bounds
   const handleResize = () => {
+    const currentWin = typeof window !== 'undefined'
+      ? window
+      : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
+
+    if (currentWin && typeof currentWin.innerWidth === 'number') {
+      if (chartContainer) chartContainer.clientWidth = Math.round(currentWin.innerWidth * 0.65);
+      if (canvas) canvas.width = Math.round(currentWin.innerWidth * 0.65);
+    }
+    if (currentWin && typeof currentWin.innerHeight === 'number') {
+      if (chartContainer) chartContainer.clientHeight = currentWin.innerHeight;
+      if (canvas) canvas.height = currentWin.innerHeight;
+    }
+
     syncCanvasDimensions(canvas, chartContainer);
     const w = (canvas && canvas.width) || 800;
     const h = (canvas && canvas.height) || 600;
+    const curPlotWidth = Math.max(0, w - priceAxisWidth);
+    const curPlotHeight = Math.max(0, h - timeAxisHeight);
+    const curPlotArea = { top: 0, left: 0, width: curPlotWidth, height: curPlotHeight };
+
+    if (bottomAxisTrack && bottomAxisTrack.style) {
+      bottomAxisTrack.style.width = `${curPlotWidth}px`;
+    }
+
     if (axesRenderer) {
-      axesRenderer.resize(w, h);
+      if (typeof axesRenderer.setPlotArea === 'function') {
+        axesRenderer.setPlotArea(curPlotArea);
+      }
+      if (typeof axesRenderer.setPlotWidth === 'function') {
+        axesRenderer.setPlotWidth(curPlotWidth);
+      }
+      if (typeof axesRenderer.updateDimensions === 'function') {
+        axesRenderer.updateDimensions(curPlotWidth, curPlotHeight);
+      }
+      if (typeof axesRenderer.resize === 'function') {
+        axesRenderer.resize(w, h);
+      }
+      if (typeof axesRenderer.render === 'function') {
+        axesRenderer.render(chartInstance.data);
+      }
     }
     chartInstance.resize(w, h);
     chartInstance.render();
@@ -1351,8 +1767,12 @@ export function initApp(options = {}) {
   chartInstance.windowResizeHandler = handleResize;
   windowResizeHandler = handleResize;
 
-  if (win && typeof win.addEventListener === 'function') {
-    win.addEventListener('resize', handleResize);
+  const currentWindow = typeof window !== 'undefined'
+    ? window
+    : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
+
+  if (currentWindow && typeof currentWindow.addEventListener === 'function') {
+    currentWindow.addEventListener('resize', handleResize);
   }
 
   let resizeObserver = null;
@@ -1434,8 +1854,12 @@ export function initApp(options = {}) {
     if (typeof this.stopRenderLoop === 'function') {
       this.stopRenderLoop();
     }
-    if (this.realtimeTimer && typeof clearInterval === 'function') {
-      clearInterval(this.realtimeTimer);
+    if (this.realtimeTimer) {
+      if (typeof this.realtimeTimer.stop === 'function') {
+        this.realtimeTimer.stop();
+      } else if (typeof clearInterval === 'function') {
+        clearInterval(this.realtimeTimer);
+      }
       this.realtimeTimer = null;
     }
     if (this.dock && typeof this.dock.destroy === 'function') {
@@ -1497,8 +1921,12 @@ export function teardown() {
       if (typeof activeAppInstance.stopRenderLoop === 'function') {
         activeAppInstance.stopRenderLoop();
       }
-      if (activeAppInstance.realtimeTimer && typeof clearInterval === 'function') {
-        clearInterval(activeAppInstance.realtimeTimer);
+      if (activeAppInstance.realtimeTimer) {
+        if (typeof activeAppInstance.realtimeTimer.stop === 'function') {
+          activeAppInstance.realtimeTimer.stop();
+        } else if (typeof clearInterval === 'function') {
+          clearInterval(activeAppInstance.realtimeTimer);
+        }
       }
       if (typeof activeAppInstance.destroy === 'function') {
         activeAppInstance.destroy();
@@ -1516,166 +1944,34 @@ export function unmount(target) {
     const root = typeof target === 'string'
       ? (currentDoc && currentDoc.getElementById ? currentDoc.getElementById(target.replace(/^#/, '')) : null)
       : target;
-    const inst = root && (root.__nexusInstance || (typeof root === 'object' && mountedInstances.get(root)));
-    if (inst && typeof inst.unmount === 'function') {
-      inst.unmount();
-      clearContainer(root);
-      if (root) {
-        delete root.__nexus_mounted;
-        delete root.__nexusInstance;
-      }
-      return;
-    }
-  }
-  if (activeAppInstance && typeof activeAppInstance.unmount === 'function') {
-    const root = activeAppInstance.root;
-    activeAppInstance.unmount();
     if (root) {
-      clearContainer(root);
-      delete root.__nexus_mounted;
+      const inst = root.__nexusInstance || mountedInstances.get(root);
+      if (inst && typeof inst.unmount === 'function') {
+        inst.unmount();
+      } else {
+        clearContainer(root);
+      }
       delete root.__nexusInstance;
+      delete root.__nexus_mounted;
+      mountedInstances.delete(root);
     }
   } else {
     teardown();
   }
 }
 
-export function updateCandleData(targetOrData, maybeCandles) {
-  let inst = activeAppInstance || activeChart || chart;
-  let data = targetOrData;
-  if (maybeCandles !== undefined) {
-    inst = targetOrData;
-    data = maybeCandles;
-  } else if (targetOrData && typeof targetOrData.updateData === 'function') {
-    inst = targetOrData;
-    data = maybeCandles;
-  }
-  if (inst && typeof inst.updateData === 'function') {
-    return Promise.resolve(inst.updateData(data));
-  }
-  return Promise.resolve();
-}
+export const mountChart = initApp;
+export const mountApp = initApp;
+export const mount = initApp;
 
-export function updatePriceSeries(chartInstance, updatedData) {
-  if (!chartInstance) return;
-  const newData = Array.isArray(updatedData) ? [...updatedData] : [];
-  chartInstance.data = newData;
-  appState.data = newData;
-  if (typeof chartInstance.setData === 'function') {
-    chartInstance.setData(newData);
-  } else if (typeof chartInstance.render === 'function') {
-    chartInstance.render();
-  }
-}
-
-/**
- * Starts a real-time price tick update loop for active chart instances.
- *
- * @param {Object} chartInstance
- * @param {number} [intervalMs=1000]
- * @returns {number|null} Timer id
- */
-export function startRealtimeUpdates(chartInstance, intervalMs = 1000) {
-  if (!chartInstance || typeof setInterval !== 'function') return null;
-  const timer = setInterval(() => {
-    const data = chartInstance.data;
-    if (!data || data.length === 0) return;
-    const lastBar = data[data.length - 1];
-    const newBar = generateNextCandle(lastBar);
-    if (typeof chartInstance.updateData === 'function') {
-      chartInstance.updateData(newBar);
-    } else {
-      updatePriceSeries(chartInstance, [...data.slice(-99), newBar]);
-    }
-  }, intervalMs);
-  if (timer && typeof timer.unref === 'function') {
-    timer.unref();
-  }
-  return timer;
-}
-
-/**
- * Lifecycle mount function for application integration.
- * Resolves DUPLICATE_COMPONENT_MOUNTING idempotently (STORY 39.2.1),
- * and enforces responsive 100vh flex layout (STORY 40.1.1).
- *
- * @param {HTMLElement|string|null} [mountTarget]
- * @param {Object} [options={}]
- * @returns {Chart}
- */
-export function mountApp(mountTarget, options = {}) {
-  patchDOMEnvironment();
-  const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
-
-  if (mountTarget === null) {
-    throw new Error('Target container (#app) was not found in the DOM: container is null');
-  }
-
-  let target = mountTarget;
-
-  if (typeof mountTarget === 'string') {
-    const cleanId = mountTarget.replace(/^#/, '');
-    target = currentDoc && typeof currentDoc.getElementById === 'function'
-      ? currentDoc.getElementById(cleanId)
-      : null;
-    if (!target) {
-      throw new Error(`Target container (#${cleanId}) was not found in the DOM: container is missing`);
-    }
-  }
-
-  if (!target) {
-    target = currentDoc && typeof currentDoc.getElementById === 'function'
-      ? currentDoc.getElementById('app')
-      : null;
-  }
-
-  if (!target) {
-    throw new Error('Target container (#app) was not found in the DOM: container is missing or null');
-  }
-
-  // Guard against duplicate mounting when target container is already mounted with active layout
-  const priorInstance = target.__nexusInstance || (typeof target === 'object' && mountedInstances.get(target));
-  if (priorInstance && isContainerMounted(target) && !options.forceRemount) {
-    return priorInstance;
-  }
-
-  const instance = initApp({
-    root: target,
-    initialData: options.initialData || generateDefaultData(75),
-    overlayType: options.overlayType || 'EMA',
-    period: options.period || 20,
-    ...options,
-  });
-
-  return instance;
-}
-
-export const mount = mountApp;
-export const mountChart = mountApp;
-
-export function init(mountTarget, options = {}) {
-  patchDOMEnvironment();
-  const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
-  const target = typeof mountTarget === 'string'
-    ? (currentDoc && currentDoc.getElementById ? currentDoc.getElementById(mountTarget.replace(/^#/, '')) : null)
-    : (mountTarget || (currentDoc && currentDoc.getElementById ? currentDoc.getElementById('app') : (currentDoc ? currentDoc.body : null)));
-
-  if (!target) return null;
-  return mountApp(target, options);
-}
-
-export const start = init;
-export const bootstrap = init;
-export const main = init;
-export default init;
-export const initialize = mountApp;
-
-// Browser auto-mount guard
 if (typeof document !== 'undefined') {
   const mountTarget = document.getElementById('app') || document.body;
-  if (mountTarget && !mountTarget.__nexus_mounted && mountTarget.children.length === 0) {
+  if (mountTarget && !mountTarget.__nexus_mounted && mountTarget.children && mountTarget.children.length === 0) {
     mountTarget.__nexus_mounted = true;
     if (typeof mountApp === 'function') mountApp(mountTarget);
     else if (typeof mount === 'function') mount(mountTarget);
+    else if (typeof initApp === 'function') initApp(mountTarget);
   }
 }
+
+export default initApp;

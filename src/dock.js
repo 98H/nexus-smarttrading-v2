@@ -30,6 +30,242 @@ if (typeof Set !== 'undefined') {
 }
 
 /**
+ * Creates a polyfilled classList object synchronized with the target element's className.
+ *
+ * @param {HTMLElement|Object} el
+ * @returns {Object} classList interface
+ */
+function createClassListPolyfill(el) {
+  return {
+    add(...tokens) {
+      const current = (el.className || '').split(/\s+/).filter(Boolean);
+      let changed = false;
+      for (const t of tokens) {
+        if (t && !current.includes(t)) {
+          current.push(t);
+          changed = true;
+        }
+      }
+      if (changed) {
+        el.className = current.join(' ');
+        if (typeof el.setAttribute === 'function') el.setAttribute('class', el.className);
+      }
+    },
+    remove(...tokens) {
+      const current = (el.className || '').split(/\s+/).filter(Boolean);
+      const filtered = current.filter((c) => !tokens.includes(c));
+      if (filtered.length !== current.length) {
+        el.className = filtered.join(' ');
+        if (typeof el.setAttribute === 'function') el.setAttribute('class', el.className);
+      }
+    },
+    delete(...tokens) {
+      this.remove(...tokens);
+    },
+    contains(token) {
+      const current = (el.className || '').split(/\s+/).filter(Boolean);
+      return current.includes(token);
+    },
+    has(token) {
+      return this.contains(token);
+    },
+    toggle(token, force) {
+      if (force === true) {
+        this.add(token);
+        return true;
+      } else if (force === false) {
+        this.remove(token);
+        return false;
+      }
+      if (this.contains(token)) {
+        this.remove(token);
+        return false;
+      } else {
+        this.add(token);
+        return true;
+      }
+    },
+  };
+}
+
+/**
+ * Patches a plain mock object with standard DOM methods without modifying native Element instances.
+ *
+ * @param {Object} el
+ * @returns {Object}
+ */
+export function patchMockElement(el) {
+  if (!el || typeof el !== 'object') return el;
+  if (typeof Element !== 'undefined' && el instanceof Element) return el;
+
+  if (!Array.isArray(el.children)) {
+    if (!el.nodeType) el.children = [];
+  }
+
+  if (!el.style || typeof el.style !== 'object') {
+    el.style = {};
+  }
+
+  if (typeof el.appendChild !== 'function') {
+    el.appendChild = function (child) {
+      if (child) {
+        if (child.parentNode && typeof child.parentNode.removeChild === 'function') {
+          try { child.parentNode.removeChild(child); } catch (_) {}
+        }
+        child.parentNode = this;
+        child.parentElement = this;
+        if (Array.isArray(this.children)) this.children.push(child);
+      }
+      return child;
+    };
+  }
+
+  if (typeof el.removeChild !== 'function') {
+    el.removeChild = function (child) {
+      if (Array.isArray(this.children)) {
+        const idx = this.children.indexOf(child);
+        if (idx !== -1) {
+          child.parentNode = null;
+          child.parentElement = null;
+          this.children.splice(idx, 1);
+        }
+      }
+      return child;
+    };
+  }
+
+  if (typeof el.replaceChildren !== 'function') {
+    el.replaceChildren = function (...newChildren) {
+      while (this.children && this.children.length > 0) {
+        this.removeChild(this.children[0]);
+      }
+      for (const c of newChildren) {
+        if (c) this.appendChild(c);
+      }
+    };
+  }
+
+  if (typeof el.insertBefore !== 'function') {
+    el.insertBefore = function (newChild, refChild) {
+      if (!newChild) return newChild;
+      if (newChild.parentNode && typeof newChild.parentNode.removeChild === 'function') {
+        try { newChild.parentNode.removeChild(newChild); } catch (_) {}
+      }
+      newChild.parentNode = this;
+      newChild.parentElement = this;
+      if (!Array.isArray(this.children)) this.children = [];
+      const idx = refChild ? this.children.indexOf(refChild) : -1;
+      if (idx !== -1) {
+        this.children.splice(idx, 0, newChild);
+      } else {
+        this.appendChild(newChild);
+      }
+      return newChild;
+    };
+  }
+
+  if (typeof el.setAttribute !== 'function') {
+    el.setAttribute = function (name, value) {
+      if (name === 'style') {
+        if (!this.style || typeof this.style !== 'object') {
+          this.style = {};
+        }
+        if (typeof value === 'string') {
+          this.style.cssText = value;
+          const declarations = value.split(';');
+          for (let i = 0; i < declarations.length; i++) {
+            const rule = declarations[i];
+            const colonIdx = rule.indexOf(':');
+            if (colonIdx !== -1) {
+              const prop = rule.slice(0, colonIdx).trim();
+              const val = rule.slice(colonIdx + 1).trim();
+              if (prop) {
+                const camelProp = prop.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+                this.style[camelProp] = val;
+                this.style[prop] = val;
+              }
+            }
+          }
+        } else if (typeof value === 'object' && value !== null) {
+          Object.assign(this.style, value);
+        }
+      } else {
+        this[name] = String(value);
+      }
+      if (name === 'id') this.id = String(value);
+      if (name === 'class' || name === 'className') this.className = String(value);
+      if (!this.attributes) this.attributes = new Map();
+      this.attributes.set(name, String(value));
+    };
+  }
+
+  if (typeof el.getAttribute !== 'function') {
+    el.getAttribute = function (name) {
+      if (name === 'id') return this.id || null;
+      if (name === 'class' || name === 'className') return this.className || null;
+      if (name === 'style') {
+        return (this.style && typeof this.style === 'object' && this.style.cssText) || (this.attributes && this.attributes.get('style')) || null;
+      }
+      if (this.attributes && this.attributes.has(name)) return this.attributes.get(name);
+      return this[name] !== undefined && this[name] !== null ? String(this[name]) : null;
+    };
+  }
+
+  if (typeof el.hasAttribute !== 'function') {
+    el.hasAttribute = function (name) {
+      if (name === 'id') return Boolean(this.id);
+      if (name === 'class' || name === 'className') return Boolean(this.className);
+      if (this.attributes && this.attributes.has(name)) return true;
+      return this[name] !== undefined && this[name] !== null;
+    };
+  }
+
+  if (typeof el.removeAttribute !== 'function') {
+    el.removeAttribute = function (name) {
+      delete this[name];
+      if (this.attributes) this.attributes.delete(name);
+      if (name === 'id') this.id = '';
+      if (name === 'class' || name === 'className') this.className = '';
+    };
+  }
+
+  if (typeof el.addEventListener !== 'function') {
+    el.addEventListener = function (type, listener) {
+      if (!this._listeners) this._listeners = new Map();
+      if (!this._listeners.has(type)) this._listeners.set(type, new Set());
+      this._listeners.get(type).add(listener);
+    };
+  }
+
+  if (typeof el.removeEventListener !== 'function') {
+    el.removeEventListener = function (type, listener) {
+      if (this._listeners && this._listeners.has(type)) {
+        this._listeners.get(type).delete(listener);
+      }
+    };
+  }
+
+  if (typeof el.dispatchEvent !== 'function') {
+    el.dispatchEvent = function (event) {
+      if (this._listeners && event && event.type && this._listeners.has(event.type)) {
+        for (const l of this._listeners.get(event.type)) {
+          try {
+            l.call(this, event);
+          } catch (_) {}
+        }
+      }
+      return true;
+    };
+  }
+
+  if (!el.classList) {
+    el.classList = createClassListPolyfill(el);
+  }
+
+  return el;
+}
+
+/**
  * Adds CSS class safely across native and mock DOM environments.
  *
  * @param {HTMLElement|Object} el
@@ -80,6 +316,7 @@ function removeClass(el, cls) {
  */
 export function applyDarkTheme(el, isButton = true) {
   if (!el) return;
+  patchMockElement(el);
   const base = isButton ? `${CONTROL_THEME_STYLE} cursor: pointer;` : CONTROL_THEME_STYLE;
   if (typeof el.setAttribute === 'function') {
     el.setAttribute('style', base);
@@ -108,6 +345,7 @@ export function injectDockStyles(doc) {
   if (doc.getElementById && doc.getElementById(styleId)) return;
   try {
     const style = doc.createElement('style');
+    patchMockElement(style);
     style.id = styleId;
     style.textContent = `
       #auxiliary-dock button, #auxiliary-dock input, #auxiliary-dock select,
@@ -157,6 +395,19 @@ export function patchMockDOM(element) {
     }
   }
 
+  const doc = typeof document !== 'undefined' ? document : (globalThis.document || null);
+  if (doc && typeof doc.createElement === 'function' && !doc.__nexus_dock_patched_create) {
+    const origCreate = doc.createElement.bind(doc);
+    doc.createElement = function (tag) {
+      const el = origCreate(tag);
+      if (el && !(typeof Element !== 'undefined' && el instanceof Element)) {
+        patchMockElement(el);
+      }
+      return el;
+    };
+    doc.__nexus_dock_patched_create = true;
+  }
+
   const target =
     element ||
     (typeof document !== 'undefined'
@@ -168,6 +419,7 @@ export function patchMockDOM(element) {
       : null);
 
   if (!target) return;
+  patchMockElement(target);
   const proto = Object.getPrototypeOf(target);
   if (!proto || proto === Object.prototype || proto.__nexusPatchedQSA) return;
 
@@ -244,67 +496,10 @@ function createEl(tag, attrs = {}, children = []) {
       parentNode: null,
       attributes: new Map(),
       style: {},
-      classList: {
-        _classes: new Set(),
-        add: (...cls) => cls.forEach((c) => el.classList._classes.add(c)),
-        remove: (...cls) => cls.forEach((c) => el.classList._classes.delete(c)),
-        delete: (...cls) => cls.forEach((c) => el.classList._classes.delete(c)),
-        has: (c) => el.classList._classes.has(c),
-        contains: (c) => el.classList._classes.has(c),
-      },
-      setAttribute(name, val) {
-        this.attributes.set(name, String(val));
-        if (name === 'id') this.id = String(val);
-        if (name === 'class') {
-          this.className = String(val);
-          this.classList._classes = new Set(String(val).split(/\s+/).filter(Boolean));
-        }
-      },
-      getAttribute(name) {
-        return this.attributes.get(name) ?? null;
-      },
-      hasAttribute(name) {
-        return this.attributes.has(name);
-      },
-      removeAttribute(name) {
-        this.attributes.delete(name);
-        if (name === 'id') this.id = '';
-        if (name === 'class') {
-          this.className = '';
-          this.classList._classes.clear();
-        }
-      },
-      appendChild(child) {
-        if (child.parentNode && typeof child.parentNode.removeChild === 'function') {
-          child.parentNode.removeChild(child);
-        }
-        child.parentNode = this;
-        this.children.push(child);
-        return child;
-      },
-      removeChild(child) {
-        const idx = this.children.indexOf(child);
-        if (idx !== -1) {
-          child.parentNode = null;
-          this.children.splice(idx, 1);
-        }
-        return child;
-      },
-      replaceChildren(...newChildren) {
-        while (this.children.length > 0) {
-          const c = this.children[0];
-          c.parentNode = null;
-          this.children.shift();
-        }
-        newChildren.forEach((child) => this.appendChild(child));
-      },
-      addEventListener() {},
-      removeEventListener() {},
-      dispatchEvent() {
-        return true;
-      },
     };
   }
+
+  patchMockElement(el);
 
   if (attrs) {
     for (const [key, value] of Object.entries(attrs)) {
@@ -325,6 +520,7 @@ function createEl(tag, attrs = {}, children = []) {
             el.setAttribute('style', cssText);
           }
         } else {
+          if (!el.style) el.style = {};
           if (typeof el.setAttribute === 'function') {
             el.setAttribute('style', String(value));
           }
@@ -352,7 +548,9 @@ function createEl(tag, attrs = {}, children = []) {
         if (typeof child === 'string') {
           const doc = typeof document !== 'undefined' ? document : globalThis.document;
           if (doc && typeof doc.createTextNode === 'function') {
-            el.appendChild(doc.createTextNode(child));
+            if (typeof el.appendChild === 'function') {
+              el.appendChild(doc.createTextNode(child));
+            }
           } else {
             el.textContent = (el.textContent || '') + child;
           }
@@ -614,7 +812,9 @@ export class AuxiliaryDock {
       textContent: this.collapsed ? '◀' : '▶',
     });
     applyDarkTheme(this.toggleButton, true);
-    this.toggleButton.addEventListener('click', () => this.toggleCollapse());
+    if (typeof this.toggleButton.addEventListener === 'function') {
+      this.toggleButton.addEventListener('click', () => this.toggleCollapse());
+    }
 
     if (typeof header.appendChild === 'function') {
       header.appendChild(this.titleElement);
@@ -672,10 +872,12 @@ export class AuxiliaryDock {
         tabBtn.style.fontWeight = '600';
       }
 
-      tabBtn.addEventListener('click', (e) => {
-        if (e && typeof e.preventDefault === 'function') e.preventDefault();
-        this.switchTab(def.id);
-      });
+      if (typeof tabBtn.addEventListener === 'function') {
+        tabBtn.addEventListener('click', (e) => {
+          if (e && typeof e.preventDefault === 'function') e.preventDefault();
+          this.switchTab(def.id);
+        });
+      }
 
       this.tabButtons.set(def.id, tabBtn);
 
