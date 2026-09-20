@@ -79,7 +79,7 @@ class MockHTMLElement {
 
   querySelector(selector) {
     if (selector === 'canvas') {
-      return this.children.find((c) => c.tagName === 'CANVAS') || null;
+      return Array.from(this.children).find((c) => c.tagName === 'CANVAS') || null;
     }
     return null;
   }
@@ -297,7 +297,7 @@ describe('Feature: STORY 5.3.1: Resolve UNRESPONSIVE_CANVAS_PAN (DF-GESTURE-01)'
         mainModule.mountChart(appContainer);
       }
 
-      const mountedCanvas = appContainer.children.find((c) => c.tagName === 'CANVAS');
+      const mountedCanvas = Array.from(appContainer.children).find((c) => c.tagName === 'CANVAS');
       assert.ok(mountedCanvas, 'Canvas must be directly mounted into document.getElementById("app")');
 
       // Verify pan gesture event listeners are attached to the mounted canvas
