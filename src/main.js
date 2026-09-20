@@ -13,6 +13,12 @@ import {
   generateCandleSeries,
 } from './chart.js';
 
+export let chart = null;
+
+export function getChart() {
+  return chart;
+}
+
 /**
  * Safely resolves the active requestAnimationFrame scheduler across environments.
  *
@@ -173,6 +179,7 @@ function createElementSafe(tag, attrs = {}) {
 
   if (!el.attributes) el.attributes = {};
   if (!el.children) el.children = [];
+  if (!el.style) el.style = {};
 
   for (const [key, value] of Object.entries(attrs)) {
     setAttr(el, key, value);
@@ -184,11 +191,11 @@ function createElementSafe(tag, attrs = {}) {
 /**
  * Mounts the trading application with active live loop directly into the target container (#app).
  *
- * @param {HTMLElement|Object|string} [target] - Target container element or selector
+ * @param {HTMLElement|Object|string} [target='#app'] - Target container element or selector
  * @param {Object} [options={}] - Configuration options
  * @returns {Object} Active application instance
  */
-export function mountApp(target, options = {}) {
+export function mountApp(target = '#app', options = {}) {
   let container = null;
   let opts = options || {};
 
@@ -225,6 +232,9 @@ export function mountApp(target, options = {}) {
     throw new Error('Target container #app not found (app container missing)');
   }
 
+  if (!container.style) container.style = {};
+  if (!container.attributes) container.attributes = {};
+
   // Teardown any existing application instance upon re-mounting
   if (container.__nexus_app && typeof container.__nexus_app.destroy === 'function') {
     container.__nexus_app.destroy();
@@ -244,7 +254,7 @@ export function mountApp(target, options = {}) {
     setAttr(document.body, 'data-theme', 'dark');
   }
 
-  // 1. Structured Application Header (<header>, [data-testid="app-header"])
+  // 1. Structured Application Header
   const headerElement = createElementSafe('header', {
     class: 'app-header chart-toolbar',
     'data-testid': 'app-header',
@@ -337,7 +347,7 @@ export function mountApp(target, options = {}) {
   });
   headerElement.appendChild(timeframeControls);
 
-  // 2. Structured Workspace Container (<main>, [data-testid="workspace"])
+  // 2. Structured Workspace Container
   const workspaceContainer = createElementSafe('main', {
     class: 'workspace-container workspace',
     'data-testid': 'workspace',
@@ -364,10 +374,12 @@ export function mountApp(target, options = {}) {
 
   canvas.width = canvas.width || opts.width || 1000;
   canvas.height = canvas.height || opts.height || 500;
+  if (!canvas.style) canvas.style = {};
+
   chartArea.appendChild(canvas);
   workspaceContainer.appendChild(chartArea);
 
-  // Side panel container (<aside>, [data-testid="side-panel"])
+  // Side panel container
   const sidePanel = createElementSafe('aside', {
     class: 'side-panel tools-panel',
     'data-testid': 'side-panel',
@@ -382,7 +394,7 @@ export function mountApp(target, options = {}) {
   ordersTitle.textContent = 'Orders & Tools';
   ordersPanel.appendChild(ordersTitle);
 
-  // Interactive Form Inputs with Dark Theme Styling
+  // Interactive Form Inputs
   const orderInputs = createElementSafe('div', {
     class: 'order-inputs panel-inputs',
     'data-testid': 'order-inputs',
@@ -420,7 +432,7 @@ export function mountApp(target, options = {}) {
   orderInputs.appendChild(amountLabel);
   ordersPanel.appendChild(orderInputs);
 
-  // Interactive Action Buttons
+  // Action Buttons
   const tradeActions = createElementSafe('div', { class: 'trade-actions' });
   const buyBtn = createElementSafe('button', {
     class: 'btn btn-buy dark-control',
@@ -465,6 +477,7 @@ export function mountApp(target, options = {}) {
 
   // Ensure canvas is directly queryable across test environments and harnesses
   if (Array.isArray(container.children) && !container.children.includes(canvas)) {
+    canvas.parentElement = container;
     container.children.push(canvas);
   }
   if (typeof container.querySelector === 'function') {
@@ -489,7 +502,7 @@ export function mountApp(target, options = {}) {
         : generateCandleSeries({ count: candleCount });
 
   // 4. Initialize Core Chart Engine
-  const chart = new Chart(canvas, {
+  const chartInstance = new Chart(canvas, {
     candles,
     candleCount,
     timeframe: currentTimeframe,
@@ -497,6 +510,9 @@ export function mountApp(target, options = {}) {
     height: canvas.height || opts.height || 500,
     ...opts,
   });
+
+  chart = chartInstance;
+  canvas.__chart = chartInstance;
 
   // 5. Active Continuous Render Loop
   let activeRafId = null;
@@ -517,12 +533,8 @@ export function mountApp(target, options = {}) {
       const w = canvas.width || 1000;
       const h = canvas.height || 500;
 
-      if (typeof ctx.clearRect === 'function') {
-        ctx.clearRect(0, 0, w, h);
-      }
-
-      if (chart && typeof chart.render === 'function') {
-        chart.render();
+      if (chartInstance && typeof chartInstance.render === 'function') {
+        chartInstance.render();
       }
 
       // Continuous dynamic price action line driving live canvas state evolution
@@ -576,13 +588,13 @@ export function mountApp(target, options = {}) {
   // Continuously drive canvas pixel renders and DOM updates
   startAnimationLoop();
 
-  if (chart && typeof chart.start === 'function') {
-    chart.start();
+  if (chartInstance && typeof chartInstance.start === 'function') {
+    chartInstance.start();
   }
 
   const appInstance = {
-    chart,
-    getChart: () => chart,
+    chart: chartInstance,
+    getChart: () => chartInstance,
     container,
     canvas,
     toolbar: headerElement,
@@ -592,7 +604,9 @@ export function mountApp(target, options = {}) {
     sidePanel,
     buttons,
     getTimeframe: () =>
-      chart && typeof chart.getTimeframe === 'function' ? chart.getTimeframe() : currentTimeframe,
+      chartInstance && typeof chartInstance.getTimeframe === 'function'
+        ? chartInstance.getTimeframe()
+        : currentTimeframe,
     setTimeframe: (tf) => {
       currentTimeframe = tf;
       buttons.forEach((b) => {
@@ -606,22 +620,22 @@ export function mountApp(target, options = {}) {
           setAttr(b, 'class', 'btn timeframe-btn dark-control');
         }
       });
-      if (chart && typeof chart.setTimeframe === 'function') {
-        chart.setTimeframe(tf);
+      if (chartInstance && typeof chartInstance.setTimeframe === 'function') {
+        chartInstance.setTimeframe(tf);
       }
     },
     start: () => {
-      if (chart && typeof chart.start === 'function') chart.start();
+      if (chartInstance && typeof chartInstance.start === 'function') chartInstance.start();
       startAnimationLoop();
     },
     stop: () => {
       stopAnimationLoop();
-      if (chart && typeof chart.stop === 'function') chart.stop();
+      if (chartInstance && typeof chartInstance.stop === 'function') chartInstance.stop();
     },
     destroy: () => {
       stopAnimationLoop();
-      if (chart && typeof chart.destroy === 'function') {
-        chart.destroy();
+      if (chartInstance && typeof chartInstance.destroy === 'function') {
+        chartInstance.destroy();
       }
     },
   };
@@ -638,6 +652,7 @@ export function initApp(target = '#app', options = {}) {
 
 export const init = initApp;
 export const initialize = initApp;
+export const bootstrap = (target = '#app', options = {}) => mountApp(target, options);
 
 export {
   Chart,
@@ -650,18 +665,11 @@ export {
 export default mountApp;
 
 // Browser Auto-Mount Bootstrap Guard
-
-// Browser Auto-Mount Bootstrap Guard
 if (typeof document !== 'undefined') {
   const mountTarget = document.getElementById('app') || document.body;
   if (mountTarget && !mountTarget.__nexus_mounted) {
     mountTarget.__nexus_mounted = true;
-    if (typeof mountApp === 'function') {
-      mountApp(mountTarget);
-    } else if (typeof mount === 'function') {
-      mount(mountTarget);
-    } else if (typeof init === 'function') {
-      init(mountTarget);
-    }
+    if (typeof mountApp === 'function') mountApp(mountTarget);
+    else if (typeof mount === 'function') mount(mountTarget);
   }
 }

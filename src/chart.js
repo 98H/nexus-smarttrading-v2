@@ -1,6 +1,6 @@
 /**
  * SmartTrading-V2 — Candlestick Chart Engine & Timeseries Aggregation
- * Implements viewport sector coverage, comprehensive data series generation,
+ * Implements viewport sector coverage, interactive pan gestures,
  * and high-density financial charting across horizontal canvas sectors.
  */
 
@@ -48,7 +48,7 @@ export function generateCandleSeries(options = {}) {
     count = options.count;
   }
 
-  // Enforce STORY 1.2.1 invariant: comprehensive series between 50 and 100 points
+  // Enforce comprehensive series between 50 and 100 points
   if (count < 50) count = 50;
   if (count > 100) count = 100;
 
@@ -137,7 +137,7 @@ export function aggregateCandles(candles, timeframe) {
 
 /**
  * Interactive HTML5 Canvas Candlestick Chart Engine.
- * Manages rendering, scaling, viewport sector coverage, and real-time updates.
+ * Manages rendering, scaling, viewport panning, and real-time updates.
  */
 export class Chart {
   constructor(canvasOrOptions, maybeOptions = {}) {
@@ -159,12 +159,15 @@ export class Chart {
     this.timeframe = options.timeframe || '1m';
     this.sectorCount = options.sectorCount || 4;
 
-    const candleCount = options.candleCount || (options.candles ? options.candles.length : 75);
+    const inputData =
+      (Array.isArray(options.candles) && options.candles.length > 0 && options.candles) ||
+      (Array.isArray(options.data) && options.data.length > 0 && options.data) ||
+      null;
+
+    const candleCount = options.candleCount || (inputData ? inputData.length : 75);
     this.candleCount = candleCount;
-    this.candles =
-      options.candles && Array.isArray(options.candles) && options.candles.length > 0
-        ? options.candles
-        : generateCandleSeries({ count: candleCount });
+    this.candles = inputData ? [...inputData] : generateCandleSeries({ count: candleCount });
+    this.data = this.candles;
 
     this.theme = {
       upColor: '#26a69a',
@@ -173,35 +176,86 @@ export class Chart {
       ...(options.theme || {}),
     };
 
+    // Pan state and viewport coordinates
+    this.isPanning = false;
+    const initX = options.offsetX ?? options.viewportOffset?.x ?? options.viewport?.x ?? 0;
+    const initY = options.offsetY ?? options.viewportOffset?.y ?? options.viewport?.y ?? 0;
+    this.viewportOffset = { x: initX, y: initY };
+    this._panStart = { x: 0, y: 0 };
+    this._initialOffset = { x: initX, y: initY };
+
     this._intervalId = null;
     this._listeners = [];
 
     this._setupInteractivity();
 
-    if (options.autoRender) {
+    if (options.autoRender !== false) {
       this.render();
     }
+  }
+
+  getViewportOffset() {
+    return { x: this.viewportOffset.x, y: this.viewportOffset.y };
+  }
+
+  get offsetX() {
+    return this.viewportOffset.x;
+  }
+
+  set offsetX(val) {
+    this.viewportOffset.x = val;
+  }
+
+  get offsetY() {
+    return this.viewportOffset.y;
+  }
+
+  set offsetY(val) {
+    this.viewportOffset.y = val;
+  }
+
+  get viewport() {
+    return {
+      x: this.viewportOffset.x,
+      y: this.viewportOffset.y,
+      offsetX: this.viewportOffset.x,
+      offsetY: this.viewportOffset.y,
+    };
   }
 
   _setupInteractivity() {
     if (!this.canvas || typeof this.canvas.addEventListener !== 'function') return;
 
-    let isDragging = false;
-    let startX = 0;
-
     const onMouseDown = (e) => {
-      isDragging = true;
-      startX = e.clientX || e.x || 0;
+      if (e.button !== undefined && e.button !== 0) return;
+      this.isPanning = true;
+      const clientX = e.clientX ?? e.x ?? 0;
+      const clientY = e.clientY ?? e.y ?? 0;
+      this._panStart = { x: clientX, y: clientY };
+      this._initialOffset = { x: this.viewportOffset.x, y: this.viewportOffset.y };
     };
 
     const onMouseMove = (e) => {
-      if (!isDragging) return;
-      const currentX = e.clientX || e.x || 0;
-      startX = currentX;
+      if (!this.isPanning) return;
+      if (e.buttons !== undefined && e.buttons === 0) {
+        this.isPanning = false;
+        return;
+      }
+      const clientX = e.clientX ?? e.x ?? 0;
+      const clientY = e.clientY ?? e.y ?? 0;
+      const dx = clientX - this._panStart.x;
+      const dy = clientY - this._panStart.y;
+      this.viewportOffset.x = this._initialOffset.x + dx;
+      this.viewportOffset.y = this._initialOffset.y + dy;
+      this.render();
     };
 
     const onMouseUp = () => {
-      isDragging = false;
+      this.isPanning = false;
+    };
+
+    const onMouseLeave = () => {
+      this.isPanning = false;
     };
 
     const onWheel = (e) => {
@@ -211,12 +265,14 @@ export class Chart {
     this.canvas.addEventListener('mousedown', onMouseDown);
     this.canvas.addEventListener('mousemove', onMouseMove);
     this.canvas.addEventListener('mouseup', onMouseUp);
+    this.canvas.addEventListener('mouseleave', onMouseLeave);
     this.canvas.addEventListener('wheel', onWheel);
 
     this._listeners = [
       { type: 'mousedown', handler: onMouseDown },
       { type: 'mousemove', handler: onMouseMove },
       { type: 'mouseup', handler: onMouseUp },
+      { type: 'mouseleave', handler: onMouseLeave },
       { type: 'wheel', handler: onWheel },
     ];
   }
@@ -239,6 +295,7 @@ export class Chart {
     if (this.candles.length < 50) {
       this.candles = generateCandleSeries({ count: this.candleCount || 75 });
     }
+    this.data = this.candles;
     this.render();
   }
 
@@ -263,6 +320,7 @@ export class Chart {
   destroy() {
     this.stop();
     this._removeInteractivity();
+    this.isPanning = false;
   }
 
   tick() {
@@ -276,8 +334,7 @@ export class Chart {
   }
 
   /**
-   * Renders the candlestick series to the active canvas.
-   * Satisfies STORY 1.2.1: Spans full horizontal viewport width without sparse gaps.
+   * Renders the candlestick series to the active canvas with applied viewport offset.
    */
   render() {
     if (!this.canvas || typeof this.canvas.getContext !== 'function') return;
@@ -287,11 +344,24 @@ export class Chart {
     const width = this.canvas.width || 1000;
     const height = this.canvas.height || 500;
 
-    ctx.clearRect(0, 0, width, height);
+    if (typeof ctx.clearRect === 'function') {
+      ctx.clearRect(0, 0, width, height);
+    }
+
+    if (typeof ctx.save === 'function') {
+      ctx.save();
+    }
+
+    if (typeof ctx.translate === 'function') {
+      ctx.translate(this.viewportOffset.x, this.viewportOffset.y);
+    }
 
     const candles = this.candles;
     const n = candles ? candles.length : 0;
-    if (n === 0) return;
+    if (n === 0) {
+      if (typeof ctx.restore === 'function') ctx.restore();
+      return;
+    }
 
     let minPrice = Infinity;
     let maxPrice = -Infinity;
@@ -317,7 +387,6 @@ export class Chart {
 
     const getY = (price) => marginTop + plotHeight * (1 - (price - effectiveMin) / effectiveRange);
 
-    // Span from near-left margin (< 0.10 * width) to near-right margin (> 0.90 * width)
     const leftMargin = width * 0.02;
     const rightMargin = width * 0.04;
     const availableWidth = width - leftMargin - rightMargin;
@@ -343,13 +412,19 @@ export class Chart {
       ctx.fillStyle = color;
 
       // Draw high/low wick
-      ctx.beginPath();
-      ctx.moveTo(candleCenterX, Math.round(highY));
-      ctx.lineTo(candleCenterX, Math.round(lowY));
-      ctx.stroke();
+      if (typeof ctx.beginPath === 'function') ctx.beginPath();
+      if (typeof ctx.moveTo === 'function') ctx.moveTo(candleCenterX, Math.round(highY));
+      if (typeof ctx.lineTo === 'function') ctx.lineTo(candleCenterX, Math.round(lowY));
+      if (typeof ctx.stroke === 'function') ctx.stroke();
 
       // Draw candle body
-      ctx.fillRect(candleX, Math.round(bodyTop), candleWidth, Math.round(bodyHeight));
+      if (typeof ctx.fillRect === 'function') {
+        ctx.fillRect(candleX, Math.round(bodyTop), candleWidth, Math.round(bodyHeight));
+      }
+    }
+
+    if (typeof ctx.restore === 'function') {
+      ctx.restore();
     }
   }
 }
