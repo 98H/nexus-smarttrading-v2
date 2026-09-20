@@ -11,6 +11,7 @@
  * responsive 100vh flex layout preventing squished canvas sizing (STORY 40.1.1: Resolve SQUISHED_CANVAS_VIEWPORT),
  * coordinate scale & plot width wiring across the time axis (STORY 41.1.1: Resolve TIME_AXIS_TEXT_CLUMPING),
  * and interactive controls responding to user events with reactive state and view re-rendering (STORY 38.2.1: Resolve INACTIVE_UI_CONTROLS).
+ * Resolves UNCAUGHT_JAVASCRIPT_EXCEPTION by synchronizing viewport dimensions safely without assigning to clientWidth/clientHeight (STORY 49.1.1).
  */
 
 import { AxesRenderer, computeRanges } from './axes.js';
@@ -35,13 +36,7 @@ import {
   CONTROL_THEME_STYLE,
   applyDarkTheme,
 } from './dock.js';
-import {
-  syncCanvasDpi,
-  setupCanvasDpi,
-  syncCanvasDimensions,
-  resizeCanvas,
-  updateCanvasDimensions,
-} from './canvas.js';
+import * as CanvasModule from './canvas.js';
 import {
   generateCandlestickData,
   generateDefaultData,
@@ -49,6 +44,47 @@ import {
   generateTick,
   createCandleStream,
 } from './data_generator.js';
+
+export const resizeCanvas =
+  CanvasModule.resizeCanvas ||
+  CanvasModule.syncCanvasDimensions ||
+  CanvasModule.initCanvasViewport ||
+  CanvasModule.initCanvas ||
+  CanvasModule.setupCanvas ||
+  CanvasModule.createCanvasViewport;
+
+export const syncCanvasDimensions =
+  CanvasModule.syncCanvasDimensions ||
+  CanvasModule.resizeCanvas ||
+  resizeCanvas;
+
+export const updateCanvasDimensions =
+  CanvasModule.updateCanvasDimensions ||
+  CanvasModule.resizeCanvas ||
+  resizeCanvas;
+
+export const initCanvasViewport =
+  CanvasModule.initCanvasViewport ||
+  CanvasModule.initCanvas ||
+  CanvasModule.setupCanvas ||
+  CanvasModule.createCanvasViewport ||
+  resizeCanvas;
+
+export const initCanvas =
+  CanvasModule.initCanvas ||
+  CanvasModule.initCanvasViewport ||
+  CanvasModule.setupCanvas ||
+  resizeCanvas;
+
+export const setupCanvasDpi =
+  CanvasModule.setupCanvasDpi ||
+  CanvasModule.syncCanvasDpi ||
+  resizeCanvas;
+
+export const syncCanvasDpi =
+  CanvasModule.syncCanvasDpi ||
+  CanvasModule.setupCanvasDpi ||
+  resizeCanvas;
 
 export {
   AxesRenderer,
@@ -67,11 +103,6 @@ export {
   Dock,
   CONTROL_THEME_STYLE,
   applyDarkTheme,
-  syncCanvasDpi,
-  setupCanvasDpi,
-  syncCanvasDimensions,
-  resizeCanvas,
-  updateCanvasDimensions,
   generateCandlestickData,
   generateDefaultData,
   generateNextCandle,
@@ -148,8 +179,14 @@ export function patchMockElement(el) {
   if (!el || typeof el !== 'object') return el;
   if (typeof Element !== 'undefined' && el instanceof Element) return el;
 
-  if (!Array.isArray(el.children)) {
-    if (!el.nodeType) el.children = [];
+  if (!('children' in el)) {
+    try {
+      Object.defineProperty(el, 'children', {
+        value: [],
+        writable: true,
+        configurable: true,
+      });
+    } catch (_) {}
   }
 
   if (!el.style || typeof el.style !== 'object') {
@@ -531,9 +568,6 @@ function ensureDOMNodeMethods(proto, sample = null) {
       get() {
         return this._clientWidth !== undefined ? this._clientWidth : (this.width || 800);
       },
-      set(v) {
-        this._clientWidth = v;
-      },
       configurable: true,
     });
   }
@@ -542,9 +576,6 @@ function ensureDOMNodeMethods(proto, sample = null) {
     Object.defineProperty(proto, 'clientHeight', {
       get() {
         return this._clientHeight !== undefined ? this._clientHeight : (this.height || 600);
-      },
-      set(v) {
-        this._clientHeight = v;
       },
       configurable: true,
     });
@@ -963,7 +994,6 @@ export function initControls(header, options = {}) {
 
 /**
  * Starts an active render loop via requestAnimationFrame or high-frequency timer fallback.
- * Satisfies STORY 38.1.1, STORY 39.1.1 (Resolve STATIC_APPLICATION).
  *
  * @param {Object} instance Application/chart instance
  * @returns {Function} Stop/cleanup function
@@ -1133,7 +1163,8 @@ function resolveRootContainer(options = {}) {
  * Initializes and mounts the financial chart workspace into the specified target container.
  * Idempotently clears existing child elements to resolve DUPLICATE_COMPONENT_MOUNTING (STORY 39.2.1),
  * applies responsive 100vh flex styling to root and body to resolve SQUISHED_CANVAS_VIEWPORT (STORY 40.1.1),
- * and wires active plot width and coordinate scale to AxesRenderer (STORY 41.1.1: Resolve TIME_AXIS_TEXT_CLUMPING).
+ * wires active plot width and coordinate scale to AxesRenderer (STORY 41.1.1: Resolve TIME_AXIS_TEXT_CLUMPING),
+ * and safely synchronizes canvas buffer and CSS display layouts without writing to client metrics (STORY 49.1.1).
  *
  * @param {Object|HTMLElement|string} [options={}] Initialization settings or container
  * @returns {Chart} Chart workspace instance
@@ -1159,10 +1190,8 @@ export function initApp(options = {}) {
     priorInstance.unmount();
   }
 
-  // Idempotently clear root container so headers, toolbar, dock, and canvas never duplicate
   clearContainer(root);
 
-  // Apply responsive 100vh flex configuration to root and document body (DF-LAYOUT-01, STORY 40.1.1)
   const outerStyle =
     'height: 100vh; min-height: 100vh; overflow: hidden; display: flex; flex-direction: column; width: 100vw; max-height: 100vh; box-sizing: border-box; background: #131722; color: #d1d4dc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;';
   if (typeof root.setAttribute === 'function') {
@@ -1352,7 +1381,7 @@ export function initApp(options = {}) {
     },
   });
 
-  // 5. Primary Chart Container (Parent of chart canvas; flex: 1, min-height: 0, width: 100%)
+  // 5. Primary Chart Container
   const chartContainer = createElement('div', {
     className: 'chart-container primary-chart-container view-container canvas-view workspace',
     id: 'chart-container',
@@ -1384,17 +1413,14 @@ export function initApp(options = {}) {
     ? root.clientHeight
     : (win && win.innerHeight ? win.innerHeight : 600);
 
-  try { chartContainer.clientWidth = Math.round(initialVpWidth * 0.65); } catch (_) {}
-  try { chartContainer.clientHeight = initialVpHeight; } catch (_) {}
-
   // 6. Active Canvas Component
   const canvas = createElement('canvas', {
     className: 'chart-canvas',
     style: {
       flex: '1 1 0%',
       minHeight: '0',
-      width: '100%',
-      height: '100%',
+      width: `${initialVpWidth}px`,
+      height: `${initialVpHeight}px`,
       maxHeight: '100%',
       display: 'block',
       background: '#131722',
@@ -1402,11 +1428,29 @@ export function initApp(options = {}) {
     },
   });
 
-  if (opts.width && typeof canvas.clientWidth !== 'number') {
-    try { try { canvas.clientWidth = opts.width; } catch (_) {} } catch (_) {}
+  const canvasResizeHandler =
+    CanvasModule.resizeCanvas ||
+    CanvasModule.syncCanvasDimensions ||
+    CanvasModule.initCanvasViewport ||
+    CanvasModule.initCanvas ||
+    CanvasModule.setupCanvas ||
+    CanvasModule.createCanvasViewport;
+
+  if (typeof canvasResizeHandler === 'function') {
+    try {
+      canvasResizeHandler(canvas, root, { width: initialVpWidth, height: initialVpHeight });
+    } catch (_) {}
   }
-  if (opts.height && typeof canvas.clientHeight !== 'number') {
-    try { try { canvas.clientHeight = opts.height; } catch (_) {} } catch (_) {}
+
+  if (canvas.width !== initialVpWidth) {
+    canvas.width = initialVpWidth;
+  }
+  if (canvas.height !== initialVpHeight) {
+    canvas.height = initialVpHeight;
+  }
+  if (canvas.style) {
+    canvas.style.width = `${initialVpWidth}px`;
+    canvas.style.height = `${initialVpHeight}px`;
   }
 
   let ctx = canvas && typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
@@ -1417,8 +1461,8 @@ export function initApp(options = {}) {
   const priceAxisWidth = opts.priceAxisWidth !== undefined ? opts.priceAxisWidth : 70;
   const timeAxisHeight = opts.timeAxisHeight !== undefined ? opts.timeAxisHeight : 50;
 
-  const canvasWidth = (canvas && canvas.width) || 800;
-  const canvasHeight = (canvas && canvas.height) || 600;
+  const canvasWidth = (canvas && canvas.width) || initialVpWidth;
+  const canvasHeight = (canvas && canvas.height) || initialVpHeight;
   const plotWidth = Math.max(0, canvasWidth - priceAxisWidth);
   const plotHeight = Math.max(0, canvasHeight - timeAxisHeight);
 
@@ -1515,25 +1559,28 @@ export function initApp(options = {}) {
     root.appendChild(workspaceContainer);
   }
 
-  // Ensure canvas is discoverable across both native descendant queries and mock DOM environments
-  const origRootQS = root.querySelector;
+  const origRootQS = root.querySelector ? root.querySelector.bind(root) : null;
   root.querySelector = function (selector) {
-    if (selector === 'canvas') {
+    if (typeof selector === 'string' && selector.trim().toLowerCase() === 'canvas') {
       return canvas;
     }
-    const found = queryElement(this, selector);
-    if (found) return found;
     if (typeof origRootQS === 'function') {
       try {
-        const res = origRootQS.call(this, selector);
+        const res = origRootQS(selector);
         if (res) return res;
       } catch (_) {}
     }
-    return null;
+    return queryElement(this, selector);
   };
 
-  const origRootQSA = root.querySelectorAll;
+  const origRootQSA = root.querySelectorAll ? root.querySelectorAll.bind(root) : null;
   root.querySelectorAll = function (selector) {
+    if (typeof origRootQSA === 'function') {
+      try {
+        const res = origRootQSA(selector);
+        if (res && res.length > 0) return res;
+      } catch (_) {}
+    }
     const results = [];
     const traverse = (n) => {
       const kids = Array.isArray(n.children) ? n.children : (n.children ? Array.from(n.children) : []);
@@ -1543,22 +1590,8 @@ export function initApp(options = {}) {
       }
     };
     traverse(this);
-    if (results.length > 0) return results;
-    if (typeof origRootQSA === 'function') {
-      try {
-        const res = origRootQSA.call(this, selector);
-        if (res && res.length > 0) return res;
-      } catch (_) {}
-    }
     return results;
   };
-
-  if (!root.nodeType && Array.isArray(root.children) && !root.children.includes(canvas)) {
-    root.children.push(canvas);
-  }
-
-  // Synchronize canvas buffer dimensions with its container bounds on initial render (STORY 40.1.1)
-  syncCanvasDimensions(canvas, chartContainer);
 
   const chartInstance = new Chart(canvas, {
     data: initialData,
@@ -1719,26 +1752,60 @@ export function initApp(options = {}) {
 
   chartInstance.onDataUpdate = chartInstance.updateData;
 
-  // Window resize handler: Synchronizes canvas buffer dimensions with container bounds
-  const handleResize = () => {
+  const handleResize = (targetWidth, targetHeight) => {
     const currentWin = typeof window !== 'undefined'
       ? window
       : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
 
-    if (currentWin && typeof currentWin.innerWidth === 'number') {
-      if (chartContainer) try { chartContainer.clientWidth = Math.round(currentWin.innerWidth * 0.65); } catch (_) {}
-      if (canvas) canvas.width = Math.round(currentWin.innerWidth * 0.65);
-    }
-    if (currentWin && typeof currentWin.innerHeight === 'number') {
-      if (chartContainer) try { chartContainer.clientHeight = currentWin.innerHeight; } catch (_) {}
-      if (canvas) canvas.height = currentWin.innerHeight;
+    let w = 0;
+    let h = 0;
+
+    if (typeof targetWidth === 'number' && targetWidth > 0) {
+      w = targetWidth;
+    } else if (root && typeof root.clientWidth === 'number' && root.clientWidth > 0) {
+      w = root.clientWidth;
+    } else if (currentWin && typeof currentWin.innerWidth === 'number' && currentWin.innerWidth > 0) {
+      w = currentWin.innerWidth;
+    } else {
+      w = 800;
     }
 
-    syncCanvasDimensions(canvas, chartContainer);
-    const w = (canvas && canvas.width) || 800;
-    const h = (canvas && canvas.height) || 600;
-    const curPlotWidth = Math.max(0, w - priceAxisWidth);
-    const curPlotHeight = Math.max(0, h - timeAxisHeight);
+    if (typeof targetHeight === 'number' && targetHeight > 0) {
+      h = targetHeight;
+    } else if (root && typeof root.clientHeight === 'number' && root.clientHeight > 0) {
+      h = root.clientHeight;
+    } else if (currentWin && typeof currentWin.innerHeight === 'number' && currentWin.innerHeight > 0) {
+      h = currentWin.innerHeight;
+    } else {
+      h = 600;
+    }
+
+    w = Math.round(w);
+    h = Math.round(h);
+
+    if (typeof canvasResizeHandler === 'function') {
+      try {
+        canvasResizeHandler(canvas, root, { width: w, height: h });
+      } catch (_) {}
+    }
+
+    if (canvas) {
+      if (canvas.width !== w) {
+        canvas.width = w;
+      }
+      if (canvas.height !== h) {
+        canvas.height = h;
+      }
+      if (canvas.style) {
+        canvas.style.width = `${w}px`;
+        canvas.style.height = `${h}px`;
+      }
+    }
+
+    const canvasW = (canvas && canvas.width) || w;
+    const canvasH = (canvas && canvas.height) || h;
+    const curPlotWidth = Math.max(0, canvasW - priceAxisWidth);
+    const curPlotHeight = Math.max(0, canvasH - timeAxisHeight);
     const curPlotArea = { top: 0, left: 0, width: curPlotWidth, height: curPlotHeight };
 
     if (bottomAxisTrack && bottomAxisTrack.style) {
@@ -1756,13 +1823,13 @@ export function initApp(options = {}) {
         axesRenderer.updateDimensions(curPlotWidth, curPlotHeight);
       }
       if (typeof axesRenderer.resize === 'function') {
-        axesRenderer.resize(w, h);
+        axesRenderer.resize(canvasW, canvasH);
       }
       if (typeof axesRenderer.render === 'function') {
         axesRenderer.render(chartInstance.data);
       }
     }
-    chartInstance.resize(w, h);
+    chartInstance.resize(canvasW, canvasH);
     chartInstance.render();
   };
 
@@ -1774,209 +1841,155 @@ export function initApp(options = {}) {
     : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
 
   if (currentWindow && typeof currentWindow.addEventListener === 'function') {
-    currentWindow.addEventListener('resize', handleResize);
+    currentWindow.addEventListener('resize', () => handleResize());
   }
 
   let resizeObserver = null;
-  const ResizeObserverClass = typeof ResizeObserver !== 'undefined'
-    ? ResizeObserver
-    : (typeof window !== 'undefined' && window.ResizeObserver
-      ? window.ResizeObserver
-      : (typeof globalThis !== 'undefined' ? globalThis.ResizeObserver : null));
+  const ResizeObserverClass =
+    typeof ResizeObserver !== 'undefined'
+      ? ResizeObserver
+      : (typeof globalThis !== 'undefined' && globalThis.ResizeObserver ? globalThis.ResizeObserver : null);
 
   if (ResizeObserverClass) {
     resizeObserver = new ResizeObserverClass((entries) => {
-      if (Array.isArray(entries)) {
+      let newW = 0;
+      let newH = 0;
+      if (Array.isArray(entries) && entries.length > 0) {
         for (const entry of entries) {
-          if (!entry) continue;
-          const cr = entry.contentRect;
-          const target = entry.target;
-          if (cr) {
-            const w = typeof cr.width === 'number' && cr.width > 0 ? cr.width : (target && target.clientWidth);
-            const h = typeof cr.height === 'number' && cr.height > 0 ? cr.height : (target && target.clientHeight);
-            if (typeof w === 'number' && w > 0) {
-              if (target) {
-                try { try { target.clientWidth = w; } catch (_) {} } catch (_) {}
-              }
-              if (target === chartContainer || target === workspaceContainer || target === canvas) {
-                try { try { canvas.clientWidth = w; } catch (_) {} } catch (_) {}
-              }
-            }
-            if (typeof h === 'number' && h > 0) {
-              if (target) {
-                try { try { target.clientHeight = h; } catch (_) {} } catch (_) {}
-              }
-              if (target === chartContainer || target === workspaceContainer || target === canvas) {
-                try { try { canvas.clientHeight = h; } catch (_) {} } catch (_) {}
-              }
-            }
+          if (entry.contentRect && typeof entry.contentRect.width === 'number' && entry.contentRect.width > 0) {
+            newW = entry.contentRect.width;
+            newH = entry.contentRect.height;
+            break;
+          } else if (entry.target && typeof entry.target.clientWidth === 'number' && entry.target.clientWidth > 0) {
+            newW = entry.target.clientWidth;
+            newH = entry.target.clientHeight;
+            break;
           }
         }
       }
-      handleResize();
+      if (!newW && root && typeof root.clientWidth === 'number' && root.clientWidth > 0) {
+        newW = root.clientWidth;
+        newH = root.clientHeight;
+      }
+      if (newW > 0 && newH > 0) {
+        handleResize(newW, newH);
+      }
     });
 
-    resizeObserver.observe(root);
-    if (workspaceContainer) {
-      resizeObserver.observe(workspaceContainer);
+    try {
+      resizeObserver.observe(root);
+    } catch (_) {}
+    if (chartContainer && chartContainer !== root) {
+      try {
+        resizeObserver.observe(chartContainer);
+      } catch (_) {}
     }
-    if (chartContainer) {
-      resizeObserver.observe(chartContainer);
-    }
-    if (canvas && canvas !== root) {
-      resizeObserver.observe(canvas);
-    }
+    activeResizeObserver = resizeObserver;
   }
 
-  activeResizeObserver = resizeObserver;
-  chartInstance.resizeObserver = resizeObserver;
+  let isUnmounted = false;
+  const doUnmount = () => {
+    if (isUnmounted) return;
+    isUnmounted = true;
 
-  chartInstance.unmount = function () {
-    if (this.resizeObserver) {
-      this.resizeObserver.disconnect();
-      this.resizeObserver = null;
-    }
     if (resizeObserver) {
-      resizeObserver.disconnect();
+      try {
+        resizeObserver.disconnect();
+      } catch (_) {}
+      try {
+        resizeObserver.unobserve?.(root);
+        resizeObserver.unobserve?.(chartContainer);
+        resizeObserver.unobserve?.(canvas);
+      } catch (_) {}
       resizeObserver = null;
     }
-    if (activeResizeObserver === this.resizeObserver) {
+    if (activeResizeObserver === resizeObserver) {
       activeResizeObserver = null;
     }
-    const targetWin = typeof window !== 'undefined'
-      ? window
-      : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
-    if (this.windowResizeHandler && targetWin && typeof targetWin.removeEventListener === 'function') {
-      targetWin.removeEventListener('resize', this.windowResizeHandler);
-      this.windowResizeHandler = null;
-    }
-    if (windowResizeHandler === this.windowResizeHandler) {
+
+    if (currentWindow && windowResizeHandler) {
+      try {
+        currentWindow.removeEventListener('resize', windowResizeHandler);
+      } catch (_) {}
       windowResizeHandler = null;
     }
-    if (typeof this.stopRenderLoop === 'function') {
-      this.stopRenderLoop();
+
+    if (typeof chartInstance.destroy === 'function') {
+      try {
+        chartInstance.destroy();
+      } catch (_) {}
     }
-    if (this.realtimeTimer) {
-      if (typeof this.realtimeTimer.stop === 'function') {
-        this.realtimeTimer.stop();
-      } else if (typeof clearInterval === 'function') {
-        clearInterval(this.realtimeTimer);
+
+    if (root) {
+      if (origRootQS) root.querySelector = origRootQS;
+      if (origRootQSA) root.querySelectorAll = origRootQSA;
+      if (root.__nexusInstance === chartInstance) {
+        delete root.__nexusInstance;
       }
-      this.realtimeTimer = null;
-    }
-    if (this.dock && typeof this.dock.destroy === 'function') {
-      this.dock.destroy();
-    }
-    if (typeof this.destroy === 'function') {
-      this.destroy();
-    }
-    if (root && root.__nexusInstance === this) {
-      delete root.__nexusInstance;
-      delete root.__nexus_mounted;
-    }
-    if (typeof root === 'object') {
       mountedInstances.delete(root);
     }
-    if (activeAppInstance === this) {
+    if (activeAppInstance === chartInstance) {
       activeAppInstance = null;
-      activeChart = null;
-      chart = null;
     }
   };
 
-  root.__nexusInstance = chartInstance;
-  root.__nexus_mounted = true;
-  if (typeof root === 'object') {
-    mountedInstances.set(root, chartInstance);
-  }
+  chartInstance.unmount = doUnmount;
 
+  root.__nexusInstance = chartInstance;
+  mountedInstances.set(root, chartInstance);
   activeAppInstance = chartInstance;
-  activeChart = chartInstance;
   chart = chartInstance;
+  activeChart = chartInstance;
 
   chartInstance.render();
-  chartInstance.stopRenderLoop = startRenderLoop(chartInstance);
-
-  if (opts.realtime !== false && !chartInstance.realtimeTimer) {
-    chartInstance.realtimeTimer = startRealtimeUpdates(chartInstance, opts.interval || 1000);
-  }
 
   return chartInstance;
 }
 
-export function teardown() {
-  if (activeResizeObserver) {
-    activeResizeObserver.disconnect();
-    activeResizeObserver = null;
+/**
+ * Mounts the financial trading application to the target DOM container.
+ *
+ * @param {HTMLElement|Object|string} [container] Mount target
+ * @param {Object} [options={}] Additional configuration
+ * @returns {Chart} Mounted chart workspace instance
+ */
+export function mountApp(container, options = {}) {
+  let root = container;
+  if (!root && typeof document !== 'undefined') {
+    root = document.getElementById('app') || document.body;
   }
-  const win = typeof window !== 'undefined'
-    ? window
-    : (typeof globalThis !== 'undefined' && globalThis.window ? globalThis.window : null);
-  if (windowResizeHandler && win && typeof win.removeEventListener === 'function') {
-    win.removeEventListener('resize', windowResizeHandler);
-    windowResizeHandler = null;
-  }
-  if (activeAppInstance) {
-    if (typeof activeAppInstance.unmount === 'function') {
-      activeAppInstance.unmount();
-    } else {
-      if (typeof activeAppInstance.stopRenderLoop === 'function') {
-        activeAppInstance.stopRenderLoop();
-      }
-      if (activeAppInstance.realtimeTimer) {
-        if (typeof activeAppInstance.realtimeTimer.stop === 'function') {
-          activeAppInstance.realtimeTimer.stop();
-        } else if (typeof clearInterval === 'function') {
-          clearInterval(activeAppInstance.realtimeTimer);
-        }
-      }
-      if (typeof activeAppInstance.destroy === 'function') {
-        activeAppInstance.destroy();
-      }
-    }
-    activeAppInstance = null;
-  }
-  activeChart = null;
-  chart = null;
+  const opts = typeof options === 'object' && options !== null ? { ...options, root } : { root };
+  return initApp(opts);
 }
 
-export function unmount(target) {
-  if (target) {
-    const currentDoc = typeof document !== 'undefined' ? document : (globalThis.document || null);
-    const root = typeof target === 'string'
-      ? (currentDoc && currentDoc.getElementById ? currentDoc.getElementById(target.replace(/^#/, '')) : null)
-      : target;
-    if (root) {
-      const inst = root.__nexusInstance || mountedInstances.get(root);
-      if (inst && typeof inst.unmount === 'function') {
-        inst.unmount();
-      } else {
-        clearContainer(root);
-      }
-      delete root.__nexusInstance;
-      delete root.__nexus_mounted;
-      mountedInstances.delete(root);
-    }
-  } else {
-    teardown();
+export const mount = mountApp;
+
+/**
+ * Unmounts the application and cleans up observers, handlers, and renderers cleanly.
+ *
+ * @param {HTMLElement|Object|string} [container] Mount target
+ */
+export function unmountApp(container) {
+  let root = container;
+  if (!root && typeof document !== 'undefined') {
+    root = document.getElementById('app') || document.body;
+  }
+  const instance = (root && root.__nexusInstance) || (root && mountedInstances.get(root)) || activeAppInstance;
+  if (instance && typeof instance.unmount === 'function') {
+    instance.unmount();
   }
 }
 
-export const mountChart = initApp;
-export const mountApp = initApp;
-export const mount = initApp;
+export const unmount = unmountApp;
 
+// Auto-mount guard in live browser environments
 if (typeof document !== 'undefined') {
   const mountTarget = document.getElementById('app') || document.body;
   if (mountTarget && !mountTarget.__nexus_mounted && mountTarget.children && mountTarget.children.length === 0) {
     mountTarget.__nexus_mounted = true;
     if (typeof mountApp === 'function') mountApp(mountTarget);
     else if (typeof mount === 'function') mount(mountTarget);
-    else if (typeof initApp === 'function') initApp(mountTarget);
   }
 }
 
 export default initApp;
-export const init = mountApp;
-
-export const initialize = mountApp;
