@@ -202,6 +202,9 @@ export function mountApp(container, options = {}) {
   const updateIntervalMs =
     typeof options.interval === 'number' && options.interval > 0 ? options.interval : 500;
   let timer = setInterval(update, updateIntervalMs);
+  if (typeof timer?.unref === 'function') {
+    timer.unref();
+  }
 
   return {
     chart,
@@ -229,17 +232,19 @@ export function mountApp(container, options = {}) {
   };
 }
 
+export const mount = mountApp;
+export const init = mountApp;
+export const initialize = mountApp;
+export const initApp = mountApp;
+
 // Browser Auto-Mount Bootstrap Guard
 if (typeof document !== 'undefined') {
-  const mountTarget = document.getElementById('app') || document.body;
+  const mountTarget =
+    (typeof document.getElementById === 'function' ? document.getElementById('app') : null) ||
+    document.body;
   if (mountTarget && !mountTarget.__nexus_mounted) {
     mountTarget.__nexus_mounted = true;
-    if (typeof mountApp === 'function') {
-      mountApp(mountTarget);
-    } else if (typeof mount === 'function') {
-      mount(mountTarget);
-    } else if (typeof init === 'function') {
-      init(mountTarget);
-    }
+    if (typeof mountApp === 'function') mountApp(mountTarget);
+    else if (typeof mount === 'function') mount(mountTarget);
   }
 }
