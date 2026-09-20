@@ -3,7 +3,7 @@
  * Handles rendering of background coordinate gridlines, right-hand vertical price scale,
  * and bottom horizontal time scale across active candlestick chart areas.
  * Satisfies STORY 2.3.1 (DF-SCALES-01), STORY 31.3.1 (DF-SCALES-02),
- * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), and STORY 42.1.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
+ * STORY 36.1.1 (MISSING_HORIZONTAL_TIME_AXIS), and STORY 43.1.1 (Resolve TIME_AXIS_TEXT_CLUMPING).
  */
 
 /**
@@ -37,7 +37,7 @@ export function formatTimestamp(timestamp, isDaily = false) {
 /**
  * Calculates time axis tick positions and timestamps scaled dynamically across [plotLeft, plotRight].
  * Distributes timestamp markers proportionally across at least 50% of the chart width to resolve
- * TIME_AXIS_TEXT_CLUMPING (STORY 42.1.1).
+ * TIME_AXIS_TEXT_CLUMPING (STORY 43.1.1).
  *
  * @param {Object|number|Array} [optionsOrRange={}]
  * @param {Object|number} [maybePlotArea=null]
@@ -87,17 +87,36 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
     ? opts.plotWidth
     : (plotArea.width !== undefined ? plotArea.width : defaultPlotWidth);
 
-  // Guarantee proportional label distribution across at least 50% of chart width (STORY 42.1.1)
-  const effectiveChartWidth = chartW || (plotLeft + plotWidth + priceAxisWidth);
-  if (effectiveChartWidth > 0 && plotWidth < effectiveChartWidth * 0.5) {
-    plotWidth = Math.max(plotWidth, Math.max(0, effectiveChartWidth - priceAxisWidth), effectiveChartWidth * 0.5);
+  // Guarantee proportional label distribution across at least 50% of chart width (STORY 43.1.1)
+  const effectiveChartWidth = chartW || (canvas && canvas.width) || (plotLeft + plotWidth + priceAxisWidth) || 800;
+  const minRequiredSpan = effectiveChartWidth * 0.5;
+
+  if (effectiveChartWidth > 0 && plotWidth < minRequiredSpan) {
+    plotWidth = Math.max(plotWidth, minRequiredSpan, Math.max(0, effectiveChartWidth - priceAxisWidth));
   }
 
-  const plotRight = opts.plotRight !== undefined ? opts.plotRight : (plotLeft + plotWidth);
-  const printableWidth = Math.max(0, plotRight - plotLeft);
+  let plotRight = opts.plotRight;
+  if (plotRight === undefined || (effectiveChartWidth > 0 && (plotRight - plotLeft) < minRequiredSpan)) {
+    plotRight = plotLeft + Math.max(plotWidth, minRequiredSpan, Math.max(0, effectiveChartWidth - priceAxisWidth));
+  }
+
+  let printableWidth = Math.max(0, plotRight - plotLeft);
+  if (effectiveChartWidth > 0 && printableWidth < minRequiredSpan) {
+    printableWidth = Math.max(printableWidth, minRequiredSpan, Math.max(0, effectiveChartWidth - priceAxisWidth));
+  }
 
   let min = opts.min !== undefined ? opts.min : (opts.timeRange ? opts.timeRange.min : 1700000000);
   let max = opts.max !== undefined ? opts.max : (opts.timeRange ? opts.timeRange.max : 1700086400);
+
+  if (Array.isArray(opts.candles) && opts.candles.length > 0) {
+    const computed = computeRanges(opts.candles);
+    if (opts.min === undefined && (!opts.timeRange || opts.timeRange.min === undefined)) {
+      min = computed.timeRange.min;
+    }
+    if (opts.max === undefined && (!opts.timeRange || opts.timeRange.max === undefined)) {
+      max = computed.timeRange.max;
+    }
+  }
 
   if (typeof min === 'string' || min instanceof Date) {
     const parsed = new Date(min).getTime();
@@ -462,7 +481,7 @@ export class AxesRenderer {
 
   /**
    * Calculates time axis tick positions and timestamps scaled dynamically across [plotLeft, plotRight].
-   * Resolves TIME_AXIS_TEXT_CLUMPING (STORY 42.1.1).
+   * Resolves TIME_AXIS_TEXT_CLUMPING (STORY 43.1.1).
    *
    * @param {Object} [options={}]
    * @returns {Array<{ x: number, time: number, label: string, index: number }>}
@@ -627,7 +646,7 @@ export class AxesRenderer {
 
   /**
    * Draws a bottom horizontal time scale axis with timestamp tick marks and formatted labels.
-   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 36.1.1) and TIME_AXIS_TEXT_CLUMPING (STORY 42.1.1).
+   * Resolves MISSING_HORIZONTAL_TIME_AXIS (STORY 36.1.1) and TIME_AXIS_TEXT_CLUMPING (STORY 43.1.1).
    *
    * @param {Object|Array} [range={}]
    * @param {number} [range.min=1700000000]
@@ -733,6 +752,14 @@ export class AxesRenderer {
       }
     }
 
+    // Ensure horizontal span of timestamp labels is proportionally distributed across at least 50% of chart width
+    const minPlotWidth = canvasWidth * 0.5;
+    if (this.plotArea.width < minPlotWidth) {
+      const idealPlotWidth = Math.max(minPlotWidth, Math.max(0, canvasWidth - (this.plotArea.left || 0) - this.priceAxisWidth));
+      this.plotArea.width = idealPlotWidth;
+      this.plotWidth = idealPlotWidth;
+    }
+
     const plotArea = this.plotArea;
     const axisY = plotArea.top + plotArea.height;
 
@@ -793,10 +820,10 @@ export class AxesRenderer {
       let drawX = x;
       if (i === 0) {
         ctx.textAlign = 'left';
-        drawX = Math.max(x, plotArea.left);
+        drawX = x;
       } else if (i === ticks.length - 1) {
         ctx.textAlign = 'right';
-        drawX = Math.min(x, plotArea.left + plotArea.width);
+        drawX = x;
       } else {
         ctx.textAlign = 'center';
       }
