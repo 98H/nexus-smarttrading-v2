@@ -1,11 +1,97 @@
 /**
  * SmartTrading-V2 — Core Chart Canvas Component
  * High-performance 2D composite candlestick rendering engine with viewport transformations,
- * multi-timeframe candle management, and interactive gestures.
+ * multi-timeframe candle management, aggregation, and interactive gestures.
  */
 
 export const DEFAULT_MIN_ZOOM = 0.5;
 export const DEFAULT_MAX_ZOOM = 5.0;
+
+/**
+ * Validates timeframe string and computes duration in milliseconds.
+ *
+ * @param {string} tf - Timeframe string (e.g. '1m', '5m', '1h', '1d')
+ * @returns {number} Duration in milliseconds
+ * @throws {Error} If timeframe format is invalid or unsupported
+ */
+export function getTimeframeDuration(tf) {
+  if (typeof tf !== 'string') {
+    throw new Error(`Unsupported timeframe: ${tf}`);
+  }
+  const match = tf.match(/^(\d+)([smhdw])$/i);
+  if (!match) {
+    throw new Error(`Unsupported timeframe: ${tf}`);
+  }
+  const value = parseInt(match[1], 10);
+  if (value <= 0) {
+    throw new Error(`Unsupported timeframe: ${tf}`);
+  }
+  const unit = match[2].toLowerCase();
+  const unitMultipliers = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+    w: 7 * 24 * 60 * 60 * 1000,
+  };
+  return value * unitMultipliers[unit];
+}
+
+/**
+ * Aggregates raw candlestick data into discrete timeframe buckets (OHLCV).
+ *
+ * @param {Array<Object>} candles - Raw candlestick records
+ * @param {string} timeframe - Target timeframe identifier
+ * @returns {Array<Object>} Aggregated candlestick records
+ */
+export function aggregateCandles(candles, timeframe) {
+  const intervalMs = getTimeframeDuration(timeframe);
+  if (!Array.isArray(candles) || candles.length === 0) {
+    return [];
+  }
+
+  const sorted = [...candles].sort((a, b) => {
+    const timeA = a.timestamp !== undefined ? a.timestamp : a.time !== undefined ? a.time : 0;
+    const timeB = b.timestamp !== undefined ? b.timestamp : b.time !== undefined ? b.time : 0;
+    return timeA - timeB;
+  });
+
+  const buckets = new Map();
+
+  for (let i = 0; i < sorted.length; i++) {
+    const candle = sorted[i];
+    const rawTime =
+      candle.timestamp !== undefined
+        ? candle.timestamp
+        : candle.time !== undefined
+          ? candle.time
+          : i * intervalMs;
+    const bucketKey = Math.floor(rawTime / intervalMs) * intervalMs;
+
+    if (!buckets.has(bucketKey)) {
+      const newCandle = {
+        timestamp: bucketKey,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume !== undefined ? candle.volume : 0,
+      };
+      if (candle.time !== undefined) {
+        newCandle.time = bucketKey;
+      }
+      buckets.set(bucketKey, newCandle);
+    } else {
+      const existing = buckets.get(bucketKey);
+      if (candle.high > existing.high) existing.high = candle.high;
+      if (candle.low < existing.low) existing.low = candle.low;
+      existing.close = candle.close;
+      existing.volume += candle.volume !== undefined ? candle.volume : 0;
+    }
+  }
+
+  return Array.from(buckets.values());
+}
 
 export class Chart {
   constructor(canvasOrOptions, options = {}) {
@@ -32,9 +118,13 @@ export class Chart {
     this.canvas = canvas;
     this.options = opts;
     this.elements = opts.elements ? [...opts.elements] : [];
-    this.candles = opts.candles || opts.data ? [...(opts.candles || opts.data)] : [];
-    this.data = this.candles;
+    this.rawCandles = opts.candles || opts.data ? [...(opts.candles || opts.data)] : [];
     this.timeframe = opts.defaultTimeframe || opts.timeframe || '1m';
+
+    getTimeframeDuration(this.timeframe);
+
+    this.candleCoordinates = [];
+    this.updateAggregatedCandles();
 
     const initialViewport = opts.initialViewport || {};
     const initScale =
@@ -94,6 +184,16 @@ export class Chart {
     this.updateScales();
   }
 
+  updateAggregatedCandles() {
+    if (this.rawCandles && this.rawCandles.length > 0) {
+      this.candles = aggregateCandles(this.rawCandles, this.timeframe);
+      this.data = this.candles;
+    } else {
+      this.candles = [];
+      this.data = [];
+    }
+  }
+
   start(fps = 60) {
     if (this.animationTimer || this.animationFrameId) return;
     this.isRunning = true;
@@ -114,6 +214,9 @@ export class Chart {
       this.animationFrameId = window.requestAnimationFrame(loop);
     } else {
       this.animationTimer = setInterval(step, intervalMs);
+      if (typeof this.animationTimer?.unref === 'function') {
+        this.animationTimer.unref();
+      }
     }
   }
 
@@ -146,29 +249,89 @@ export class Chart {
   }
 
   setTimeframe(tf) {
+    if (tf === this.timeframe) {
+      return;
+    }
+    getTimeframeDuration(tf);
     this.timeframe = tf;
+    this.updateAggregatedCandles();
+    this.render();
   }
 
   getCandles() {
+    return this.rawCandles || this.candles || [];
+  }
+
+  getVisibleCandles() {
     return this.candles || [];
   }
 
+  getCandleCoordinates() {
+    if ((!this.candleCoordinates || this.candleCoordinates.length === 0) && this.data && this.data.length > 0) {
+      this.computeCoordinates();
+    }
+    return this.candleCoordinates || [];
+  }
+
+  computeCoordinates() {
+    this.candleCoordinates = [];
+    if (!this.data || this.data.length === 0) return this.candleCoordinates;
+
+    const width = this.canvas.width || this.options.width || 800;
+    const height = this.canvas.height || this.options.height || 600;
+
+    this.updateScales();
+    const { min: minTime, max: maxTime } = this.timeScale;
+    const { min: minPrice, max: maxPrice } = this.priceScale;
+
+    const timeRange = maxTime - minTime || 1;
+    const priceRange = maxPrice - minPrice || 1;
+    const candleWidth = Math.max(2, (width / this.data.length) * 0.6 * this.zoom);
+
+    for (let i = 0; i < this.data.length; i++) {
+      const candle = this.data[i];
+      const time =
+        candle.time !== undefined ? candle.time : (candle.timestamp !== undefined ? candle.timestamp : i);
+      const x = ((time - minTime) / timeRange) * width + this.viewport.offsetX;
+      const yHigh =
+        height - ((candle.high - minPrice) / priceRange) * height + this.viewport.offsetY;
+      const yLow =
+        height - ((candle.low - minPrice) / priceRange) * height + this.viewport.offsetY;
+      const yOpen =
+        height - ((candle.open - minPrice) / priceRange) * height + this.viewport.offsetY;
+      const yClose =
+        height - ((candle.close - minPrice) / priceRange) * height + this.viewport.offsetY;
+
+      this.candleCoordinates.push({
+        x,
+        candleWidth,
+        openY: yOpen,
+        closeY: yClose,
+        highY: yHigh,
+        lowY: yLow,
+      });
+    }
+
+    return this.candleCoordinates;
+  }
+
   updateTick(price) {
-    if (this.candles && this.candles.length > 0) {
-      const last = this.candles[this.candles.length - 1];
+    if (this.rawCandles && this.rawCandles.length > 0) {
+      const last = this.rawCandles[this.rawCandles.length - 1];
       last.close = price;
       if (price > last.high) last.high = price;
       if (price < last.low) last.low = price;
     }
+    this.updateAggregatedCandles();
     this.render();
   }
 
   addCandle(candle) {
-    if (!this.candles) {
-      this.candles = [];
+    if (!this.rawCandles) {
+      this.rawCandles = [];
     }
-    this.candles.push(candle);
-    this.data = this.candles;
+    this.rawCandles.push(candle);
+    this.updateAggregatedCandles();
     this.updateScales();
     this.render();
   }
@@ -363,19 +526,21 @@ export class Chart {
   render(candles, timeframe) {
     this.renderCount++;
     if (candles !== undefined) {
-      this.candles = candles;
-      this.data = candles;
+      this.rawCandles = candles;
+      this.updateAggregatedCandles();
     }
-    if (timeframe !== undefined) {
+    if (timeframe !== undefined && timeframe !== this.timeframe) {
+      getTimeframeDuration(timeframe);
       this.timeframe = timeframe;
+      this.updateAggregatedCandles();
     }
 
     const ctx =
       this.canvas && typeof this.canvas.getContext === 'function' ? this.canvas.getContext('2d') : null;
     if (!ctx) return;
 
-    const width = this.canvas.width || 800;
-    const height = this.canvas.height || 600;
+    const width = this.canvas.width || this.options.width || 800;
+    const height = this.canvas.height || this.options.height || 600;
 
     if (typeof ctx.clearRect === 'function') {
       ctx.clearRect(0, 0, width, height);
@@ -394,30 +559,11 @@ export class Chart {
       }
     }
 
-    if (!this.data || this.data.length === 0) return;
+    this.computeCoordinates();
 
-    this.updateScales();
-    const { min: minTime, max: maxTime } = this.timeScale;
-    const { min: minPrice, max: maxPrice } = this.priceScale;
-
-    const timeRange = maxTime - minTime || 1;
-    const priceRange = maxPrice - minPrice || 1;
-    const candleWidth = Math.max(2, (width / this.data.length) * 0.6 * this.zoom);
-
-    for (let i = 0; i < this.data.length; i++) {
+    for (let i = 0; i < this.candleCoordinates.length; i++) {
+      const coord = this.candleCoordinates[i];
       const candle = this.data[i];
-      const time =
-        candle.time !== undefined ? candle.time : (candle.timestamp !== undefined ? candle.timestamp : i);
-      const x = ((time - minTime) / timeRange) * width + this.viewport.offsetX;
-      const yHigh =
-        height - ((candle.high - minPrice) / priceRange) * height + this.viewport.offsetY;
-      const yLow =
-        height - ((candle.low - minPrice) / priceRange) * height + this.viewport.offsetY;
-      const yOpen =
-        height - ((candle.open - minPrice) / priceRange) * height + this.viewport.offsetY;
-      const yClose =
-        height - ((candle.close - minPrice) / priceRange) * height + this.viewport.offsetY;
-
       const isBull = candle.close >= candle.open;
       const color = isBull ? '#00f5a0' : '#ff3b69';
 
@@ -426,13 +572,13 @@ export class Chart {
 
       if (typeof ctx.beginPath === 'function') {
         ctx.beginPath();
-        ctx.moveTo(x, yHigh);
-        ctx.lineTo(x, yLow);
+        ctx.moveTo(coord.x, coord.highY);
+        ctx.lineTo(coord.x, coord.lowY);
         ctx.stroke();
 
-        const bodyY = Math.min(yOpen, yClose);
-        const bodyH = Math.max(1, Math.abs(yClose - yOpen));
-        ctx.fillRect(x - candleWidth / 2, bodyY, candleWidth, bodyH);
+        const bodyY = Math.min(coord.openY, coord.closeY);
+        const bodyH = Math.max(1, Math.abs(coord.closeY - coord.openY));
+        ctx.fillRect(coord.x - coord.candleWidth / 2, bodyY, coord.candleWidth, bodyH);
       }
     }
   }
