@@ -1,0 +1,262 @@
+/* Design System — Dark Theme Palette Tokens */
+:root {
+  --bg-primary: #131722;
+  --bg-secondary: #1e222d;
+  --surface-color: #1e222d;
+  --surface-hover: #2a2e39;
+  --control-bg: #2a2e39;
+  --control-bg-hover: #363a45;
+  --control-bg-active: #434651;
+  --text-primary: #d1d4dc;
+  --text-secondary: #787b86;
+  --border-color: #363a45;
+  --border-focus: #2962ff;
+  --primary-color: #2962ff;
+  --primary-hover: #1e53e5;
+  --primary-active: #1848cc;
+  --success-color: #26a69a;
+  --success-hover: #2bbbad;
+  --success-active: #208e84;
+  --danger-color: #ef5350;
+  --danger-hover: #f44336;
+  --danger-active: #d32f2f;
+}
+
+/* Global Reset & Base Layout */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: #131722;
+  color: #d1d4dc;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  background-color: #131722;
+  color: #d1d4dc;
+}
+
+/* Interactive Controls: Standardized Dark Theme, Modern Borders, and Padding */
+button,
+input,
+select,
+.btn,
+.control,
+.dark-control,
+.form-control {
+  border: 1px solid var(--border-color);
+  border-color: var(--border-color);
+  border-radius: 4px;
+  padding: 6px 12px;
+  background-color: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.4;
+  outline: none;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.05s ease, box-shadow 0.15s ease;
+}
+
+input {
+  cursor: text;
+}
+
+input:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 2px rgba(41, 98, 255, 0.25);
+}
+
+/* Visual Feedback States: :hover and :active */
+button:hover,
+input:hover,
+.btn:hover,
+.control:hover,
+.dark-control:hover,
+.form-control:hover {
+  background-color: var(--control-bg-hover);
+  border-color: var(--border-focus);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+button:active,
+input:active,
+.btn:active,
+.control:active,
+.dark-control:active,
+.form-control:active {
+  background-color: var(--control-bg-active);
+  transform: translateY(1px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+/* Button Variants */
+.btn-buy {
+  background-color: var(--success-color);
+  border: 1px solid var(--success-color);
+  border-radius: 4px;
+  padding: 8px 16px;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.btn-buy:hover {
+  background-color: var(--success-hover);
+  border-color: var(--success-hover);
+}
+
+.btn-buy:active {
+  background-color: var(--success-active);
+  transform: translateY(1px);
+}
+
+.btn-sell {
+  background-color: var(--danger-color);
+  border: 1px solid var(--danger-color);
+  border-radius: 4px;
+  padding: 8px 16px;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.btn-sell:hover {
+  background-color: var(--danger-hover);
+  border-color: var(--danger-hover);
+}
+
+.btn-sell:active {
+  background-color: var(--danger-active);
+  transform: translateY(1px);
+}
+
+.timeframe-btn {
+  background-color: var(--surface-color);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.timeframe-btn:hover {
+  background-color: var(--control-bg-hover);
+  color: var(--text-primary);
+}
+
+.timeframe-btn.active {
+  background-color: var(--primary-color);
+  border-color: var(--primary-color);
+  color: #ffffff;
+}
+
+/* Structured Application Header & Toolbar */
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.app-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.live-price-badge {
+  font-size: 13px;
+  font-weight: 500;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background-color: rgba(38, 166, 154, 0.15);
+  color: var(--success-color);
+}
+
+.ticker-selector {
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 6px 12px;
+  background-color: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.timeframe-controls {
+  display: flex;
+  gap: 4px;
+}
+
+/* Workspace Layout */
+.workspace-container {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.chart-container {
+  flex: 1;
+  position: relative;
+  background-color: var(--bg-primary);
+}
+
+.chart-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.side-panel {
+  width: 260px;
+  background-color: var(--bg-secondary);
+  border-left: 1px solid var(--border-color);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.panel-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.orders-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.order-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.input-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.trade-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.trade-actions button {
+  flex: 1;
+}

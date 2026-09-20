@@ -1,8 +1,8 @@
 /**
  * SmartTrading-V2 — Application Entrypoint
  * Bootstraps the active financial candlestick chart directly into the #app container,
- * providing structured UI hierarchy with a dedicated header, workspace, and continuous
- * high-performance requestAnimationFrame render loop driving live canvas and DOM state updates.
+ * providing structured UI hierarchy with dark-themed controls, interactive DOM listeners,
+ * and continuous high-performance requestAnimationFrame render loop driving canvas updates.
  */
 
 import {
@@ -149,7 +149,7 @@ function createElementSafe(tag, attrs = {}) {
               .map((s) => s.trim())
               .some((s) => {
                 if (s.startsWith('.')) {
-                  return node.className && node.className.split(/\s+/).includes(s.slice(1));
+                  return node.className && node.className.split(/\s+/).includes(sel.slice(1));
                 }
                 return node.tagName.toLowerCase() === s.toLowerCase();
               });
@@ -238,6 +238,12 @@ export function mountApp(target, options = {}) {
     container.replaceChildren();
   }
 
+  // Set dark theme attributes on root container and document body
+  setAttr(container, 'data-theme', 'dark');
+  if (typeof document !== 'undefined' && document.body) {
+    setAttr(document.body, 'data-theme', 'dark');
+  }
+
   // 1. Structured Application Header (<header>, [data-testid="app-header"])
   const headerElement = createElementSafe('header', {
     class: 'app-header chart-toolbar',
@@ -261,9 +267,14 @@ export function mountApp(target, options = {}) {
 
   // Ticker Selector
   const tickerSelector = createElementSafe('select', {
-    class: 'ticker-selector ticker-control',
+    class: 'ticker-selector ticker-control dark-control',
+    'data-theme': 'dark',
     'data-testid': 'ticker-selector',
   });
+  tickerSelector.style.backgroundColor = '#1e222d';
+  tickerSelector.style.color = '#d1d4dc';
+  tickerSelector.style.borderRadius = '4px';
+
   const tickers = opts.tickers || ['BTC/USD', 'ETH/USD', 'SOL/USD'];
   tickers.forEach((t) => {
     const opt = createElementSafe('option', { value: t });
@@ -289,26 +300,34 @@ export function mountApp(target, options = {}) {
   const buttons = [];
   timeframes.forEach((tf) => {
     const btn = createElementSafe('button', {
-      class: `timeframe-btn ${tf === currentTimeframe ? 'active' : ''}`,
+      class: `btn timeframe-btn dark-control ${tf === currentTimeframe ? 'active' : ''}`,
+      'data-theme': 'dark',
       'data-timeframe': tf,
     });
     btn.textContent = tf;
+    btn.style.backgroundColor = '#1e222d';
+    btn.style.color = '#d1d4dc';
+    btn.style.borderRadius = '4px';
 
     if (typeof btn.addEventListener === 'function') {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (e) => {
         currentTimeframe = tf;
         buttons.forEach((b) => {
           const bTf =
-            (b.attributes && b.attributes['data-timeframe']) ||
-            (b.getAttribute && b.getAttribute('data-timeframe'));
+            (typeof b.getAttribute === 'function' ? b.getAttribute('data-timeframe') : null) ||
+            (b.attributes && typeof b.attributes.get === 'function' ? b.attributes.get('data-timeframe') : null) ||
+            (b.attributes && b.attributes['data-timeframe']);
           if (bTf === tf) {
-            setAttr(b, 'class', 'timeframe-btn active');
+            setAttr(b, 'class', 'btn timeframe-btn dark-control active');
           } else {
-            setAttr(b, 'class', 'timeframe-btn');
+            setAttr(b, 'class', 'btn timeframe-btn dark-control');
           }
         });
         if (chart && typeof chart.setTimeframe === 'function') {
           chart.setTimeframe(tf);
+        }
+        if (typeof opts.onTimeframeChange === 'function') {
+          opts.onTimeframeChange(tf, e);
         }
       });
     }
@@ -363,11 +382,76 @@ export function mountApp(target, options = {}) {
   ordersTitle.textContent = 'Orders & Tools';
   ordersPanel.appendChild(ordersTitle);
 
+  // Interactive Form Inputs with Dark Theme Styling
+  const orderInputs = createElementSafe('div', {
+    class: 'order-inputs panel-inputs',
+    'data-testid': 'order-inputs',
+  });
+
+  const amountLabel = createElementSafe('label', { class: 'input-label' });
+  amountLabel.textContent = 'Order Size: ';
+
+  const amountInput = createElementSafe('input', {
+    type: 'number',
+    class: 'input form-control dark-control',
+    'data-theme': 'dark',
+    'data-testid': 'order-amount-input',
+    value: '1.0',
+    placeholder: 'Size',
+  });
+  amountInput.value = '1.0';
+  amountInput.style.backgroundColor = '#1e222d';
+  amountInput.style.color = '#d1d4dc';
+  amountInput.style.borderRadius = '4px';
+
+  if (typeof amountInput.addEventListener === 'function') {
+    amountInput.addEventListener('input', (e) => {
+      if (typeof opts.onAmountChange === 'function') opts.onAmountChange(e);
+    });
+    amountInput.addEventListener('change', (e) => {
+      if (typeof opts.onAmountChange === 'function') opts.onAmountChange(e);
+    });
+    amountInput.addEventListener('keydown', (e) => {
+      if (typeof opts.onAmountKeyDown === 'function') opts.onAmountKeyDown(e);
+    });
+  }
+
+  amountLabel.appendChild(amountInput);
+  orderInputs.appendChild(amountLabel);
+  ordersPanel.appendChild(orderInputs);
+
+  // Interactive Action Buttons
   const tradeActions = createElementSafe('div', { class: 'trade-actions' });
-  const buyBtn = createElementSafe('button', { class: 'btn btn-buy', 'data-testid': 'buy-button' });
+  const buyBtn = createElementSafe('button', {
+    class: 'btn btn-buy dark-control',
+    'data-theme': 'dark',
+    'data-testid': 'buy-button',
+  });
   buyBtn.textContent = 'Buy / Long';
-  const sellBtn = createElementSafe('button', { class: 'btn btn-sell', 'data-testid': 'sell-button' });
+  buyBtn.style.backgroundColor = '#26a69a';
+  buyBtn.style.color = '#ffffff';
+  buyBtn.style.borderRadius = '4px';
+  if (typeof buyBtn.addEventListener === 'function') {
+    buyBtn.addEventListener('click', (e) => {
+      if (typeof opts.onBuy === 'function') opts.onBuy(e);
+    });
+  }
+
+  const sellBtn = createElementSafe('button', {
+    class: 'btn btn-sell dark-control',
+    'data-theme': 'dark',
+    'data-testid': 'sell-button',
+  });
   sellBtn.textContent = 'Sell / Short';
+  sellBtn.style.backgroundColor = '#ef5350';
+  sellBtn.style.color = '#ffffff';
+  sellBtn.style.borderRadius = '4px';
+  if (typeof sellBtn.addEventListener === 'function') {
+    sellBtn.addEventListener('click', (e) => {
+      if (typeof opts.onSell === 'function') opts.onSell(e);
+    });
+  }
+
   tradeActions.appendChild(buyBtn);
   tradeActions.appendChild(sellBtn);
   ordersPanel.appendChild(tradeActions);
@@ -414,7 +498,7 @@ export function mountApp(target, options = {}) {
     ...opts,
   });
 
-  // 5. Active Continuous Render Loop (STORY 1.1.1: Resolve STATIC_APPLICATION)
+  // 5. Active Continuous Render Loop
   let activeRafId = null;
   let isLoopActive = false;
   const raf = getRaf();
@@ -441,7 +525,7 @@ export function mountApp(target, options = {}) {
         chart.render();
       }
 
-      // Continuous dynamic price action line ensuring measurable canvas state evolution
+      // Continuous dynamic price action line driving live canvas state evolution
       const pulse = Math.sin(time / 200);
       const livePriceY = h / 2 + pulse * 20;
 
@@ -513,12 +597,13 @@ export function mountApp(target, options = {}) {
       currentTimeframe = tf;
       buttons.forEach((b) => {
         const bTf =
-          (b.attributes && b.attributes['data-timeframe']) ||
-          (b.getAttribute && b.getAttribute('data-timeframe'));
+          (typeof b.getAttribute === 'function' ? b.getAttribute('data-timeframe') : null) ||
+          (b.attributes && typeof b.attributes.get === 'function' ? b.attributes.get('data-timeframe') : null) ||
+          (b.attributes && b.attributes['data-timeframe']);
         if (bTf === tf) {
-          setAttr(b, 'class', 'timeframe-btn active');
+          setAttr(b, 'class', 'btn timeframe-btn dark-control active');
         } else {
-          setAttr(b, 'class', 'timeframe-btn');
+          setAttr(b, 'class', 'btn timeframe-btn dark-control');
         }
       });
       if (chart && typeof chart.setTimeframe === 'function') {
