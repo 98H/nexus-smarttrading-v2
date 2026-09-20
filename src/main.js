@@ -259,14 +259,15 @@ export function initToolbar({ toolbarElement, chartInstance, rawCandles = [] } =
         }
       });
 
-      const inputCandles =
-        (rawCandles && rawCandles.length > 0 && rawCandles) ||
-        sourceCandles ||
-        (chartInstance && typeof chartInstance.getCandles === 'function' ? chartInstance.getCandles() : []);
+      if (chartInstance && typeof chartInstance.setTimeframe === 'function') {
+        chartInstance.setTimeframe(targetTf);
+      } else if (chartInstance && typeof chartInstance.render === 'function') {
+        const inputCandles =
+          (rawCandles && rawCandles.length > 0 && rawCandles) ||
+          sourceCandles ||
+          (chartInstance && typeof chartInstance.getCandles === 'function' ? chartInstance.getCandles() : []);
 
-      const aggregated = targetTf === '1m' ? inputCandles : aggregateCandles(inputCandles, targetTf);
-
-      if (chartInstance && typeof chartInstance.render === 'function') {
+        const aggregated = targetTf === '1m' ? inputCandles : aggregateCandles(inputCandles, targetTf);
         chartInstance.render(aggregated, targetTf);
       }
     });
@@ -544,37 +545,34 @@ function createDOMElement(tagName, attributes = {}) {
     }
   }
 
-<<<<<<< HEAD
   if (tagName.toLowerCase() === 'canvas') {
-    element.width = Number(attributes.width) || 800;
-    element.height = Number(attributes.height) || 400;
-    const drawCalls = [];
-    const ctx = {
-      canvas: element,
-      drawCalls,
-      clearRect: (x, y, w, h) => drawCalls.push({ type: 'clearRect', x, y, w, h }),
-      fillRect: (x, y, w, h) => drawCalls.push({ type: 'fillRect', x, y, w, h }),
-      strokeRect: (x, y, w, h) => drawCalls.push({ type: 'strokeRect', x, y, w, h }),
-      beginPath: () => drawCalls.push({ type: 'beginPath' }),
-      moveTo: (x, y) => drawCalls.push({ type: 'moveTo', x, y }),
-      lineTo: (x, y) => drawCalls.push({ type: 'lineTo', x, y }),
-      stroke: () => drawCalls.push({ type: 'stroke' }),
-      fill: () => drawCalls.push({ type: 'fill' }),
-      save: () => drawCalls.push({ type: 'save' }),
-      restore: () => drawCalls.push({ type: 'restore' }),
-      setTransform: (a, b, c, d, e, f) => drawCalls.push({ type: 'setTransform', a, b, c, d, e, f }),
-    };
-    element.getContext = (contextId) => {
-      if (contextId === '2d') return ctx;
-      return null;
-    };
+    el.width = Number(attributes.width) || 800;
+    el.height = Number(attributes.height) || 400;
+    if (typeof el.getContext !== 'function') {
+      const drawCalls = [];
+      const ctx = {
+        canvas: el,
+        drawCalls,
+        clearRect: (x, y, w, h) => drawCalls.push({ type: 'clearRect', x, y, w, h }),
+        fillRect: (x, y, w, h) => drawCalls.push({ type: 'fillRect', x, y, w, h }),
+        strokeRect: (x, y, w, h) => drawCalls.push({ type: 'strokeRect', x, y, w, h }),
+        beginPath: () => drawCalls.push({ type: 'beginPath' }),
+        moveTo: (x, y) => drawCalls.push({ type: 'moveTo', x, y }),
+        lineTo: (x, y) => drawCalls.push({ type: 'lineTo', x, y }),
+        stroke: () => drawCalls.push({ type: 'stroke' }),
+        fill: () => drawCalls.push({ type: 'fill' }),
+        save: () => drawCalls.push({ type: 'save' }),
+        restore: () => drawCalls.push({ type: 'restore' }),
+        setTransform: (a, b, c, d, e, f) => drawCalls.push({ type: 'setTransform', a, b, c, d, e, f }),
+      };
+      el.getContext = (contextId) => {
+        if (contextId === '2d') return ctx;
+        return null;
+      };
+    }
   }
 
-  patchMockElement(element);
-  return element;
-=======
   return el;
->>>>>>> task/story-375692c6
 }
 
 /**
@@ -805,56 +803,16 @@ export function mountApp(container, options = {}) {
     }
   }
 
-<<<<<<< HEAD
-  if (toolbarEl && chart) {
-    initToolbar({
-      toolbarElement: toolbarEl,
-      chartInstance: chart,
-      rawCandles,
-=======
   if (canvasEl && chart) {
     canvasEl.chart = chart;
     canvasEl.__chart = chart;
   }
 
-  if (buttons && buttons.length > 0) {
-    buttons.forEach((btn) => {
-      const tf = btn.getAttribute('data-timeframe');
-      const isActive = tf === activeTimeframe;
-      if (isActive) {
-        btn.classList.add('active');
-        btn.setAttribute('aria-pressed', 'true');
-      } else {
-        btn.classList.remove('active');
-        btn.setAttribute('aria-pressed', 'false');
-      }
-
-      btn.addEventListener('click', () => {
-        if (activeTimeframe === tf) return;
-        activeTimeframe = tf;
-
-        const currentButtons =
-          (toolbarEl &&
-            typeof toolbarEl.querySelectorAll === 'function' &&
-            toolbarEl.querySelectorAll('button[data-timeframe]')) ||
-          buttons;
-
-        currentButtons.forEach((b) => {
-          const isTarget = b.getAttribute('data-timeframe') === tf;
-          if (isTarget) {
-            b.classList.add('active');
-            b.setAttribute('aria-pressed', 'true');
-          } else {
-            b.classList.remove('active');
-            b.setAttribute('aria-pressed', 'false');
-          }
-        });
-
-        if (chart && typeof chart.setTimeframe === 'function') {
-          chart.setTimeframe(tf);
-        }
-      });
->>>>>>> task/story-ba5c3a1e
+  if (toolbarEl && chart) {
+    initToolbar({
+      toolbarElement: toolbarEl,
+      chartInstance: chart,
+      rawCandles,
     });
   }
 
@@ -956,26 +914,6 @@ export function mountApp(container, options = {}) {
   };
 }
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-export const mount = mountApp;
-export const init = mountApp;
-export const initialize = mountApp;
-export const initApp = mountApp;
-
->>>>>>> task/story-574da399
-// Browser Auto-Mount Bootstrap Guard
-=======
-=======
->>>>>>> task/story-aef278d5
-=======
->>>>>>> task/story-ba5c3a1e
-=======
->>>>>>> task/story-375692c6
 export const mount = mountApp;
 
 export function initApp(container, options = {}) {
@@ -991,59 +929,14 @@ export function initApp(container, options = {}) {
 export const init = initApp;
 export const initialize = initApp;
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
 // Browser Auto-Mount Bootstrap Guard
->>>>>>> task/story-ba5c3a1e
-=======
-// Browser Auto-Mount Bootstrap Guard
->>>>>>> task/story-375692c6
 if (typeof document !== 'undefined') {
-  const mountTarget = document.getElementById('app') || document.body;
+  const mountTarget =
+    (typeof document.getElementById === 'function' ? document.getElementById('app') : null) ||
+    document.body;
   if (mountTarget && !mountTarget.__nexus_mounted) {
     mountTarget.__nexus_mounted = true;
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-    if (typeof mountApp === 'function') {
-      mountApp(mountTarget);
-    } else if (typeof mount === 'function') {
-      mount(mountTarget);
-    } else if (typeof init === 'function') {
-      init(mountTarget);
-    }
-  }
-}
-=======
     if (typeof mountApp === 'function') mountApp(mountTarget);
     else if (typeof mount === 'function') mount(mountTarget);
   }
 }
->>>>>>> task/story-44727988
-=======
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
-  }
-}
->>>>>>> task/story-574da399
-=======
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
-  }
-}
->>>>>>> task/story-aef278d5
-=======
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
-  }
-}
->>>>>>> task/story-ba5c3a1e
-=======
-    if (typeof mountApp === 'function') mountApp(mountTarget);
-    else if (typeof mount === 'function') mount(mountTarget);
-  }
-}
->>>>>>> task/story-375692c6
