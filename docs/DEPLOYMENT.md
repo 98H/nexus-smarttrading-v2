@@ -3,25 +3,25 @@
 ## 🚀 Live Access URLs
 - **Public Preview URL:** [https://river-alternatives-isolated-parker.trycloudflare.com/preview/prod-smarttrading-v2-9a6089/](https://river-alternatives-isolated-parker.trycloudflare.com/preview/prod-smarttrading-v2-9a6089/)
 - **Local Gateway Path:** [/preview/prod-smarttrading-v2-9a6089/](/preview/prod-smarttrading-v2-9a6089/)
-- **Internal Port:** `8101`
-- **Process PID:** `816417`
+- **Internal Port:** `8100`
+- **Process PID:** `819188`
 - **Runtime Engine:** `nodejs_server`
 - **Health Status:** `HEALTHY (HTTP 200)`
-- **Deployed Timestamp:** `2026-09-20T08:40:22.684167+00:00`
+- **Deployed Timestamp:** `2026-09-20T08:48:16.975044+00:00`
 
 ## 📋 Execution Command
 ```bash
-node server/index.js 8101
+node server/index.js 8100
 ```
 
 ## 🩺 Health Check Verification
 ```bash
-curl -I http://127.0.0.1:8101/
+curl -I http://127.0.0.1:8100/
 ```
 
 ## 🔍 Headless Browser Verification
 - **DOM Title:** `SmartTrading-V2`
-- **Has Canvas:** `True`
+- **Has Canvas:** `False`
 - **Interactive Elements:** `False`
 - **Console Errors:** `0`
 
