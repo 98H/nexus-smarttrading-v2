@@ -36,13 +36,13 @@ export function formatTimestamp(timestamp, isDaily = false) {
 
 /**
  * Calculates time axis tick positions and timestamps scaled dynamically across [plotLeft, plotRight].
- * Distributes timestamp markers proportionally across at least 50% of the chart width to resolve
+ * Distributes timestamp markers proportionally across at least 50% of the chart plot width to resolve
  * TIME_AXIS_TEXT_CLUMPING (STORY 44.1.1).
  *
  * @param {Object|number|Array} [optionsOrRange={}]
  * @param {Object|number} [maybePlotArea=null]
  * @param {number|Object} [maybeCandleCount=null]
- * @returns {Array<{ x: number, time: number, timestamp: number, label: string, index: number }>}
+ * @returns {Array<{ x: number, position: number, time: number, timestamp: number, t: number, value: number, label: string, text: string, formatted: string, index: number }>}
  */
 export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, maybeCandleCount = null) {
   let opts = {};
@@ -66,7 +66,7 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
       }
     } else {
       // Called as: calculateTimeTicks(width, maybePlotAreaOrTimeRange)
-      opts = { width: optionsOrRange, chartWidth: optionsOrRange, W: optionsOrRange };
+      opts = { width: optionsOrRange, chartWidth: optionsOrRange, W: optionsOrRange, plotWidth: optionsOrRange };
       if (typeof maybePlotArea === 'object' && maybePlotArea !== null) {
         if (maybePlotArea.min !== undefined || maybePlotArea.max !== undefined) {
           opts.min = maybePlotArea.min;
@@ -75,6 +75,9 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
           opts.timeRange = maybePlotArea.timeRange;
         } else {
           opts.plotArea = maybePlotArea;
+          if (maybePlotArea.width !== undefined) {
+            opts.plotWidth = maybePlotArea.width;
+          }
         }
       } else if (typeof maybePlotArea === 'number') {
         opts.min = maybePlotArea;
@@ -93,10 +96,12 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
       if (maybePlotArea.width !== undefined) {
         opts.width = maybePlotArea.width;
         opts.chartWidth = maybePlotArea.width;
+        opts.plotWidth = maybePlotArea.width;
       }
     } else if (typeof maybePlotArea === 'number') {
       opts.width = maybePlotArea;
       opts.chartWidth = maybePlotArea;
+      opts.plotWidth = maybePlotArea;
     }
     if (typeof maybeCandleCount === 'number') opts.candleCount = maybeCandleCount;
   } else if (typeof optionsOrRange === 'object' && optionsOrRange !== null) {
@@ -147,33 +152,43 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
     ? opts.plotWidth
     : (plotArea.width !== undefined ? plotArea.width : defaultPlotWidth);
 
-  // Guarantee proportional label distribution across at least 50% of chart width (STORY 44.1.1)
+  // Guarantee proportional label distribution across at least 50% of chart plot width (STORY 44.1.1)
   const effectiveChartWidth = chartW || (canvas && canvas.width) || (plotLeft + plotWidth + priceAxisWidth) || 800;
-  const minRequiredSpan = effectiveChartWidth * 0.5;
-
-  if (effectiveChartWidth > 0 && plotWidth < minRequiredSpan) {
-    plotWidth = Math.max(plotWidth, minRequiredSpan, Math.max(0, effectiveChartWidth - priceAxisWidth));
-  }
+  const effectivePlotWidth = Math.max(0, plotWidth > 0 ? plotWidth : (effectiveChartWidth - priceAxisWidth));
+  const minRequiredSpan = Math.max(100, effectivePlotWidth * 0.5);
 
   let plotRight = opts.plotRight;
-  if (plotRight === undefined || (effectiveChartWidth > 0 && (plotRight - plotLeft) < minRequiredSpan)) {
-    plotRight = plotLeft + Math.max(plotWidth, minRequiredSpan, Math.max(0, effectiveChartWidth - priceAxisWidth));
+  if (plotRight === undefined || (plotRight - plotLeft) < minRequiredSpan) {
+    plotRight = plotLeft + Math.max(effectivePlotWidth, minRequiredSpan);
   }
 
   let printableWidth = Math.max(0, plotRight - plotLeft);
-  if (effectiveChartWidth > 0 && printableWidth < minRequiredSpan) {
-    printableWidth = Math.max(printableWidth, minRequiredSpan, Math.max(0, effectiveChartWidth - priceAxisWidth));
+  if (printableWidth < minRequiredSpan) {
+    printableWidth = minRequiredSpan;
   }
 
-  let min = opts.min !== undefined ? opts.min : (opts.timeRange ? opts.timeRange.min : 1700000000);
-  let max = opts.max !== undefined ? opts.max : (opts.timeRange ? opts.timeRange.max : 1700086400);
+  let min = opts.min !== undefined
+    ? opts.min
+    : (opts.timeRange?.min !== undefined
+      ? opts.timeRange.min
+      : (opts.startTime !== undefined
+        ? opts.startTime
+        : (opts.start !== undefined ? opts.start : (opts.from !== undefined ? opts.from : 1700000000))));
+
+  let max = opts.max !== undefined
+    ? opts.max
+    : (opts.timeRange?.max !== undefined
+      ? opts.timeRange.max
+      : (opts.endTime !== undefined
+        ? opts.endTime
+        : (opts.end !== undefined ? opts.end : (opts.to !== undefined ? opts.to : 1700086400))));
 
   if (Array.isArray(opts.candles) && opts.candles.length > 0) {
     const computed = computeRanges(opts.candles);
-    if (opts.min === undefined && (!opts.timeRange || opts.timeRange.min === undefined)) {
+    if (opts.min === undefined && (!opts.timeRange || opts.timeRange.min === undefined) && opts.startTime === undefined && opts.start === undefined && opts.from === undefined) {
       min = computed.timeRange.min;
     }
-    if (opts.max === undefined && (!opts.timeRange || opts.timeRange.max === undefined)) {
+    if (opts.max === undefined && (!opts.timeRange || opts.timeRange.max === undefined) && opts.endTime === undefined && opts.end === undefined && opts.to === undefined) {
       max = computed.timeRange.max;
     }
   }
@@ -206,10 +221,10 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
   const spanMs = span < 1e11 ? span * 1000 : span;
   const isDaily = spanMs >= 86400000 * 2;
 
-  const minTickSpacing = opts.minSpacing || 80;
-  const maxTicks = opts.maxTicks || (printableWidth > 0 ? Math.min(8, Math.max(3, Math.floor(printableWidth / minTickSpacing) + 1)) : 5);
-
-  const numTicks = Math.max(3, maxTicks);
+  const minTickSpacing = opts.minSpacing || opts.spacing || 70;
+  const autoTicks = printableWidth > 0 ? Math.floor(printableWidth / minTickSpacing) + 1 : 5;
+  const maxTicks = opts.maxTicks || (printableWidth > 0 ? Math.min(8, Math.max(4, autoTicks)) : 5);
+  const numTicks = Math.max(3, opts.tickCount || opts.numTicks || opts.count || maxTicks);
   const steps = numTicks - 1;
 
   const ticks = [];
@@ -220,11 +235,14 @@ export function calculateTimeTicks(optionsOrRange = {}, maybePlotArea = null, ma
     const label = formatTimestamp(timeVal, isDaily);
     ticks.push({
       x,
+      position: x,
       time: timeVal,
       timestamp: timeVal,
       t: timeVal,
+      value: timeVal,
       label,
       text: label,
+      formatted: label,
       index: i,
     });
   }
@@ -455,6 +473,9 @@ export class AxesRenderer {
     this.priceRange = opts.priceRange || (opts.ranges?.priceRange) || { min: 100, max: 200 };
     this.timeRange = opts.timeRange || (opts.ranges?.timeRange) || { min: 1700000000, max: 1700086400 };
 
+    this._lastCanvasWidth = this.canvas ? this.canvas.width : canvasWidth;
+    this._lastCanvasHeight = this.canvas ? this.canvas.height : canvasHeight;
+
     this.timeAxisGenerator = (ticksOpts = {}) => this.calculateTimeTicks(ticksOpts);
   }
 
@@ -482,6 +503,8 @@ export class AxesRenderer {
     };
     this.plotWidth = this.plotArea.width;
     this.plotHeight = this.plotArea.height;
+    this._lastCanvasWidth = w;
+    this._lastCanvasHeight = h;
   }
 
   /**
@@ -526,6 +549,30 @@ export class AxesRenderer {
     }
   }
 
+  getPlotArea() {
+    return { ...this.plotArea };
+  }
+
+  getPlotWidth() {
+    return this.plotWidth !== undefined ? this.plotWidth : (this.plotArea ? this.plotArea.width : 0);
+  }
+
+  getPlotHeight() {
+    return this.plotHeight !== undefined ? this.plotHeight : (this.plotArea ? this.plotArea.height : 0);
+  }
+
+  getDimensions() {
+    return {
+      plotWidth: this.getPlotWidth(),
+      plotHeight: this.getPlotHeight(),
+      plotArea: this.getPlotArea(),
+      canvasWidth: (this.canvas && this.canvas.width) || 0,
+      canvasHeight: (this.canvas && this.canvas.height) || 0,
+      priceAxisWidth: this.priceAxisWidth,
+      timeAxisHeight: this.timeAxisHeight,
+    };
+  }
+
   setCoordinateScale(ranges) {
     if (!ranges) return;
     if (ranges.priceRange) this.priceRange = ranges.priceRange;
@@ -552,11 +599,24 @@ export class AxesRenderer {
    * Resolves TIME_AXIS_TEXT_CLUMPING (STORY 44.1.1).
    *
    * @param {Object} [options={}]
-   * @returns {Array<{ x: number, time: number, timestamp: number, label: string, index: number }>}
+   * @returns {Array<{ x: number, position: number, time: number, timestamp: number, t: number, value: number, label: string, text: string, formatted: string, index: number }>}
    */
   calculateTimeTicks(options = {}) {
     const canvasW = (this.canvas && this.canvas.width) || 0;
     const canvasH = (this.canvas && this.canvas.height) || 0;
+
+    const effectiveMin = options.min !== undefined
+      ? options.min
+      : (options.timeRange?.min !== undefined
+        ? options.timeRange.min
+        : (this.timeRange ? this.timeRange.min : 1700000000));
+
+    const effectiveMax = options.max !== undefined
+      ? options.max
+      : (options.timeRange?.max !== undefined
+        ? options.timeRange.max
+        : (this.timeRange ? this.timeRange.max : 1700086400));
+
     return calculateTimeTicks({
       plotArea: this.plotArea,
       canvas: this.canvas,
@@ -575,11 +635,11 @@ export class AxesRenderer {
       timeAxisHeight: this.timeAxisHeight,
       plotWidth: this.plotArea ? this.plotArea.width : this.plotWidth,
       plotHeight: this.plotArea ? this.plotArea.height : this.plotHeight,
-      min: this.timeRange ? this.timeRange.min : 1700000000,
-      max: this.timeRange ? this.timeRange.max : 1700086400,
       candles: this.candles,
       candleCount: this.candleCount,
       ...options,
+      min: effectiveMin,
+      max: effectiveMax,
     });
   }
 
@@ -598,17 +658,8 @@ export class AxesRenderer {
     const ctx = this.context || (this.canvas && this.canvas.getContext && this.canvas.getContext('2d'));
     if (!ctx) return;
 
-    if (this.canvas && this.canvas.width > 0) {
-      const expectedPlotWidth = Math.max(0, this.canvas.width - (this.plotArea.left || 0) - this.priceAxisWidth);
-      if (this.plotArea.width !== expectedPlotWidth && expectedPlotWidth > 0) {
-        this.plotArea.width = expectedPlotWidth;
-        this.plotWidth = expectedPlotWidth;
-      }
-      const expectedPlotHeight = Math.max(0, this.canvas.height - (this.plotArea.top || 0) - this.timeAxisHeight);
-      if (this.plotArea.height !== expectedPlotHeight && expectedPlotHeight > 0) {
-        this.plotArea.height = expectedPlotHeight;
-        this.plotHeight = expectedPlotHeight;
-      }
+    if (this.canvas && this.canvas.width > 0 && this.canvas.width !== this._lastCanvasWidth) {
+      this.resize(this.canvas.width, this.canvas.height);
     }
 
     const plotArea = this.plotArea;
@@ -651,17 +702,8 @@ export class AxesRenderer {
     const ctx = this.context || (this.canvas && this.canvas.getContext && this.canvas.getContext('2d'));
     if (!ctx) return;
 
-    if (this.canvas && this.canvas.width > 0) {
-      const expectedPlotWidth = Math.max(0, this.canvas.width - (this.plotArea.left || 0) - this.priceAxisWidth);
-      if (this.plotArea.width !== expectedPlotWidth && expectedPlotWidth > 0) {
-        this.plotArea.width = expectedPlotWidth;
-        this.plotWidth = expectedPlotWidth;
-      }
-      const expectedPlotHeight = Math.max(0, this.canvas.height - (this.plotArea.top || 0) - this.timeAxisHeight);
-      if (this.plotArea.height !== expectedPlotHeight && expectedPlotHeight > 0) {
-        this.plotArea.height = expectedPlotHeight;
-        this.plotHeight = expectedPlotHeight;
-      }
+    if (this.canvas && this.canvas.width > 0 && this.canvas.width !== this._lastCanvasWidth) {
+      this.resize(this.canvas.width, this.canvas.height);
     }
 
     const r = range || {};
@@ -738,6 +780,10 @@ export class AxesRenderer {
     const ctx = this.context || (this.canvas && this.canvas.getContext && this.canvas.getContext('2d'));
     if (!ctx) return;
 
+    if (this.canvas && this.canvas.width > 0 && this.canvas.width !== this._lastCanvasWidth) {
+      this.resize(this.canvas.width, this.canvas.height);
+    }
+
     const r = range || {};
     let min = 1700000000;
     let max = 1700086400;
@@ -813,34 +859,12 @@ export class AxesRenderer {
       max = tmp;
     }
 
-    // Sync active plot area with canvas buffer width
     const canvasWidth = (this.canvas && typeof this.canvas.width === 'number' && this.canvas.width > 0)
       ? this.canvas.width
       : (r.width || (this.plotArea.left + this.plotArea.width + this.priceAxisWidth) || 800);
     const canvasHeight = (this.canvas && typeof this.canvas.height === 'number' && this.canvas.height > 0)
       ? this.canvas.height
       : (r.height || (this.plotArea.top + this.plotArea.height + this.timeAxisHeight) || 600);
-
-    if (this.canvas && this.canvas.width > 0) {
-      const expectedPlotWidth = Math.max(0, this.canvas.width - (this.plotArea.left || 0) - this.priceAxisWidth);
-      if (this.plotArea.width !== expectedPlotWidth && expectedPlotWidth > 0) {
-        this.plotArea.width = expectedPlotWidth;
-        this.plotWidth = expectedPlotWidth;
-      }
-      const expectedPlotHeight = Math.max(0, this.canvas.height - (this.plotArea.top || 0) - this.timeAxisHeight);
-      if (this.plotArea.height !== expectedPlotHeight && expectedPlotHeight > 0) {
-        this.plotArea.height = expectedPlotHeight;
-        this.plotHeight = expectedPlotHeight;
-      }
-    }
-
-    // Ensure horizontal span of timestamp labels is proportionally distributed across at least 50% of chart width
-    const minPlotWidth = canvasWidth * 0.5;
-    if (this.plotArea.width < minPlotWidth) {
-      const idealPlotWidth = Math.max(minPlotWidth, Math.max(0, canvasWidth - (this.plotArea.left || 0) - this.priceAxisWidth));
-      this.plotArea.width = idealPlotWidth;
-      this.plotWidth = idealPlotWidth;
-    }
 
     const plotArea = this.plotArea;
     const axisY = plotArea.top + plotArea.height;
