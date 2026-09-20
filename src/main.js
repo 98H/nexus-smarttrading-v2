@@ -589,12 +589,12 @@ function createDOMElement(tagName, attributes = {}) {
   }
 
   if (tagName.toLowerCase() === 'canvas') {
-    el.width = Number(attributes.width) || 800;
-    el.height = Number(attributes.height) || 400;
-    if (typeof el.getContext !== 'function') {
+    element.width = Number(attributes.width) || 800;
+    element.height = Number(attributes.height) || 400;
+    if (typeof element.getContext !== 'function') {
       const drawCalls = [];
       const ctx = {
-        canvas: el,
+        canvas: element,
         drawCalls,
         clearRect: (x, y, w, h) => drawCalls.push({ type: 'clearRect', x, y, w, h }),
         fillRect: (x, y, w, h) => drawCalls.push({ type: 'fillRect', x, y, w, h }),
@@ -608,14 +608,14 @@ function createDOMElement(tagName, attributes = {}) {
         restore: () => drawCalls.push({ type: 'restore' }),
         setTransform: (a, b, c, d, e, f) => drawCalls.push({ type: 'setTransform', a, b, c, d, e, f }),
       };
-      el.getContext = (contextId) => {
+      element.getContext = (contextId) => {
         if (contextId === '2d') return ctx;
         return null;
       };
     }
   }
 
-  return el;
+  return element;
 }
 
 /**
@@ -746,6 +746,11 @@ export function mountApp(container, options = {}) {
     };
   }
 
+  if (root.__nexus_app_mounted && root.__nexus_app_instance) {
+    return root.__nexus_app_instance;
+  }
+  root.__nexus_app_mounted = true;
+
   if (root.__nexus_app_instance && typeof root.__nexus_app_instance.destroy === 'function') {
     try {
       root.__nexus_app_instance.destroy();
@@ -857,7 +862,21 @@ export function mountApp(container, options = {}) {
     }
   }
 
-  const rawCandles = options.candles || options.chartOptions?.candles || options.data || [];
+  let rawCandles = options.candles || options.chartOptions?.candles || options.data || [];
+  if (!rawCandles || rawCandles.length === 0) {
+    rawCandles = [];
+    let curP = 50000;
+    const nowSec = Math.floor(Date.now() / 1000) - 100 * 60;
+    for (let i = 0; i < 100; i++) {
+      const delta = (Math.random() - 0.48) * 40;
+      const open = curP;
+      const close = Math.round((open + delta) * 100) / 100;
+      const high = Math.round((Math.max(open, close) + Math.random() * 25) * 100) / 100;
+      const low = Math.round((Math.min(open, close) - Math.random() * 25) * 100) / 100;
+      rawCandles.push({ time: nowSec + i * 60, open, high, low, close, volume: 100 });
+      curP = close;
+    }
+  }
 
   let chart = options.chart || null;
   if (!chart && canvasEl) {
