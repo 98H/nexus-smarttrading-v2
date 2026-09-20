@@ -9,15 +9,190 @@ import {
   ChartCanvas,
   DEFAULT_MIN_ZOOM,
   DEFAULT_MAX_ZOOM,
-  aggregateCandles,
   getTimeframeDuration,
 } from './chart.js';
 
-export { Chart, ChartCanvas, DEFAULT_MIN_ZOOM, DEFAULT_MAX_ZOOM, aggregateCandles, getTimeframeDuration };
+export { Chart, ChartCanvas, DEFAULT_MIN_ZOOM, DEFAULT_MAX_ZOOM, getTimeframeDuration };
+
+const SUPPORTED_TIMEFRAMES = new Set(['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']);
+
+/**
+ * Parses a timeframe duration string into milliseconds.
+ *
+ * @param {string} timeframe - Duration identifier (e.g. '1m', '5m', '1h', '1d')
+ * @returns {number|null} Duration in milliseconds or null if unsupported
+ */
+function parseTimeframeMs(timeframe) {
+  if (typeof timeframe !== 'string') return null;
+  const match = timeframe.trim().toLowerCase().match(/^(\d+)([smhdw])$/);
+  if (match) {
+    const val = parseInt(match[1], 10);
+    if (val <= 0) return null;
+    const unit = match[2];
+    switch (unit) {
+      case 's': return val * 1000;
+      case 'm': return val * 60 * 1000;
+      case 'h': return val * 3600 * 1000;
+      case 'd': return val * 86400 * 1000;
+      case 'w': return val * 7 * 86400 * 1000;
+      default: return null;
+    }
+  }
+  if (typeof getTimeframeDuration === 'function') {
+    try {
+      const dur = getTimeframeDuration(timeframe);
+      if (typeof dur === 'number' && dur > 0) return dur;
+    } catch {}
+  }
+  return null;
+}
+
+/**
+ * Aggregates sequential candlestick records into higher-timeframe buckets.
+ *
+ * @param {Array<Object>} candles - Input candlestick data
+ * @param {string} timeframe - Target timeframe duration
+ * @returns {Array<Object>} Aggregated candlestick array
+ */
+export function aggregateCandles(candles, timeframe) {
+  const bucketMs = parseTimeframeMs(timeframe);
+  if (!bucketMs) {
+    throw new Error(`Unsupported timeframe: ${timeframe}`);
+  }
+
+  if (!candles || !Array.isArray(candles) || candles.length === 0) {
+    return [];
+  }
+
+  const sorted = [...candles].sort((a, b) => a.timestamp - b.timestamp);
+  const startTime = sorted[0].timestamp;
+  const buckets = new Map();
+
+  for (const c of sorted) {
+    const bucketIndex = Math.floor((c.timestamp - startTime) / bucketMs);
+    if (!buckets.has(bucketIndex)) {
+      buckets.set(bucketIndex, []);
+    }
+    buckets.get(bucketIndex).push(c);
+  }
+
+  const result = [];
+  for (const bucketCandles of buckets.values()) {
+    if (bucketCandles.length === 0) continue;
+    const open = bucketCandles[0].open;
+    const close = bucketCandles[bucketCandles.length - 1].close;
+    let high = -Infinity;
+    let low = Infinity;
+    let volume = 0;
+
+    for (const c of bucketCandles) {
+      if (c.high > high) high = c.high;
+      if (c.low < low) low = c.low;
+      volume += (c.volume || 0);
+    }
+
+    result.push({
+      timestamp: bucketCandles[0].timestamp,
+      open,
+      high,
+      low,
+      close,
+      volume,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Initializes toolbar timeframe controls and links them to the chart instance.
+ *
+ * @param {Object} options - Configuration object
+ * @param {HTMLElement|Object} options.toolbarElement - Toolbar container DOM or mock element
+ * @param {Chart} options.chartInstance - Target Chart instance to update
+ * @param {Array<Object>} [options.rawCandles=[]] - Underlying candlestick dataset
+ * @returns {Object} Toolbar controller handle
+ */
+export function initToolbar({ toolbarElement, chartInstance, rawCandles = [] } = {}) {
+  if (!toolbarElement) return null;
+
+  let buttons = [];
+  if (typeof toolbarElement.querySelectorAll === 'function') {
+    buttons = Array.from(toolbarElement.querySelectorAll('[data-timeframe]'));
+    if (buttons.length === 0) {
+      buttons = Array.from(toolbarElement.querySelectorAll('button'));
+    }
+  }
+  if (buttons.length === 0 && Array.isArray(toolbarElement.children)) {
+    buttons = Array.from(toolbarElement.children).filter(
+      (c) => c && (c.tagName === 'BUTTON' || Boolean(c.dataset?.timeframe))
+    );
+  }
+
+  const getTf = (btn) => {
+    if (!btn) return null;
+    return (
+      btn.dataset?.timeframe ||
+      (typeof btn.getAttribute === 'function' ? btn.getAttribute('data-timeframe') : null) ||
+      (btn.attributes && btn.attributes['data-timeframe']) ||
+      btn.textContent?.trim() ||
+      null
+    );
+  };
+
+  const sourceCandles =
+    (rawCandles && rawCandles.length > 0 && rawCandles) ||
+    (chartInstance && typeof chartInstance.getCandles === 'function' ? chartInstance.getCandles() : []);
+
+  buttons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const targetTf = getTf(btn);
+      if (!targetTf) return;
+
+      const currentTf =
+        chartInstance && typeof chartInstance.getTimeframe === 'function'
+          ? chartInstance.getTimeframe()
+          : null;
+
+      if (currentTf === targetTf) {
+        return;
+      }
+
+      buttons.forEach((b) => {
+        const bTf = getTf(b);
+        if (bTf === targetTf) {
+          b.classList.add('active');
+          if (typeof b.setAttribute === 'function') {
+            b.setAttribute('aria-pressed', 'true');
+          }
+        } else {
+          b.classList.remove('active');
+          if (typeof b.setAttribute === 'function') {
+            b.setAttribute('aria-pressed', 'false');
+          }
+        }
+      });
+
+      const inputCandles =
+        (rawCandles && rawCandles.length > 0 && rawCandles) ||
+        sourceCandles ||
+        (chartInstance && typeof chartInstance.getCandles === 'function' ? chartInstance.getCandles() : []);
+
+      const aggregated = targetTf === '1m' ? inputCandles : aggregateCandles(inputCandles, targetTf);
+
+      if (chartInstance && typeof chartInstance.render === 'function') {
+        chartInstance.render(aggregated, targetTf);
+      }
+    });
+  });
+
+  return {
+    buttons,
+  };
+}
 
 /**
  * Matches a DOM element against basic and compound CSS selectors.
- * Supports tag names, classes, IDs, and attribute selectors.
  *
  * @param {Object|HTMLElement} element - Target element to evaluate
  * @param {string} selector - CSS selector string
@@ -413,7 +588,7 @@ export function mountApp(container, options = {}) {
   }
 
   const timeframes = options.timeframes || ['1m', '5m', '1h'];
-  let activeTimeframe = options.initialTimeframe || options.timeframe || '1m';
+  const initialTimeframe = options.initialTimeframe || options.timeframe || '1m';
 
   let toolbarEl =
     (typeof root.querySelector === 'function' &&
@@ -437,7 +612,7 @@ export function mountApp(container, options = {}) {
   if ((!buttons || buttons.length === 0) && toolbarEl && typeof toolbarEl.appendChild === 'function') {
     buttons = [];
     for (const tf of timeframes) {
-      const isActive = tf === activeTimeframe;
+      const isActive = tf === initialTimeframe;
       const btn = createDOMElement('button', {
         'data-timeframe': tf,
         'aria-pressed': isActive ? 'true' : 'false',
@@ -474,57 +649,33 @@ export function mountApp(container, options = {}) {
     }
   }
 
+  const rawCandles = options.candles || options.chartOptions?.candles || options.data || [];
+
   if (!chart && canvasEl) {
     const chartConfig = {
       ...(options.chartOptions || options),
-      candles: options.candles || options.chartOptions?.candles || options.data || [],
-      timeframe: activeTimeframe,
+      candles: rawCandles,
+      timeframe: initialTimeframe,
       width: options.width || canvasEl.width || 800,
       height: options.height || canvasEl.height || 400,
     };
     chart = new Chart(canvasEl, chartConfig);
   }
 
-  if (buttons && buttons.length > 0) {
-    buttons.forEach((btn) => {
-      const tf = btn.getAttribute('data-timeframe');
-      const isActive = tf === activeTimeframe;
-      if (isActive) {
-        btn.classList.add('active');
-        btn.setAttribute('aria-pressed', 'true');
-      } else {
-        btn.classList.remove('active');
-        btn.setAttribute('aria-pressed', 'false');
-      }
-
-      btn.addEventListener('click', () => {
-        if (activeTimeframe === tf) return;
-        activeTimeframe = tf;
-
-        const currentButtons =
-          (toolbarEl && typeof toolbarEl.querySelectorAll === 'function' && toolbarEl.querySelectorAll('button[data-timeframe]')) ||
-          buttons;
-
-        currentButtons.forEach((b) => {
-          const isTarget = b.getAttribute('data-timeframe') === tf;
-          if (isTarget) {
-            b.classList.add('active');
-            b.setAttribute('aria-pressed', 'true');
-          } else {
-            b.classList.remove('active');
-            b.setAttribute('aria-pressed', 'false');
-          }
-        });
-
-        if (chart && typeof chart.setTimeframe === 'function') {
-          chart.setTimeframe(tf);
-        }
-      });
+  if (toolbarEl && chart) {
+    initToolbar({
+      toolbarElement: toolbarEl,
+      chartInstance: chart,
+      rawCandles,
     });
   }
 
   if (chart && typeof chart.render === 'function') {
-    chart.render();
+    const initialCandles =
+      initialTimeframe === '1m' || rawCandles.length === 0
+        ? rawCandles
+        : aggregateCandles(rawCandles, initialTimeframe);
+    chart.render(initialCandles, initialTimeframe);
   }
 
   if (chart && typeof chart.start === 'function' && options.autoStart !== false) {
@@ -602,9 +753,6 @@ export function mountApp(container, options = {}) {
   };
 }
 
-<<<<<<< HEAD
-// Browser Auto-Mount Bootstrap Guard
-=======
 export const mount = mountApp;
 
 export function initApp(container, options = {}) {
@@ -614,24 +762,11 @@ export function initApp(container, options = {}) {
 export const init = initApp;
 export const initialize = initApp;
 
->>>>>>> task/story-44727988
 if (typeof document !== 'undefined') {
   const mountTarget = document.getElementById('app') || document.body;
   if (mountTarget && !mountTarget.__nexus_mounted) {
     mountTarget.__nexus_mounted = true;
-<<<<<<< HEAD
-    if (typeof mountApp === 'function') {
-      mountApp(mountTarget);
-    } else if (typeof mount === 'function') {
-      mount(mountTarget);
-    } else if (typeof init === 'function') {
-      init(mountTarget);
-    }
-  }
-}
-=======
     if (typeof mountApp === 'function') mountApp(mountTarget);
     else if (typeof mount === 'function') mount(mountTarget);
   }
 }
->>>>>>> task/story-44727988
