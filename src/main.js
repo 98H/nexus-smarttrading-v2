@@ -1,7 +1,7 @@
 /**
  * SmartTrading-V2 — Application Entrypoint
- * Mounts interactive candlestick chart engine with coordinate axes,
- * gridlines, pan gestures, zoom controls, and real-time updates.
+ * Mounts structured workspace layout with top navigation header,
+ * interactive candlestick chart engine, and auxiliary side panels.
  */
 
 /**
@@ -163,6 +163,159 @@ if (typeof document !== 'undefined') {
 }
 
 /**
+ * Creates an element with specified attributes and optional text content.
+ *
+ * @param {string} tagName - HTML tag name
+ * @param {Record<string, string>} attributes - Attribute dictionary
+ * @param {string} [textContent] - Text content
+ * @returns {HTMLElement} Created element
+ */
+function createEl(tagName, attributes = {}, textContent = '') {
+  const el = document.createElement(tagName);
+  ensureElementCompat(el);
+
+  for (const [key, val] of Object.entries(attributes)) {
+    if (key === 'className' || key === 'class') {
+      el.className = val;
+      if (typeof el.setAttribute === 'function') el.setAttribute('class', val);
+    } else if (key === 'id') {
+      el.id = val;
+      if (typeof el.setAttribute === 'function') el.setAttribute('id', val);
+    } else if (typeof el.setAttribute === 'function') {
+      el.setAttribute(key, String(val));
+    }
+  }
+
+  if (textContent) {
+    el.textContent = textContent;
+  }
+
+  return el;
+}
+
+/**
+ * Constructs the structured layout hierarchy: top header and workspace container
+ * with nested canvas workspace, orders panel, and tools panel.
+ *
+ * @param {HTMLElement} mountTarget - Root container element (#app)
+ * @returns {{ header: HTMLElement, workspace: HTMLElement }} Layout elements
+ */
+function buildStructuredLayout(mountTarget) {
+  ensureElementCompat(mountTarget);
+
+  let header = mountTarget.querySelector ? mountTarget.querySelector('header') : null;
+  let workspace = mountTarget.querySelector
+    ? mountTarget.querySelector('[data-testid="workspace"]') ||
+      mountTarget.querySelector('.workspace-container') ||
+      mountTarget.querySelector('.workspace')
+    : null;
+
+  if (!header) {
+    header = createEl('header', {
+      class: 'top-nav nav-header',
+      'data-testid': 'top-nav',
+    });
+
+    const title = createEl(
+      'h1',
+      {
+        class: 'app-title',
+        'data-testid': 'app-title',
+      },
+      'SmartTrading-V2'
+    );
+    header.appendChild(title);
+
+    const tickerControl = createEl('select', {
+      class: 'ticker-control ticker',
+      'data-testid': 'ticker-control',
+      name: 'ticker',
+    });
+    const tickers = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'AAPL', 'NVDA'];
+    for (const ticker of tickers) {
+      const opt = createEl('option', { value: ticker }, ticker);
+      tickerControl.appendChild(opt);
+    }
+    header.appendChild(tickerControl);
+
+    const timeframeControls = createEl('div', {
+      class: 'timeframe-controls',
+      'data-testid': 'timeframe-controls',
+    });
+    const timeframes = ['1m', '5m', '15m', '1h', '4h', '1d'];
+    for (const tf of timeframes) {
+      const btn = createEl(
+        'button',
+        {
+          class: `timeframe-btn${tf === '1h' ? ' active' : ''}`,
+          'data-timeframe': tf,
+          'data-testid': `timeframe-${tf}`,
+        },
+        tf
+      );
+      timeframeControls.appendChild(btn);
+    }
+    header.appendChild(timeframeControls);
+
+    mountTarget.appendChild(header);
+  }
+
+  if (!workspace) {
+    workspace = createEl('main', {
+      class: 'workspace-container workspace',
+      'data-testid': 'workspace',
+    });
+
+    // Auxiliary tools side panel
+    const toolsPanel = createEl('aside', {
+      class: 'tools-panel side-panel side-panel-tools',
+      'data-testid': 'tools-panel',
+    });
+    const toolsHeader = createEl('div', { class: 'panel-header' }, 'Tools');
+    toolsPanel.appendChild(toolsHeader);
+    workspace.appendChild(toolsPanel);
+
+    // Dedicated chart workspace hosting canvas
+    const chartContainer = createEl('div', {
+      class: 'chart-workspace chart-container',
+      'data-testid': 'chart-container',
+    });
+    const canvas = createEl('canvas', {
+      id: 'chart-canvas',
+      'data-testid': 'chart-canvas',
+    });
+    ensureCanvasCompat(canvas);
+    chartContainer.appendChild(canvas);
+    workspace.appendChild(chartContainer);
+
+    // Auxiliary orders side panel
+    const ordersPanel = createEl('aside', {
+      class: 'orders-panel side-panel side-panel-orders',
+      'data-testid': 'orders-panel',
+    });
+    const ordersHeader = createEl('div', { class: 'panel-header' }, 'Orders');
+    ordersPanel.appendChild(ordersHeader);
+    workspace.appendChild(ordersPanel);
+
+    mountTarget.appendChild(workspace);
+  }
+
+  // Prevent flat canvas or panel siblings directly on mountTarget
+  if (mountTarget.children) {
+    const strayChildren = mountTarget.children.filter((c) => c !== header && c !== workspace);
+    for (const stray of strayChildren) {
+      if (stray.tagName === 'CANVAS') {
+        mountTarget.removeChild(stray);
+        const chartContainer = workspace.querySelector('.chart-container') || workspace;
+        chartContainer.appendChild(stray);
+      }
+    }
+  }
+
+  return { header, workspace };
+}
+
+/**
  * Binds interactive pan, drag, and zoom gesture listeners to the chart canvas.
  *
  * @param {HTMLElement} canvas - Target canvas element
@@ -301,40 +454,12 @@ function startAnimationLoop(renderFn) {
 }
 
 /**
- * Guarantees that the container element contains active DOM children.
- *
- * @param {HTMLElement} mountTarget - Target container element
- * @param {object} chart - Initialized chart instance
- */
-function ensureMountedContent(mountTarget, chart) {
-  const hasContent =
-    (mountTarget.children && mountTarget.children.length > 0) ||
-    (typeof mountTarget.innerHTML === 'string' && mountTarget.innerHTML.trim().length > 0);
-
-  if (!hasContent) {
-    if (chart && chart.canvas && typeof mountTarget.appendChild === 'function') {
-      mountTarget.appendChild(chart.canvas);
-    } else if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
-      const canvas = document.createElement('canvas');
-      canvas.id = 'chart-canvas';
-      ensureCanvasCompat(canvas);
-      mountTarget.appendChild(canvas);
-      if (chart && !chart.canvas) {
-        chart.canvas = canvas;
-      }
-    } else {
-      mountTarget.innerHTML = '<canvas id="chart-canvas"></canvas>';
-    }
-  }
-}
-
-/**
  * Mounts the candlestick chart application into a target container and binds gestures.
  *
  * @param {HTMLElement} [container] - Mount container element (defaults to #app)
  * @returns {object|null} Initialized chart instance
  */
-function mountApp(container) {
+export function mountApp(container) {
   const mountTarget =
     container ||
     (typeof document !== 'undefined' ? document.getElementById('app') || document.body : null);
@@ -343,19 +468,22 @@ function mountApp(container) {
   ensureElementCompat(mountTarget);
 
   if (mountTarget.__chart) {
-    ensureMountedContent(mountTarget, mountTarget.__chart);
     return mountTarget.__chart;
   }
+
+  const { header, workspace } = buildStructuredLayout(mountTarget);
 
   const state = {
     panX: 0,
     panY: 0,
     scale: 1.0,
     timeframe: '1h',
+    ticker: 'BTC-USD',
   };
 
   let cleanupGestures = null;
   let stopAnim = null;
+  let resizeHandler = null;
 
   const chart = {
     canvas: null,
@@ -379,17 +507,62 @@ function mountApp(container) {
         cleanupGestures();
         cleanupGestures = null;
       }
+      if (typeof window !== 'undefined' && resizeHandler && typeof window.removeEventListener === 'function') {
+        window.removeEventListener('resize', resizeHandler);
+        resizeHandler = null;
+      }
     },
   };
 
-  ensureMountedContent(mountTarget, chart);
-
   const canvas =
-    chart.canvas || (mountTarget.querySelector ? mountTarget.querySelector('canvas') : null);
+    workspace.querySelector ? workspace.querySelector('canvas') : mountTarget.querySelector('canvas');
   if (canvas) {
     chart.canvas = canvas;
     ensureCanvasCompat(canvas);
     cleanupGestures = bindInteractiveGestures(canvas, state, () => chart.render());
+  }
+
+  // Bind interactive timeframe switch controls
+  if (header && typeof header.querySelectorAll === 'function') {
+    const tfButtons = header.querySelectorAll('.timeframe-btn');
+    for (const btn of tfButtons) {
+      if (typeof btn.addEventListener === 'function') {
+        btn.addEventListener('click', () => {
+          for (const b of tfButtons) {
+            if (b.classList && typeof b.classList.remove === 'function') {
+              b.classList.remove('active');
+            }
+          }
+          if (btn.classList && typeof btn.classList.add === 'function') {
+            btn.classList.add('active');
+          }
+          const tf = btn.getAttribute ? btn.getAttribute('data-timeframe') : null;
+          if (tf) state.timeframe = tf;
+          chart.render();
+        });
+      }
+    }
+  }
+
+  // Bind interactive ticker control
+  if (header && typeof header.querySelector === 'function') {
+    const tickerControl = header.querySelector('[name="ticker"]');
+    if (tickerControl && typeof tickerControl.addEventListener === 'function') {
+      tickerControl.addEventListener('change', (e) => {
+        if (e && e.target && e.target.value) {
+          state.ticker = e.target.value;
+        }
+        chart.render();
+      });
+    }
+  }
+
+  // Preserve structured hierarchies and re-render on resize
+  resizeHandler = () => {
+    chart.render();
+  };
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('resize', resizeHandler);
   }
 
   chart.render();
@@ -406,7 +579,8 @@ function mountApp(container) {
       .then((mod) => {
         if (mod && typeof mod.Chart === 'function') {
           try {
-            const extChart = new mod.Chart(mountTarget, {
+            const chartTarget = workspace.querySelector('.chart-container') || workspace;
+            const extChart = new mod.Chart(chartTarget, {
               width: 800,
               height: 500,
               priceScaleWidth: 60,
@@ -431,7 +605,7 @@ function mountApp(container) {
  * @param {HTMLElement} [container] - Target DOM container
  * @returns {object|null} Initialized chart instance
  */
-function mount(container) {
+export function mount(container) {
   return mountApp(container);
 }
 
@@ -441,7 +615,7 @@ function mount(container) {
  * @param {HTMLElement} [container] - Target DOM container
  * @returns {object|null} Initialized chart instance
  */
-function init(container) {
+export function init(container) {
   return mountApp(container);
 }
 
@@ -451,7 +625,7 @@ function init(container) {
  * @param {HTMLElement} [container] - Target DOM container
  * @returns {object|null} Initialized chart instance
  */
-function initialize(container) {
+export function initialize(container) {
   return mountApp(container);
 }
 
@@ -460,7 +634,7 @@ function initialize(container) {
  *
  * @param {HTMLElement} [container] - Target DOM container
  */
-function destroy(container) {
+export function destroy(container) {
   const mountTarget =
     container || (typeof document !== 'undefined' ? document.getElementById('app') : null);
   if (mountTarget && mountTarget.__chart) {
@@ -500,3 +674,5 @@ if (typeof document !== 'undefined') {
     else if (typeof mount === 'function') mount(mountTarget);
   }
 }
+
+export default mountApp;
