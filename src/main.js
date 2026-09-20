@@ -2,7 +2,7 @@
  * SmartTrading-V2 — Application Entrypoint
  * Mounts structured workspace layout with top navigation header,
  * interactive candlestick chart engine, and auxiliary side panels.
- * Stylesheet wiring reference: ./styles.css
+ * Stylesheet wiring reference: ./style.css
  */
 
 /**
@@ -10,12 +10,12 @@
  */
 function injectStyles() {
   if (typeof document !== 'undefined' && document.head) {
-    const existing = document.querySelector ? document.querySelector('link[href*="styles.css"]') : null;
+    const existing = document.querySelector ? document.querySelector('link[rel="stylesheet"]') : null;
     if (!existing && typeof document.createElement === 'function') {
       const link = document.createElement('link');
       if (typeof link.setAttribute === 'function') {
         link.setAttribute('rel', 'stylesheet');
-        link.setAttribute('href', './styles.css');
+        link.setAttribute('href', './style.css');
         link.setAttribute('type', 'text/css');
       }
       if (typeof document.head.appendChild === 'function') {
@@ -319,11 +319,19 @@ function buildStructuredLayout(mountTarget) {
       class: 'chart-workspace chart-container',
       'data-testid': 'chart-container',
     });
-    const canvas = createEl('canvas', {
-      id: 'chart-canvas',
-      class: 'chart-canvas',
-      'data-testid': 'chart-canvas',
-    });
+
+    // Reuse existing raw canvas on mountTarget if present
+    let canvas = mountTarget.querySelector ? mountTarget.querySelector('canvas') : null;
+    if (canvas && canvas.parentElement) {
+      canvas.parentElement.removeChild(canvas);
+    }
+    if (!canvas) {
+      canvas = createEl('canvas', {
+        id: 'chart-canvas',
+        class: 'chart-canvas',
+        'data-testid': 'chart-canvas',
+      });
+    }
     ensureCanvasCompat(canvas);
     chartContainer.appendChild(canvas);
     workspace.appendChild(chartContainer);
@@ -389,6 +397,14 @@ function buildStructuredLayout(mountTarget) {
         mountTarget.removeChild(stray);
         const chartContainer = workspace.querySelector('.chart-container') || workspace;
         chartContainer.appendChild(stray);
+      } else if (
+        stray.classList &&
+        (stray.classList.contains('orders-panel') ||
+          stray.classList.contains('tools-panel') ||
+          stray.classList.contains('side-panel'))
+      ) {
+        mountTarget.removeChild(stray);
+        workspace.appendChild(stray);
       }
     }
   }
@@ -575,14 +591,21 @@ export function mountApp(container) {
   const chart = {
     canvas: null,
     state,
+    extChart: null,
     render: () => {
       if (chart.canvas) {
         renderChartFrame(chart.canvas, state);
+      }
+      if (chart.extChart && typeof chart.extChart.render === 'function') {
+        chart.extChart.render();
       }
     },
     start: () => {
       if (!stopAnim) {
         stopAnim = startAnimationLoop(() => chart.render());
+      }
+      if (chart.extChart && typeof chart.extChart.start === 'function') {
+        chart.extChart.start();
       }
     },
     destroy: () => {
@@ -593,6 +616,10 @@ export function mountApp(container) {
       if (typeof cleanupGestures === 'function') {
         cleanupGestures();
         cleanupGestures = null;
+      }
+      if (chart.extChart && typeof chart.extChart.destroy === 'function') {
+        chart.extChart.destroy();
+        chart.extChart = null;
       }
       if (typeof window !== 'undefined' && resizeHandler && typeof window.removeEventListener === 'function') {
         window.removeEventListener('resize', resizeHandler);
@@ -657,6 +684,16 @@ export function mountApp(container) {
 
   // Preserve structured hierarchies and re-render on resize
   resizeHandler = () => {
+    if (mountTarget.children) {
+      const strays = mountTarget.children.filter((c) => c !== header && c !== workspace);
+      for (const stray of strays) {
+        if (stray.tagName === 'CANVAS') {
+          mountTarget.removeChild(stray);
+          const chartContainer = workspace.querySelector('.chart-container') || workspace;
+          chartContainer.appendChild(stray);
+        }
+      }
+    }
     chart.render();
   };
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
@@ -685,6 +722,7 @@ export function mountApp(container) {
               timeScaleHeight: 30,
             });
             if (extChart) {
+              chart.extChart = extChart;
               if (typeof extChart.render === 'function') extChart.render();
               if (typeof extChart.start === 'function') extChart.start();
             }
@@ -728,6 +766,14 @@ export function initialize(container) {
 }
 
 /**
+ * Application entrypoint initialization hook.
+ *
+ * @param {HTMLElement} [container] - Target DOM container
+ * @returns {object} Initialized chart instance
+ */
+export const initApp = mountApp;
+
+/**
  * Unmounts and tears down the chart engine from the container.
  *
  * @param {HTMLElement} [container] - Target DOM container
@@ -751,6 +797,7 @@ export function destroy(container) {
 if (typeof globalThis !== 'undefined') {
   globalThis.mountApp = mountApp;
   globalThis.mount = mount;
+  globalThis.initApp = initApp;
   globalThis.init = init;
   globalThis.initialize = initialize;
   globalThis.destroy = destroy;
@@ -758,10 +805,20 @@ if (typeof globalThis !== 'undefined') {
 if (typeof window !== 'undefined') {
   window.mountApp = mountApp;
   window.mount = mount;
+  window.initApp = initApp;
   window.init = init;
   window.initialize = initialize;
   window.destroy = destroy;
 }
 
 // Browser auto-mount guard
+if (typeof document !== 'undefined') {
+  const mountTarget = document.getElementById('app') || document.body;
+  if (mountTarget && !mountTarget.__nexus_mounted) {
+    mountTarget.__nexus_mounted = true;
+    if (typeof mountApp === 'function') mountApp(mountTarget);
+    else if (typeof mount === 'function') mount(mountTarget);
+  }
+}
+
 export default mountApp;
