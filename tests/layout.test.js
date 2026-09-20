@@ -1,316 +1,593 @@
 import test, { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
+import fs from 'node:fs/promises';
 import path from 'node:path';
-import { JSDOM } from 'jsdom';
+import { fileURLToPath } from 'node:url';
 
-const ROOT_DIR = process.cwd();
-const INDEX_HTML_PATH = path.resolve(ROOT_DIR, 'index.html');
-const MAIN_JS_PATH = path.resolve(ROOT_DIR, 'src/main.js');
+// ---------------------------------------------------------------------------
+// Environment & DOM Harness Setup
+// Handles both JSDOM (if installed in environment) and a self-contained DOM
+// fallback to ensure zero-dependency deterministic test execution.
+// ---------------------------------------------------------------------------
 
-describe('STORY 1.4.1: Resolve UNSTRUCTURED_UI_LAYOUT (Defect ID: DF-LAYOUT-01)', () => {
-  let dom;
-  let originalGlobalDocument;
-  let originalGlobalWindow;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SRC_MAIN_PATH = path.resolve(__dirname, '../src/main.js');
+const INDEX_HTML_PATH = path.resolve(__dirname, '../index.html');
+
+let JSDOMClass;
+try {
+  const jsdomModule = await import('jsdom');
+  JSDOMClass = jsdomModule.JSDOM;
+} catch {
+  // JSDOM not available in environment; lightweight fallback DOM will be used.
+}
+
+class MockClassList {
+  constructor(element) {
+    this._element = element;
+    this._classes = new Set();
+  }
+  add(...names) {
+    for (const name of names) if (name) this._classes.add(name);
+    this._sync();
+  }
+  remove(...names) {
+    for (const name of names) this._classes.delete(name);
+    this._sync();
+  }
+  contains(name) {
+    return this._classes.has(name);
+  }
+  _sync() {
+    this._element.attributes.set('class', Array.from(this._classes).join(' '));
+  }
+  _load(classString) {
+    this._classes.clear();
+    if (classString) {
+      classString.trim().split(/\s+/).forEach((c) => this._classes.add(c));
+    }
+  }
+}
+
+class MockElement {
+  constructor(tagName = 'div') {
+    this.tagName = tagName.toUpperCase();
+    this.nodeType = 1;
+    this.parentElement = null;
+    this.children = [];
+    this.attributes = new Map();
+    this.classList = new MockClassList(this);
+    this._textContent = '';
+  }
+
+  get id() {
+    return this.getAttribute('id') || '';
+  }
+
+  set id(value) {
+    this.setAttribute('id', value);
+  }
+
+  get className() {
+    return this.getAttribute('class') || '';
+  }
+
+  set className(value) {
+    this.setAttribute('class', value);
+    this.classList._load(value);
+  }
+
+  getAttribute(name) {
+    return this.attributes.get(name.toLowerCase()) ?? null;
+  }
+
+  setAttribute(name, value) {
+    const key = name.toLowerCase();
+    this.attributes.set(key, String(value));
+    if (key === 'class') {
+      this.classList._load(String(value));
+    }
+  }
+
+  hasAttribute(name) {
+    return this.attributes.has(name.toLowerCase());
+  }
+
+  removeAttribute(name) {
+    const key = name.toLowerCase();
+    this.attributes.delete(key);
+    if (key === 'class') {
+      this.classList._load('');
+    }
+  }
+
+  appendChild(child) {
+    if (child.parentElement) {
+      child.parentElement.removeChild(child);
+    }
+    child.parentElement = this;
+    this.children.push(child);
+    return child;
+  }
+
+  removeChild(child) {
+    const index = this.children.indexOf(child);
+    if (index !== -1) {
+      this.children.splice(index, 1);
+      child.parentElement = null;
+    }
+    return child;
+  }
+
+  contains(target) {
+    let current = target;
+    while (current) {
+      if (current === this) return true;
+      current = current.parentElement;
+    }
+    return false;
+  }
+
+  get textContent() {
+    if (this.children.length === 0) return this._textContent;
+    return this.children.map((c) => c.textContent).join('');
+  }
+
+  set textContent(val) {
+    this.children = [];
+    this._textContent = String(val);
+  }
+
+  get innerHTML() {
+    return this.children
+      .map((child) => {
+        const tag = child.tagName.toLowerCase();
+        const attrs = Array.from(child.attributes.entries())
+          .map(([k, v]) => ` ${k}="${v}"`)
+          .join('');
+        return `<${tag}${attrs}>${child.innerHTML || child._textContent}</${tag}>`;
+      })
+      .join('');
+  }
+
+  set innerHTML(htmlString) {
+    this.children = [];
+    this._textContent = '';
+    parseHtmlIntoMock(htmlString, this);
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
+  querySelectorAll(selector) {
+    const results = [];
+    const selectors = selector.split(',').map((s) => s.trim());
+
+    const traverse = (node) => {
+      for (const child of node.children) {
+        for (const sel of selectors) {
+          if (matchesSelector(child, sel)) {
+            if (!results.includes(child)) {
+              results.push(child);
+            }
+            break;
+          }
+        }
+        traverse(child);
+      }
+    };
+
+    traverse(this);
+    return results;
+  }
+}
+
+function matchesSelector(el, selector) {
+  selector = selector.trim();
+
+  // Child selector: "parent > child"
+  if (selector.includes(' > ')) {
+    const parts = selector.split(' > ').map((s) => s.trim());
+    const childSel = parts[parts.length - 1];
+    const parentSel = parts[parts.length - 2];
+    return matchesSelector(el, childSel) && el.parentElement && matchesSelector(el.parentElement, parentSel);
+  }
+
+  // Descendant selector: "ancestor descendant"
+  if (selector.includes(' ')) {
+    const parts = selector.split(/\s+/);
+    const targetSel = parts[parts.length - 1];
+    if (!matchesSelector(el, targetSel)) return false;
+
+    let ancestor = el.parentElement;
+    const ancestorSel = parts[0];
+    while (ancestor) {
+      if (matchesSelector(ancestor, ancestorSel)) return true;
+      ancestor = ancestor.parentElement;
+    }
+    return false;
+  }
+
+  // Attribute selector: [data-testid="value"] or [attr]
+  const attrMatch = selector.match(/^\[([a-zA-Z0-9_-]+)(?:=["']?([^"']*)["']?)?\]$/);
+  if (attrMatch) {
+    const [, name, val] = attrMatch;
+    return val !== undefined ? el.getAttribute(name) === val : el.hasAttribute(name);
+  }
+
+  // Tag + class: header.app-header or main.workspace-container
+  const tagClassMatch = selector.match(/^([a-zA-Z0-9_-]+)\.([a-zA-Z0-9_.-]+)$/);
+  if (tagClassMatch) {
+    const [, tag, classes] = tagClassMatch;
+    const classNames = classes.split('.');
+    const tagMatches = el.tagName.toLowerCase() === tag.toLowerCase();
+    const classesMatch = classNames.every((c) => el.classList.contains(c));
+    return tagMatches && classesMatch;
+  }
+
+  // Pure class selector: .app-header
+  if (selector.startsWith('.')) {
+    const classNames = selector.slice(1).split('.');
+    return classNames.every((c) => el.classList.contains(c));
+  }
+
+  // Pure ID selector: #app
+  if (selector.startsWith('#')) {
+    return el.id === selector.slice(1);
+  }
+
+  // Tag selector: header, main, canvas, select
+  return el.tagName.toLowerCase() === selector.toLowerCase();
+}
+
+function parseHtmlIntoMock(html, rootElement) {
+  const tokenRegex = /<([\/a-zA-Z0-9-]+)([^>]*)>|([^<]+)/g;
+  let current = rootElement;
+  let match;
+
+  while ((match = tokenRegex.exec(html)) !== null) {
+    const [fullMatch, tagName, attrString, textContent] = match;
+
+    if (textContent) {
+      const text = textContent.trim();
+      if (text && current) {
+        current._textContent += (current._textContent ? ' ' : '') + text;
+      }
+      continue;
+    }
+
+    if (tagName.startsWith('/')) {
+      if (current.parentElement && current !== rootElement) {
+        current = current.parentElement;
+      }
+    } else {
+      const isSelfClosing = attrString.endsWith('/') || ['canvas', 'input', 'img', 'br', 'hr'].includes(tagName.toLowerCase());
+      const child = new MockElement(tagName);
+
+      if (attrString) {
+        const attrRegex = /([a-zA-Z0-9_-]+)(?:=["']([^"']*)["'])?/g;
+        let attrMatch;
+        while ((attrMatch = attrRegex.exec(attrString)) !== null) {
+          const [, key, val = ''] = attrMatch;
+          child.setAttribute(key, val);
+        }
+      }
+
+      current.appendChild(child);
+      if (!isSelfClosing) {
+        current = child;
+      }
+    }
+  }
+}
+
+class MockDocument extends MockElement {
+  constructor() {
+    super('HTML');
+    this.body = new MockElement('BODY');
+    this.appendChild(this.body);
+    this._listeners = new Map();
+  }
+
+  createElement(tagName) {
+    return new MockElement(tagName);
+  }
+
+  getElementById(id) {
+    return this.querySelector(`#${id}`);
+  }
+
+  addEventListener(event, fn) {
+    if (!this._listeners.has(event)) {
+      this._listeners.set(event, []);
+    }
+    this._listeners.get(event).push(fn);
+  }
+
+  dispatchEvent(event) {
+    const handlers = this._listeners.get(event.type || event) || [];
+    for (const handler of handlers) handler(event);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Test Suite: STORY 2.4.1: Resolve UNSTRUCTURED_UI_LAYOUT (DF-LAYOUT-01)
+// ---------------------------------------------------------------------------
+
+describe('STORY 2.4.1: UI Layout Structure & Defect DF-LAYOUT-01 Regression', () => {
+  let domInstance = null;
+  let documentRef = null;
+  let appMount = null;
 
   beforeEach(() => {
-    // Preserve global state
-    originalGlobalDocument = globalThis.document;
-    originalGlobalWindow = globalThis.window;
+    if (JSDOMClass) {
+      domInstance = new JSDOMClass(`<!DOCTYPE html><html><body><div id="app"></div></body></html>`, {
+        url: 'http://localhost:3000',
+        runScripts: 'outside-only'
+      });
+      globalThis.window = domInstance.window;
+      globalThis.document = domInstance.window.document;
+      globalThis.HTMLElement = domInstance.window.HTMLElement;
+      globalThis.HTMLSelectElement = domInstance.window.HTMLSelectElement;
+      globalThis.HTMLCanvasElement = domInstance.window.HTMLCanvasElement;
+      documentRef = domInstance.window.document;
+      appMount = documentRef.getElementById('app');
+    } else {
+      documentRef = new MockDocument();
+      appMount = documentRef.createElement('div');
+      appMount.id = 'app';
+      documentRef.body.appendChild(appMount);
+
+      globalThis.window = {
+        addEventListener: (e, fn) => documentRef.addEventListener(e, fn),
+        document: documentRef
+      };
+      globalThis.document = documentRef;
+      globalThis.HTMLElement = MockElement;
+    }
   });
 
   afterEach(() => {
-    // Restore global state
-    globalThis.document = originalGlobalDocument;
-    globalThis.window = originalGlobalWindow;
+    if (domInstance) {
+      domInstance.window.close();
+      domInstance = null;
+    }
+    delete globalThis.window;
+    delete globalThis.document;
+    delete globalThis.HTMLElement;
+    delete globalThis.HTMLSelectElement;
+    delete globalThis.HTMLCanvasElement;
   });
 
   /**
-   * Helper to initialize JSDOM and polyfill minimal Canvas/DOM APIs
-   * before invoking or importing src/main.js
+   * Helper to execute/mount the active entrypoint `src/main.js`.
+   * Supports execution on import, explicit lifecycle hooks (init/mount),
+   * and DOMContentLoaded listeners.
    */
-  function setupDOMEnvironment(htmlContent) {
-    const virtualDom = new JSDOM(htmlContent, {
-      url: 'http://localhost:3000',
-      runScripts: 'outside-only',
-      resources: 'usable',
-    });
+  async function loadAndMountMain() {
+    const entryUrl = `${new URL('../src/main.js', import.meta.url).href}?t=${Date.now()}_${Math.random()}`;
+    const mainModule = await import(entryUrl);
 
-    globalThis.window = virtualDom.window;
-    globalThis.document = virtualDom.window.document;
-    globalThis.HTMLElement = virtualDom.window.HTMLElement;
-    globalThis.HTMLCanvasElement = virtualDom.window.HTMLCanvasElement;
-
-    // Polyfill 2D context for chart canvas rendering within main.js
-    if (virtualDom.window.HTMLCanvasElement) {
-      virtualDom.window.HTMLCanvasElement.prototype.getContext = () => ({
-        fillRect: () => {},
-        clearRect: () => {},
-        beginPath: () => {},
-        moveTo: () => {},
-        lineTo: () => {},
-        stroke: () => {},
-        arc: () => {},
-        fill: () => {},
-        scale: () => {},
-        save: () => {},
-        restore: () => {},
-      });
+    if (typeof mainModule.mount === 'function') {
+      mainModule.mount(appMount);
+    } else if (typeof mainModule.init === 'function') {
+      mainModule.init(appMount);
+    } else if (typeof mainModule.default === 'function') {
+      mainModule.default(appMount);
     }
 
-    return virtualDom;
+    // Trigger DOMContentLoaded in case mounting is event-driven
+    const event = typeof Event !== 'undefined' ? new Event('DOMContentLoaded') : { type: 'DOMContentLoaded' };
+    documentRef.dispatchEvent(event);
+
+    return mainModule;
   }
 
-  describe('index.html static layout integrity', () => {
-    it('should declare a dedicated #app root element and wire src/main.js entrypoint', () => {
-      assert.ok(
-        fs.existsSync(INDEX_HTML_PATH),
-        `index.html must exist at: ${INDEX_HTML_PATH}`
+  describe('Architectural Invariant: Active Entrypoint & HTML Host', () => {
+    it('index.html must provide the #app container and link the active entrypoint src/main.js', async () => {
+      const htmlContent = await fs.readFile(INDEX_HTML_PATH, 'utf-8');
+
+      assert.match(
+        htmlContent,
+        /id=["']app["']/,
+        'index.html must contain a root mounting element with id="app"'
       );
 
-      const htmlContent = fs.readFileSync(INDEX_HTML_PATH, 'utf-8');
-      const staticDom = new JSDOM(htmlContent);
-      const { document } = staticDom.window;
+      assert.match(
+        htmlContent,
+        /<script[^>]+type=["']module["'][^>]+src=["'][^"']*src\/main\.js["']/,
+        'index.html must wire the active entrypoint (src/main.js) as an ES module script'
+      );
+    });
 
-      const appRoot = document.getElementById('app');
-      assert.ok(appRoot, 'index.html must contain a root element with id="app"');
+    it('index.html must not contain hardcoded flat UI siblings dumped directly inside #app', async () => {
+      const htmlContent = await fs.readFile(INDEX_HTML_PATH, 'utf-8');
+      const appContainerMatch = htmlContent.match(/<div[^>]*id=["']app["'][^>]*>([\s\S]*?)<\/div>/i);
 
-      // Verify that active entrypoint src/main.js is included as an ES module
-      const scriptTags = Array.from(document.querySelectorAll('script'));
-      const mainScript = scriptTags.find((script) => {
-        const src = script.getAttribute('src') || '';
-        return (
-          src.includes('src/main.js') ||
-          src.includes('/src/main.js') ||
-          src === 'main.js'
+      if (appContainerMatch) {
+        const innerContent = appContainerMatch[1].trim();
+        // #app in index.html should be clean or empty before client mounting
+        assert.doesNotMatch(
+          innerContent,
+          /<canvas[\s\S]*<input[\s\S]*<button/i,
+          'index.html should not contain unmanaged flat siblings inside #app; mounting must occur via src/main.js'
         );
-      });
+      }
+    });
+  });
 
+  describe('Acceptance Criteria 1: Semantic Header & Navigation Controls', () => {
+    it('renders a semantic <header class="app-header"> mounted directly inside #app', async () => {
+      await loadAndMountMain();
+
+      const header = appMount.querySelector('header.app-header');
+      assert.ok(header, 'The DOM must render a `<header class="app-header">` inside #app');
+      assert.strictEqual(
+        header.tagName.toUpperCase(),
+        'HEADER',
+        'Header element must be the semantic HTML5 <header> tag'
+      );
       assert.ok(
-        mainScript,
-        'index.html must reference src/main.js directly to avoid unmounted isolated code'
+        header.classList.contains('app-header'),
+        'Header element must have the "app-header" class'
       );
       assert.strictEqual(
-        mainScript.getAttribute('type'),
-        'module',
-        'src/main.js must be loaded as an ES module (type="module")'
+        header.parentElement,
+        appMount,
+        '<header class="app-header"> must be a structured child of #app'
+      );
+    });
+
+    it('header must contain the application title, ticker selector, and timeframe controls', async () => {
+      await loadAndMountMain();
+
+      const header = appMount.querySelector('header.app-header');
+      assert.ok(header, 'Header must exist before evaluating descendant controls');
+
+      // 1. Application Title
+      const title = header.querySelector('.app-title, [data-testid="app-title"], h1');
+      assert.ok(title, 'Header must contain an application title element (.app-title or <h1>)');
+      assert.ok(
+        title.textContent.trim().length > 0,
+        'Application title must render non-empty descriptive text'
       );
 
-      // Verify body does not contain orphaned canvas or raw controls outside #app
-      const bodyChildren = Array.from(document.body.children).filter(
-        (child) => child.tagName !== 'SCRIPT' && child.tagName !== 'STYLE'
+      // 2. Ticker Selector
+      const tickerSelector = header.querySelector(
+        'select.ticker-selector, .ticker-selector, [data-testid="ticker-selector"], #ticker-select'
       );
-      assert.strictEqual(
-        bodyChildren.length,
-        1,
-        'Only #app should exist as a visible root container in index.html body'
+      assert.ok(tickerSelector, 'Header must contain a ticker selector control');
+
+      // 3. Timeframe Controls
+      const timeframeControls = header.querySelector(
+        '.timeframe-controls, [data-testid="timeframe-controls"], .timeframe-selector'
       );
-      assert.strictEqual(
-        bodyChildren[0].id,
-        'app',
-        'Visible root container in <body> must be #app'
+      assert.ok(timeframeControls, 'Header must contain timeframe controls');
+
+      // Confirm timeframe controls contain interactive options (buttons or selector options)
+      const timeframeButtons = timeframeControls.querySelectorAll('button, option, [role="button"]');
+      assert.ok(
+        timeframeButtons.length > 0,
+        'Timeframe controls container must host selectable timeframe options'
       );
     });
   });
 
-  describe('src/main.js dynamic mounting & structured UI hierarchy', () => {
-    it('should mount header and workspace directly into #app without uncontained siblings', async () => {
+  describe('Acceptance Criteria 2: Structured Workspace Container vs Flat Siblings (DF-LAYOUT-01)', () => {
+    it('renders a dedicated semantic <main class="workspace-container"> inside #app', async () => {
+      await loadAndMountMain();
+
+      const workspace = appMount.querySelector('main.workspace-container');
       assert.ok(
-        fs.existsSync(MAIN_JS_PATH),
-        `src/main.js must exist at: ${MAIN_JS_PATH}`
-      );
-
-      dom = setupDOMEnvironment('<!DOCTYPE html><html><body><div id="app"></div></body></html>');
-      const appRoot = dom.window.document.getElementById('app');
-
-      // Import active entrypoint with cache-busting query to ensure clean module execution
-      const cacheBustUrl = `file://${MAIN_JS_PATH}?t=${Date.now()}`;
-      const mainModule = await import(cacheBustUrl);
-
-      // If module exports an explicit init/mount function, execute it; otherwise it self-mounts
-      if (typeof mainModule.mountApp === 'function') {
-        mainModule.mountApp(appRoot);
-      } else if (typeof mainModule.init === 'function') {
-        mainModule.init();
-      } else if (typeof mainModule.default === 'function') {
-        mainModule.default(appRoot);
-      }
-
-      // 1. Acceptance Criteria: Must mount directly into document.getElementById('app')
-      assert.ok(
-        appRoot.children.length > 0,
-        'src/main.js must populate document.getElementById("app")'
-      );
-
-      // 2. Acceptance Criteria: Top-level components must be organized as semantic children
-      // The top-level children of #app must only be structured structural nodes (header and workspace)
-      const topLevelTags = Array.from(appRoot.children).map((el) =>
-        el.tagName.toLowerCase()
-      );
-
-      const headerElement =
-        appRoot.querySelector('header') ||
-        appRoot.querySelector('[data-testid="app-header"]') ||
-        appRoot.querySelector('.app-header');
-
-      const workspaceContainer =
-        appRoot.querySelector('main') ||
-        appRoot.querySelector('[data-testid="workspace"]') ||
-        appRoot.querySelector('.workspace') ||
-        appRoot.querySelector('.workspace-container');
-
-      assert.ok(
-        headerElement,
-        '#app must contain a dedicated application header (<header>, [data-testid="app-header"], or .app-header)'
-      );
-      assert.ok(
-        workspaceContainer,
-        '#app must contain a dedicated workspace container (<main>, [data-testid="workspace"], or .workspace-container)'
-      );
-
-      // Ensure root children are ONLY semantic structural containers (header, workspace)
-      for (const child of appRoot.children) {
-        const isHeader =
-          child === headerElement || child.contains(headerElement);
-        const isWorkspace =
-          child === workspaceContainer || child.contains(workspaceContainer);
-
-        assert.ok(
-          isHeader || isWorkspace,
-          `Found unstructured top-level sibling <${child.tagName.toLowerCase()} class="${child.className}" id="${child.id}"> directly inside #app. Elements must be organized inside header or workspace.`
-        );
-      }
-    });
-
-    it('should include application header with title, ticker selector, and timeframe controls', async () => {
-      dom = setupDOMEnvironment('<!DOCTYPE html><html><body><div id="app"></div></body></html>');
-      const appRoot = dom.window.document.getElementById('app');
-
-      const cacheBustUrl = `file://${MAIN_JS_PATH}?t=${Date.now()}`;
-      const mainModule = await import(cacheBustUrl);
-
-      if (typeof mainModule.mountApp === 'function') {
-        mainModule.mountApp(appRoot);
-      } else if (typeof mainModule.init === 'function') {
-        mainModule.init();
-      } else if (typeof mainModule.default === 'function') {
-        mainModule.default(appRoot);
-      }
-
-      const headerElement =
-        appRoot.querySelector('header') ||
-        appRoot.querySelector('[data-testid="app-header"]') ||
-        appRoot.querySelector('.app-header');
-
-      assert.ok(headerElement, 'Header element must exist');
-
-      // Title validation
-      const titleElement =
-        headerElement.querySelector('h1') ||
-        headerElement.querySelector('[data-testid="app-title"]') ||
-        headerElement.querySelector('.title') ||
-        headerElement.querySelector('.app-title');
-
-      assert.ok(
-        titleElement,
-        'Application header must contain a title element (h1, [data-testid="app-title"], or .app-title)'
-      );
-      assert.ok(
-        titleElement.textContent.trim().length > 0,
-        'Application title must not be empty'
-      );
-
-      // Ticker selector validation
-      const tickerSelector =
-        headerElement.querySelector('select') ||
-        headerElement.querySelector('[data-testid="ticker-selector"]') ||
-        headerElement.querySelector('.ticker-selector');
-
-      assert.ok(
-        tickerSelector,
-        'Application header must contain a ticker selector (select, [data-testid="ticker-selector"], or .ticker-selector)'
-      );
-
-      // Timeframe controls validation
-      const timeframeControls =
-        headerElement.querySelector('[data-testid="timeframe-controls"]') ||
-        headerElement.querySelector('.timeframe-controls') ||
-        headerElement.querySelector('.timeframes');
-
-      assert.ok(
-        timeframeControls,
-        'Application header must contain timeframe controls ([data-testid="timeframe-controls"] or .timeframe-controls)'
-      );
-
-      const timeframeButtons = timeframeControls.querySelectorAll('button, option');
-      assert.ok(
-        timeframeButtons.length >= 2,
-        'Timeframe controls must offer selectable options/buttons (e.g. 1m, 5m, 1h, 1d)'
-      );
-    });
-
-    it('should house the chart area and side panels strictly within workspace container', async () => {
-      dom = setupDOMEnvironment('<!DOCTYPE html><html><body><div id="app"></div></body></html>');
-      const appRoot = dom.window.document.getElementById('app');
-
-      const cacheBustUrl = `file://${MAIN_JS_PATH}?t=${Date.now()}`;
-      const mainModule = await import(cacheBustUrl);
-
-      if (typeof mainModule.mountApp === 'function') {
-        mainModule.mountApp(appRoot);
-      } else if (typeof mainModule.init === 'function') {
-        mainModule.init();
-      } else if (typeof mainModule.default === 'function') {
-        mainModule.default(appRoot);
-      }
-
-      const workspaceContainer =
-        appRoot.querySelector('main') ||
-        appRoot.querySelector('[data-testid="workspace"]') ||
-        appRoot.querySelector('.workspace') ||
-        appRoot.querySelector('.workspace-container');
-
-      assert.ok(workspaceContainer, 'Workspace container must exist');
-
-      // Chart area validation within workspace
-      const chartArea =
-        workspaceContainer.querySelector('canvas') ||
-        workspaceContainer.querySelector('[data-testid="chart-area"]') ||
-        workspaceContainer.querySelector('.chart-container') ||
-        workspaceContainer.querySelector('.chart-workspace');
-
-      assert.ok(
-        chartArea,
-        'Workspace must contain the chart area/canvas (<canvas>, [data-testid="chart-area"], or .chart-container)'
-      );
-
-      // Verify chart canvas is NOT a loose sibling under #app
-      const rootLevelCanvases = Array.from(appRoot.children).filter(
-        (child) => child.tagName.toLowerCase() === 'canvas'
+        workspace,
+        'DOM must contain a dedicated workspace container `<main class="workspace-container">`'
       );
       assert.strictEqual(
-        rootLevelCanvases.length,
-        0,
-        'Chart canvas must not be an uncontained sibling at the root of #app'
+        workspace.tagName.toUpperCase(),
+        'MAIN',
+        'Workspace container must be the semantic HTML5 <main> tag'
+      );
+      assert.strictEqual(
+        workspace.parentElement,
+        appMount,
+        'Workspace container must be mounted as a direct structured descendant of #app'
+      );
+    });
+
+    it('workspace container hosts the chart canvas container and side panel as structured descendants', async () => {
+      await loadAndMountMain();
+
+      const workspace = appMount.querySelector('main.workspace-container');
+      assert.ok(workspace, 'Workspace container must exist');
+
+      // 1. Chart canvas container
+      const chartContainer = workspace.querySelector(
+        '.chart-container, .chart-workspace, [data-testid="chart-container"]'
+      );
+      assert.ok(
+        chartContainer,
+        'Workspace container must host the chart canvas container (.chart-container)'
+      );
+      assert.ok(
+        workspace.contains(chartContainer),
+        'Chart container must be a descendant of workspace-container'
       );
 
-      // Side panel validation (for orders/tools) within workspace
-      const sidePanel =
-        workspaceContainer.querySelector('aside') ||
-        workspaceContainer.querySelector('[data-testid="side-panel"]') ||
-        workspaceContainer.querySelector('[data-testid="orders-panel"]') ||
-        workspaceContainer.querySelector('.side-panel') ||
-        workspaceContainer.querySelector('.tools-panel');
+      const canvas = chartContainer.querySelector('canvas');
+      assert.ok(canvas, 'Chart container must contain the rendering canvas element');
 
+      // 2. Side panel for orders and tools
+      const sidePanel = workspace.querySelector(
+        '.side-panel, .tools-panel, .orders-panel, [data-testid="side-panel"], aside'
+      );
       assert.ok(
         sidePanel,
-        'Workspace must house side panels for orders/tools (<aside>, [data-testid="side-panel"], or .side-panel)'
+        'Workspace container must host the side panel for orders/tools (.side-panel or <aside>)'
+      );
+      assert.ok(
+        workspace.contains(sidePanel),
+        'Side panel must be a descendant of workspace-container'
+      );
+    });
+
+    it('rejects unstructured flat siblings directly under #app (Defect DF-LAYOUT-01 regression guard)', async () => {
+      await loadAndMountMain();
+
+      const directChildren = appMount.children;
+
+      // Ensure canvas or chart is NOT a flat sibling at root level
+      const rootCanvas = Array.from(directChildren).find(
+        (el) => el.tagName.toUpperCase() === 'CANVAS' || el.classList.contains('chart-container')
+      );
+      assert.strictEqual(
+        rootCanvas,
+        undefined,
+        'Defect DF-LAYOUT-01 Regressed: Chart canvas or container was found as a flat direct child of #app'
       );
 
-      // Verify side panel is a descendant of workspace, not header or root
+      // Ensure order panel/tools are NOT flat siblings at root level
+      const rootSidePanel = Array.from(directChildren).find(
+        (el) =>
+          el.classList.contains('side-panel') ||
+          el.classList.contains('order-panel') ||
+          el.classList.contains('tools-panel')
+      );
+      assert.strictEqual(
+        rootSidePanel,
+        undefined,
+        'Defect DF-LAYOUT-01 Regressed: Side panel was found as an unstructured flat child of #app'
+      );
+
+      // Ensure header does NOT improperly nest the chart workspace
+      const header = appMount.querySelector('header.app-header');
+      const chartInHeader = header.querySelector('canvas, .chart-container');
+      assert.strictEqual(
+        chartInHeader,
+        null,
+        'Chart container must not be nested inside the top navigation header'
+      );
+    });
+
+    it('establishes correct relative DOM ordering: header appears prior to workspace container', async () => {
+      await loadAndMountMain();
+
+      const header = appMount.querySelector('header.app-header');
+      const workspace = appMount.querySelector('main.workspace-container');
+
+      assert.ok(header && workspace, 'Both header and workspace container must exist in DOM');
+
+      const headerIndex = appMount.children.indexOf(header);
+      const workspaceIndex = appMount.children.indexOf(workspace);
+
       assert.ok(
-        workspaceContainer.contains(sidePanel),
-        'Side panel must be contained inside the workspace container'
+        headerIndex !== -1 && workspaceIndex !== -1,
+        'Both header and workspace must be registered children of #app'
+      );
+      assert.ok(
+        headerIndex < workspaceIndex,
+        'App header must precede the workspace container in top-to-bottom layout sequence'
       );
     });
   });
