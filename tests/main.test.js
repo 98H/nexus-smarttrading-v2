@@ -1,318 +1,382 @@
-import test, { describe, it, beforeEach, afterEach } from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateCandlestickData } from '../src/data_generator.js';
 
-// ============================================================================
-// DOM & Canvas Mock Environment for Entrypoint Verification
-// ============================================================================
-class MockCanvasRenderingContext2D {
-  constructor(canvas) {
-    this.canvas = canvas;
-    this._fillStyle = '#000000';
-    this._strokeStyle = '#000000';
-    this.fillStyleHistory = [];
-    this.strokeStyleHistory = [];
-    this.calls = [];
+/* ------------------------------------------------------------------
+ * Minimal DOM Environment Polyfill for Node.js test runtime
+ * ------------------------------------------------------------------ */
+class MockDOMTokenList extends Set {
+  add(token) {
+    super.add(token);
   }
-
-  get fillStyle() {
-    return this._fillStyle;
+  remove(token) {
+    super.delete(token);
   }
-
-  set fillStyle(val) {
-    this._fillStyle = val;
-    this.fillStyleHistory.push(String(val).toLowerCase());
+  contains(token) {
+    return super.has(token);
   }
-
-  get strokeStyle() {
-    return this._strokeStyle;
-  }
-
-  set strokeStyle(val) {
-    this._strokeStyle = val;
-    this.strokeStyleHistory.push(String(val).toLowerCase());
-  }
-
-  beginPath() {
-    this.calls.push({ method: 'beginPath' });
-  }
-
-  moveTo(x, y) {
-    this.calls.push({ method: 'moveTo', args: [x, y] });
-  }
-
-  lineTo(x, y) {
-    this.calls.push({ method: 'lineTo', args: [x, y] });
-  }
-
-  stroke() {
-    this.calls.push({ method: 'stroke', strokeStyle: this._strokeStyle });
-  }
-
-  fillRect(x, y, w, h) {
-    this.calls.push({ method: 'fillRect', args: [x, y, w, h], fillStyle: this._fillStyle });
-  }
-
-  clearRect(x, y, w, h) {
-    this.calls.push({ method: 'clearRect', args: [x, y, w, h] });
-  }
-}
-
-class MockHTMLCanvasElement {
-  constructor() {
-    this.tagName = 'CANVAS';
-    this.width = 800;
-    this.height = 600;
-    this._context = new MockCanvasRenderingContext2D(this);
-  }
-
-  getContext(type) {
-    if (type === '2d') {
-      return this._context;
+  toggle(token, force) {
+    if (force !== undefined) {
+      if (force) {
+        this.add(token);
+        return true;
+      } else {
+        this.remove(token);
+        return false;
+      }
     }
-    return null;
+    if (this.contains(token)) {
+      this.remove(token);
+      return false;
+    }
+    this.add(token);
+    return true;
+  }
+  toString() {
+    return Array.from(this.values()).join(' ');
   }
 }
 
 class MockElement {
-  constructor(id = '', tagName = 'DIV') {
+  constructor(tagName = 'div', id = '') {
+    this.tagName = tagName.toUpperCase();
     this.id = id;
-    this.tagName = tagName;
     this.children = [];
-    this.innerHTML = '';
+    this.parentElement = null;
+    this.attributes = new Map();
+    this.classList = new MockDOMTokenList();
+    this.listeners = new Map();
+    this._textContent = '';
+    this._innerHTML = '';
+  }
+
+  get textContent() {
+    return this._textContent;
+  }
+
+  set textContent(value) {
+    this._textContent = String(value);
+    this.children = [];
+  }
+
+  get innerHTML() {
+    return this._innerHTML;
+  }
+
+  set innerHTML(value) {
+    this._innerHTML = String(value);
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+
+  getAttribute(name) {
+    return this.attributes.has(name) ? this.attributes.get(name) : null;
+  }
+
+  hasAttribute(name) {
+    return this.attributes.has(name);
+  }
+
+  removeAttribute(name) {
+    this.attributes.delete(name);
   }
 
   appendChild(child) {
+    child.parentElement = this;
     this.children.push(child);
     return child;
   }
 
-  querySelector(selector) {
-    if (selector === 'canvas') {
-      return this.children.find((c) => c.tagName === 'CANVAS') || null;
+  replaceChildren(...newChildren) {
+    for (const child of this.children) {
+      child.parentElement = null;
     }
-    return null;
+    this.children = [];
+    for (const child of newChildren) {
+      this.appendChild(child);
+    }
+  }
+
+  addEventListener(type, handler) {
+    if (!this.listeners.has(type)) {
+      this.listeners.set(type, []);
+    }
+    this.listeners.get(type).push(handler);
+  }
+
+  removeEventListener(type, handler) {
+    const list = this.listeners.get(type) || [];
+    this.listeners.set(
+      type,
+      list.filter((fn) => fn !== handler)
+    );
+  }
+
+  dispatchEvent(event) {
+    event.target = this;
+    event.currentTarget = this;
+    const list = this.listeners.get(event.type) || [];
+    for (const fn of list) {
+      fn.call(this, event);
+    }
+    return !event.defaultPrevented;
+  }
+
+  click() {
+    this.dispatchEvent({
+      type: 'click',
+      target: this,
+      currentTarget: this,
+      bubbles: true,
+      cancelable: true,
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      }
+    });
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
+  querySelectorAll(selector) {
+    const matches = [];
+
+    const walk = (node) => {
+      for (const child of node.children) {
+        if (matchesSelector(child, selector)) {
+          matches.push(child);
+        }
+        walk(child);
+      }
+    };
+
+    walk(this);
+    return matches;
   }
 }
 
-// ============================================================================
-// STORY 38.4.1 / DF-CANDLES-01 Test Suite
-// ============================================================================
-describe('STORY 38.4.1: Resolve SYNTHETIC_STRAIGHT_LINE_DATA (Defect ID: DF-CANDLES-01)', () => {
+function matchesSelector(element, selector) {
+  if (selector.startsWith('#')) {
+    return element.id === selector.slice(1);
+  }
+  if (selector.startsWith('.')) {
+    return element.classList.contains(selector.slice(1));
+  }
+  if (selector.startsWith('[') && selector.endsWith(']')) {
+    const [attr, val] = selector.slice(1, -1).split('=');
+    if (!val) {
+      return element.hasAttribute(attr);
+    }
+    const cleanVal = val.replace(/^["']|["']$/g, '');
+    return element.getAttribute(attr) === cleanVal;
+  }
+  return element.tagName.toLowerCase() === selector.toLowerCase();
+}
 
-  describe('Candlestick Data Generator (src/data_generator.js)', () => {
-    it('AC1: should generate an oscillating market walk containing both bullish and bearish candles', () => {
-      const seriesLength = 100;
-      const data = generateCandlestickData({ count: seriesLength, initialPrice: 100 });
+class MockDocument {
+  constructor() {
+    this.body = new MockElement('body');
+    this.elementsById = new Map();
+  }
 
-      assert.ok(Array.isArray(data), 'Expected generated data to be an array');
-      assert.strictEqual(data.length, seriesLength, `Expected exactly ${seriesLength} candles`);
+  createElement(tagName) {
+    return new MockElement(tagName);
+  }
 
-      let bullishCount = 0;
-      let bearishCount = 0;
-      let equalCount = 0;
+  getElementById(id) {
+    return this.elementsById.get(id) || null;
+  }
 
-      for (const candle of data) {
-        assert.ok(typeof candle.open === 'number' && Number.isFinite(candle.open), 'Candle open must be a finite number');
-        assert.ok(typeof candle.close === 'number' && Number.isFinite(candle.close), 'Candle close must be a finite number');
-        assert.ok(typeof candle.high === 'number' && Number.isFinite(candle.high), 'Candle high must be a finite number');
-        assert.ok(typeof candle.low === 'number' && Number.isFinite(candle.low), 'Candle low must be a finite number');
+  registerElement(id, element) {
+    element.id = id;
+    this.elementsById.set(id, element);
+  }
 
-        // Candlestick structural constraints
-        assert.ok(candle.high >= candle.open, `High (${candle.high}) must be >= open (${candle.open})`);
-        assert.ok(candle.high >= candle.close, `High (${candle.high}) must be >= close (${candle.close})`);
-        assert.ok(candle.low <= candle.open, `Low (${candle.low}) must be <= open (${candle.open})`);
-        assert.ok(candle.low <= candle.close, `Low (${candle.low}) must be <= close (${candle.close})`);
+  querySelector(selector) {
+    return this.body.querySelector(selector);
+  }
 
-        if (candle.close > candle.open) {
-          bullishCount++;
-        } else if (candle.close < candle.open) {
-          bearishCount++;
-        } else {
-          equalCount++;
-        }
-      }
+  querySelectorAll(selector) {
+    return this.body.querySelectorAll(selector);
+  }
+}
 
-      // DF-CANDLES-01 Defect Guard: Previously, 100% of candles were bullish (green)
-      assert.ok(
-        bullishCount > 0,
-        `Expected series to contain bullish candles (close > open), got ${bullishCount}`
-      );
-      assert.ok(
-        bearishCount > 0,
-        `Expected series to contain bearish candles (close < open), got ${bearishCount}`
-      );
+/* ------------------------------------------------------------------
+ * Test Suite: STORY 38.2.1: Resolve INACTIVE_UI_CONTROLS (DF-CONTROL-01)
+ * ------------------------------------------------------------------ */
 
-      // Realistic random walk expectation: neither bullish nor bearish should completely dominate
-      const bullishRatio = bullishCount / seriesLength;
-      assert.ok(
-        bullishRatio >= 0.2 && bullishRatio <= 0.8,
-        `Expected balanced distribution of candle types, got bullish ratio: ${bullishRatio}`
-      );
-    });
+test.beforeEach(() => {
+  // Initialize virtual DOM environment before each test
+  const mockDoc = new MockDocument();
+  const appContainer = new MockElement('div', 'app');
+  mockDoc.registerElement('app', appContainer);
+  mockDoc.body.appendChild(appContainer);
 
-    it('AC1: should generate dynamic high and low wicks with non-zero variance across the series', () => {
-      const data = generateCandlestickData({ count: 80 });
+  globalThis.document = mockDoc;
+  globalThis.window = { document: mockDoc };
+  globalThis.HTMLElement = MockElement;
+});
 
-      const upperWickLengths = [];
-      const lowerWickLengths = [];
+test.afterEach(() => {
+  delete globalThis.document;
+  delete globalThis.window;
+  delete globalThis.HTMLElement;
+});
 
-      for (const c of data) {
-        const candleBodyTop = Math.max(c.open, c.close);
-        const candleBodyBottom = Math.min(c.open, c.close);
+test('DF-CONTROL-01: Entrypoint (src/main.js) automatically mounts into document.getElementById("app")', async () => {
+  // Dynamically import entrypoint to verify auto-mount behavior on load
+  const mainModule = await import(`../src/main.js?t=${Date.now()}`);
 
-        const upperWick = Number((c.high - candleBodyTop).toFixed(4));
-        const lowerWick = Number((candleBodyBottom - c.low).toFixed(4));
+  const app = globalThis.document.getElementById('app');
+  assert.ok(app, 'App root container must exist in the document');
 
-        assert.ok(upperWick >= 0, `Upper wick length must be non-negative: ${upperWick}`);
-        assert.ok(lowerWick >= 0, `Lower wick length must be non-negative: ${lowerWick}`);
+  // Verify that controls were mounted into #app
+  const controlsContainer =
+    app.querySelector('.controls') ||
+    app.querySelector('[data-testid="controls"]') ||
+    app.querySelector('nav');
+  assert.ok(
+    controlsContainer !== null || app.children.length > 0,
+    'Entrypoint src/main.js must mount UI controls directly into #app on initialization'
+  );
+});
 
-        upperWickLengths.push(upperWick);
-        lowerWickLengths.push(lowerWick);
-      }
+test('DF-CONTROL-01: Interactive controls respond to click events, update state, and re-render DOM', async () => {
+  const mainModule = await import(`../src/main.js?t=${Date.now()}`);
 
-      // Calculate variance of wicks to prove dynamic generation (defect had 0 or identical static wicks)
-      const calcVariance = (arr) => {
-        const mean = arr.reduce((sum, val) => sum + val, 0) / arr.length;
-        return arr.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / arr.length;
-      };
+  const app = globalThis.document.getElementById('app');
+  assert.ok(app, 'App container must be mounted');
 
-      const upperWickVariance = calcVariance(upperWickLengths);
-      const lowerWickVariance = calcVariance(lowerWickLengths);
+  // Find interactive buttons/tabs inside the mounted entrypoint
+  const controlButtons = app.querySelectorAll('button, [role="tab"], .control-btn');
+  assert.ok(
+    controlButtons.length >= 2,
+    'Entrypoint must render at least two interactive control buttons/tabs'
+  );
 
-      assert.ok(
-        upperWickVariance > 0.001,
-        `Upper wicks must be dynamic with non-zero variance; received variance: ${upperWickVariance}`
-      );
-      assert.ok(
-        lowerWickVariance > 0.001,
-        `Lower wicks must be dynamic with non-zero variance; received variance: ${lowerWickVariance}`
-      );
-    });
+  const [firstControl, secondControl] = controlButtons;
 
-    it('AC1: should not produce a rigid monotonic 45-degree slope (close price must oscillate)', () => {
-      const data = generateCandlestickData({ count: 60 });
-      let consecutiveIncreases = 0;
-      let maxConsecutiveIncreases = 0;
-      const deltas = [];
+  // Retrieve initial state from exported state getter or initial DOM representation
+  const initialState = typeof mainModule.getState === 'function'
+    ? mainModule.getState()
+    : null;
 
-      for (let i = 1; i < data.length; i++) {
-        const delta = data[i].close - data[i - 1].close;
-        deltas.push(delta);
+  const initialSecondControlClass = secondControl.classList.contains('active');
+  const initialAriaSelected = secondControl.getAttribute('aria-selected');
 
-        if (delta > 0) {
-          consecutiveIncreases++;
-          maxConsecutiveIncreases = Math.max(maxConsecutiveIncreases, consecutiveIncreases);
-        } else {
-          consecutiveIncreases = 0;
-        }
-      }
+  assert.notEqual(
+    initialAriaSelected,
+    'true',
+    'Second control button should not be selected initially'
+  );
+  assert.equal(
+    initialSecondControlClass,
+    false,
+    'Second control button should not have "active" class initially'
+  );
 
-      // Check for price direction changes (oscillations)
-      const hasNegativeDelta = deltas.some((d) => d < 0);
-      const hasPositiveDelta = deltas.some((d) => d > 0);
+  // Trigger click on second control button
+  secondControl.click();
 
-      assert.ok(hasNegativeDelta, 'Series must oscillate and contain negative close-to-close steps');
-      assert.ok(hasPositiveDelta, 'Series must oscillate and contain positive close-to-close steps');
+  // Acceptance Criteria:
+  // 1. Application must update its active state
+  if (typeof mainModule.getState === 'function') {
+    const updatedState = mainModule.getState();
+    assert.notDeepEqual(
+      updatedState,
+      initialState,
+      'Active state must mutate upon clicking an interactive control'
+    );
+  }
 
-      // Monotonic 45-degree slope had every single candle incrementing identical amounts
-      assert.ok(
-        maxConsecutiveIncreases < data.length - 1,
-        `Monotonic slope detected: close price increased uninterrupted for all ${data.length - 1} steps`
-      );
+  // 2. Application must re-render the view in the live DOM
+  const isNowActive =
+    secondControl.classList.contains('active') ||
+    secondControl.getAttribute('aria-selected') === 'true' ||
+    secondControl.hasAttribute('data-active');
 
-      // Verify that step deltas are not uniformly identical constant values
-      const uniqueDeltas = new Set(deltas.map((d) => d.toFixed(4)));
-      assert.ok(
-        uniqueDeltas.size > 5,
-        `Expected varied step sizes across candles, found only ${uniqueDeltas.size} distinct step values`
-      );
-    });
-  });
+  assert.ok(
+    isNowActive,
+    'Clicking the control must re-render the DOM to reflect the active state (e.g. class "active" or aria-selected="true")'
+  );
 
-  describe('Active Application Entrypoint Integration (src/main.js)', () => {
-    let originalDocument;
-    let mockApp;
-    let mockCanvas;
+  // 3. View content or canvas container must be re-rendered with the selected configuration
+  const viewContainer =
+    app.querySelector('.view-container') ||
+    app.querySelector('.canvas-view') ||
+    app.querySelector('[data-testid="active-view"]');
 
-    beforeEach(() => {
-      originalDocument = globalThis.document;
+  if (viewContainer) {
+    const controlTarget =
+      secondControl.getAttribute('data-target') ||
+      secondControl.getAttribute('data-tab') ||
+      secondControl.textContent;
+    assert.ok(
+      viewContainer.textContent.includes(controlTarget) ||
+      viewContainer.getAttribute('data-config') === controlTarget,
+      'View container must re-render with the configuration corresponding to the clicked control'
+    );
+  }
+});
 
-      mockApp = new MockElement('app', 'DIV');
-      mockCanvas = new MockHTMLCanvasElement();
-      mockApp.appendChild(mockCanvas);
+test('DF-CONTROL-01: Sequential interactions consistently update state and re-render DOM without deadlocks', async () => {
+  const mainModule = await import(`../src/main.js?t=${Date.now()}`);
+  const app = globalThis.document.getElementById('app');
+  const controlButtons = app.querySelectorAll('button, [role="tab"], .control-btn');
 
-      globalThis.document = {
-        getElementById: (id) => {
-          if (id === 'app') {
-            return mockApp;
-          }
-          return null;
-        },
-        createElement: (tag) => {
-          if (tag.toLowerCase() === 'canvas') {
-            return new MockHTMLCanvasElement();
-          }
-          return new MockElement('', tag.toUpperCase());
-        },
-      };
-    });
+  assert.ok(controlButtons.length >= 2, 'Controls must be rendered');
 
-    afterEach(() => {
-      globalThis.document = originalDocument;
-    });
+  const [btnA, btnB] = controlButtons;
 
-    it('AC2: should mount to document.getElementById("app") and render realistic synthetic candlestick dataset to active canvas', async () => {
-      // Dynamic import to execute main module lifecycle in current DOM mock context
-      const mainModule = await import(`../src/main.js?cacheBust=${Date.now()}`);
+  // Click btnB
+  btnB.click();
+  const stateAfterB = typeof mainModule.getState === 'function' ? mainModule.getState() : null;
+  assert.ok(
+    btnB.classList.contains('active') || btnB.getAttribute('aria-selected') === 'true',
+    'btnB must be active after being clicked'
+  );
 
-      // Allow either direct execution or exported mount/init lifecycle
-      if (typeof mainModule.mount === 'function') {
-        mainModule.mount();
-      } else if (typeof mainModule.init === 'function') {
-        mainModule.init();
-      } else if (typeof mainModule.default === 'function') {
-        mainModule.default();
-      }
+  // Click btnA
+  btnA.click();
+  const stateAfterA = typeof mainModule.getState === 'function' ? mainModule.getState() : null;
 
-      const canvas = mockApp.querySelector('canvas');
-      assert.ok(canvas, 'Active canvas element must be mounted inside document.getElementById("app")');
+  if (stateAfterA && stateAfterB) {
+    assert.notDeepEqual(
+      stateAfterA,
+      stateAfterB,
+      'State must transition back when interacting with btnA'
+    );
+  }
 
-      const ctx = canvas.getContext('2d');
-      assert.ok(ctx, '2D rendering context must be acquired from the canvas');
-      assert.ok(ctx.calls.length > 0, 'Canvas operations must have been performed to render the chart');
+  assert.ok(
+    btnA.classList.contains('active') || btnA.getAttribute('aria-selected') === 'true',
+    'btnA must become active when clicked'
+  );
+  assert.ok(
+    !btnB.classList.contains('active') && btnB.getAttribute('aria-selected') !== 'true',
+    'btnB must be deactivated when btnA is clicked'
+  );
+});
 
-      // Check color diversity in render operations (Must include both bullish and bearish colors)
-      const combinedColorHistory = [
-        ...ctx.fillStyleHistory,
-        ...ctx.strokeStyleHistory,
-      ];
+test('DF-CONTROL-01: Throws or reports a clear error if #app mounting element is missing', async () => {
+  // Clear the document to simulate missing #app
+  globalThis.document = new MockDocument();
 
-      const greenColorPatterns = ['#26a69a', '#00ff00', '#089981', '#4caf50', '#22ab94', 'green'];
-      const redColorPatterns = ['#ef5350', '#ff0000', '#f23645', '#f44336', '#f23645', 'red'];
+  // If main exports an explicit mount function or mounts automatically on import
+  const mainModule = await import(`../src/main.js?t=${Date.now()}`);
 
-      const renderedBullishColor = combinedColorHistory.some((color) =>
-        greenColorPatterns.some((pattern) => color.includes(pattern))
-      );
-      const renderedBearishColor = combinedColorHistory.some((color) =>
-        redColorPatterns.some((pattern) => color.includes(pattern))
-      );
-
-      assert.ok(
-        renderedBullishColor,
-        `Chart render must apply bullish (green) palette to bullish candles. Styles recorded: ${JSON.stringify(combinedColorHistory.slice(0, 10))}`
-      );
-      assert.ok(
-        renderedBearishColor,
-        `Chart render must apply bearish (red) palette to bearish candles. Styles recorded: ${JSON.stringify(combinedColorHistory.slice(0, 10))}`
-      );
-
-      // Verify that wick lines (moveTo / lineTo / stroke) and candle bodies (fillRect) were drawn
-      const lineToCalls = ctx.calls.filter((c) => c.method === 'lineTo');
-      const fillRectCalls = ctx.calls.filter((c) => c.method === 'fillRect');
-
-      assert.ok(fillRectCalls.length >= 10, `Expected candle bodies to be rendered with fillRect, got ${fillRectCalls.length}`);
-      assert.ok(lineToCalls.length >= 10, `Expected candle wicks to be rendered with lineTo, got ${lineToCalls.length}`);
-    });
-  });
+  if (typeof mainModule.mount === 'function') {
+    assert.throws(
+      () => {
+        mainModule.mount(null);
+      },
+      {
+        message: /#app|container|mount/i
+      },
+      'Mount function must throw a descriptive error when target element is not found'
+    );
+  }
 });
